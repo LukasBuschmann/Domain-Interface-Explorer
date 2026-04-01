@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
+import platform
 import subprocess
 import sys
 import tempfile
@@ -15,9 +17,20 @@ import numpy as np
 
 
 TOOL_DIR = Path(__file__).resolve().parent
-DEFAULT_MANIFEST_PATH = TOOL_DIR / "Cargo.toml"
 DEFAULT_BINARY_NAME = "interface_distance"
+RUNTIME_BINARY_DIR = TOOL_DIR / "bin"
 UINT16_SCALE = 65535.0
+
+
+@dataclass(frozen=True)
+class RuntimeBinaryStatus:
+    available: bool
+    binary_path: Path | None
+    platform_key: str | None
+    reason: str = ""
+
+
+_RUNTIME_BINARY_STATUS: RuntimeBinaryStatus | None = None
 
 
 @dataclass(frozen=True)
@@ -30,6 +43,13 @@ class MetadataRow:
     @property
     def label(self) -> str:
         return f"{self.partner_domain}:{self.row_key}"
+
+
+@dataclass(frozen=True)
+class InterfaceEntry:
+    partner_domain: str
+    row_key: str
+    columns: tuple[int, ...]
 
 
 def parse_args() -> argparse.Namespace:
@@ -106,43 +126,122 @@ def compute_interface_distance_matrix(
     output_file: Path | None = None,
     metadata_out: Path | None = None,
 ) -> np.ndarray:
-    binary_path = ensure_rust_binary()
+    runtime_binary = validate_runtime_binary()
     if output_file is not None:
         resolved_metadata_out = metadata_out or default_metadata_path(output_file)
-        compute_to_file(
-            binary_path=binary_path,
-            input_file=input_file,
-            output_file=output_file,
-            metadata_out=resolved_metadata_out,
-        )
+        if runtime_binary.available and runtime_binary.binary_path is not None:
+            compute_to_file(
+                binary_path=runtime_binary.binary_path,
+                input_file=input_file,
+                output_file=output_file,
+                metadata_out=resolved_metadata_out,
+            )
+        else:
+            compute_to_file_python(
+                input_file=input_file,
+                output_file=output_file,
+                metadata_out=resolved_metadata_out,
+            )
         return load_distance_matrix(output_file)
 
     with tempfile.TemporaryDirectory(prefix="interface_distance_compute_") as tmp_dir:
         tmp_path = Path(tmp_dir)
         temp_output_file = tmp_path / f"{input_file.stem}.bin"
         resolved_metadata_out = metadata_out or default_metadata_path(temp_output_file)
-        compute_to_file(
-            binary_path=binary_path,
-            input_file=input_file,
-            output_file=temp_output_file,
-            metadata_out=resolved_metadata_out,
-        )
+        if runtime_binary.available and runtime_binary.binary_path is not None:
+            compute_to_file(
+                binary_path=runtime_binary.binary_path,
+                input_file=input_file,
+                output_file=temp_output_file,
+                metadata_out=resolved_metadata_out,
+            )
+        else:
+            compute_to_file_python(
+                input_file=input_file,
+                output_file=temp_output_file,
+                metadata_out=resolved_metadata_out,
+            )
         return load_distance_matrix(temp_output_file)
 
 
-def rust_binary_path() -> Path:
-    suffix = ".exe" if sys.platform == "win32" else ""
-    return TOOL_DIR / "target" / "release" / f"{DEFAULT_BINARY_NAME}{suffix}"
+def validate_runtime_binary(*, refresh: bool = False) -> RuntimeBinaryStatus:
+    global _RUNTIME_BINARY_STATUS
+    if refresh or _RUNTIME_BINARY_STATUS is None:
+        _RUNTIME_BINARY_STATUS = probe_runtime_binary()
+    return _RUNTIME_BINARY_STATUS
 
 
-def ensure_rust_binary() -> Path:
-    binary_path = rust_binary_path()
-    if binary_is_current(binary_path):
-        return binary_path
+def probe_runtime_binary() -> RuntimeBinaryStatus:
+    platform_key = current_platform_key()
+    if platform_key is None:
+        return RuntimeBinaryStatus(
+            available=False,
+            binary_path=None,
+            platform_key=None,
+            reason=(
+                f"no bundled interface_distance binary is available for "
+                f"{sys.platform}/{platform.machine()}"
+            ),
+        )
 
-    build_command = ["cargo", "build", "--manifest-path", str(DEFAULT_MANIFEST_PATH), "--release"]
-    subprocess.run(build_command, check=True)
-    return binary_path
+    binary_path = bundled_binary_path(platform_key)
+    if not binary_path.exists():
+        return RuntimeBinaryStatus(
+            available=False,
+            binary_path=None,
+            platform_key=platform_key,
+            reason=f"missing bundled interface_distance binary at {binary_path}",
+        )
+
+    try:
+        result = subprocess.run(
+            [str(binary_path), "--help"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        return RuntimeBinaryStatus(
+            available=False,
+            binary_path=binary_path,
+            platform_key=platform_key,
+            reason=f"bundled interface_distance binary is not runnable: {exc}",
+        )
+
+    if result.returncode != 0:
+        return RuntimeBinaryStatus(
+            available=False,
+            binary_path=binary_path,
+            platform_key=platform_key,
+            reason=(
+                f"bundled interface_distance binary exited with status "
+                f"{result.returncode} during startup validation"
+            ),
+        )
+
+    return RuntimeBinaryStatus(
+        available=True,
+        binary_path=binary_path,
+        platform_key=platform_key,
+    )
+
+
+def current_platform_key() -> str | None:
+    machine = platform.machine().lower()
+    if sys.platform.startswith("linux") and machine in {"x86_64", "amd64"}:
+        return "linux-x86_64"
+    if sys.platform == "darwin" and machine in {"x86_64", "amd64"}:
+        return "macos-x86_64"
+    if sys.platform == "darwin" and machine in {"arm64", "aarch64"}:
+        return "macos-arm64"
+    if sys.platform == "win32" and machine in {"x86_64", "amd64"}:
+        return "windows-x86_64"
+    return None
+
+
+def bundled_binary_path(platform_key: str) -> Path:
+    suffix = ".exe" if platform_key.startswith("windows-") else ""
+    return RUNTIME_BINARY_DIR / platform_key / f"{DEFAULT_BINARY_NAME}{suffix}"
 
 
 def compute_to_file(
@@ -164,17 +263,91 @@ def compute_to_file(
     subprocess.run(run_command, check=True)
 
 
-def binary_is_current(binary_path: Path) -> bool:
-    if not binary_path.exists():
-        return False
+def compute_to_file_python(
+    *,
+    input_file: Path,
+    output_file: Path,
+    metadata_out: Path,
+) -> None:
+    entries = load_interface_entries(input_file)
+    if len(entries) < 2:
+        raise ValueError(
+            f"need at least two non-empty interface_msa_columns_a entries, found {len(entries)}"
+        )
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    with output_file.open("wb") as handle:
+        for left_index in range(len(entries) - 1):
+            left = entries[left_index].columns
+            for right_index in range(left_index + 1, len(entries)):
+                right = entries[right_index].columns
+                handle.write(quantize_unit_interval(overlap_distance(left, right)).to_bytes(2, "little"))
+    write_metadata(entries, metadata_out)
 
-    binary_mtime = binary_path.stat().st_mtime
-    source_files = [
-        DEFAULT_MANIFEST_PATH,
-        TOOL_DIR / "Cargo.lock",
-        TOOL_DIR / "src" / "main.rs",
-    ]
-    return all(path.exists() and path.stat().st_mtime <= binary_mtime for path in source_files)
+
+def load_interface_entries(input_file: Path) -> list[InterfaceEntry]:
+    with input_file.open("r", encoding="utf-8") as handle:
+        parsed = json.load(handle)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"expected top-level object in {input_file}")
+
+    entries: list[InterfaceEntry] = []
+    for partner_domain in sorted(parsed):
+        rows = parsed.get(partner_domain)
+        if not isinstance(rows, dict):
+            continue
+        for row_key in sorted(rows):
+            payload = rows.get(row_key)
+            if not isinstance(payload, dict):
+                continue
+            raw_columns = payload.get("interface_msa_columns_a", [])
+            columns = tuple(sorted({int(column) for column in raw_columns}))
+            if not columns:
+                continue
+            entries.append(
+                InterfaceEntry(
+                    partner_domain=str(partner_domain),
+                    row_key=str(row_key),
+                    columns=columns,
+                )
+            )
+    return entries
+
+
+def write_metadata(entries: list[InterfaceEntry], metadata_out: Path) -> None:
+    metadata_out.parent.mkdir(parents=True, exist_ok=True)
+    with metadata_out.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t")
+        writer.writerow(["index", "partner_domain", "row_key", "column_count"])
+        for index, entry in enumerate(entries):
+            writer.writerow([index, entry.partner_domain, entry.row_key, len(entry.columns)])
+
+
+def overlap_distance(left: tuple[int, ...], right: tuple[int, ...]) -> float:
+    if not left and not right:
+        return 0.0
+    if not left or not right:
+        return 1.0
+
+    left_index = 0
+    right_index = 0
+    intersection = 0
+    while left_index < len(left) and right_index < len(right):
+        left_value = left[left_index]
+        right_value = right[right_index]
+        if left_value < right_value:
+            left_index += 1
+        elif left_value > right_value:
+            right_index += 1
+        else:
+            intersection += 1
+            left_index += 1
+            right_index += 1
+    return 1.0 - (intersection / min(len(left), len(right)))
+
+
+def quantize_unit_interval(value: float) -> int:
+    clamped = min(max(value, 0.0), 1.0)
+    return round(clamped * 65535.0)
 
 
 def decode_binary_file(

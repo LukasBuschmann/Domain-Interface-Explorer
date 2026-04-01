@@ -5,14 +5,9 @@ Domain Interface Explorer (DIE) is a browser-based tool for inspecting protein d
 ## Requirements
 
 - Conda or Mamba
-- Rust (Cargo)
 
-Quick Rust install:
-
-```bash
-curl https://sh.rustup.rs -sSf | sh
-source "$HOME/.cargo/env"
-```
+Rust is no longer required to run the server. It is only needed if you want to rebuild the
+bundled `interface_distance` helper archives from source.
 
 ## Installation
 
@@ -99,7 +94,11 @@ python -m domain_interface_explorer.server \
 
 ## Operational Notes
 
-- The first run may build the Rust helper automatically if `cargo` is installed and the binary is missing.
+- On supported Linux, Windows, and macOS systems, the server selects a prebundled
+  `interface_distance` binary from `interface_distance/bin/` and validates that it runs on the
+  current machine during startup.
+- If no working bundled binary is available for the current system, the server prints a warning and
+  falls back to the Python overlap-distance implementation.
 - The first structure request for a protein may download AlphaFold data from EBI.
 - Cache files are safe to delete if you want DIE to recompute them.
 - Start the server with `python -m domain_interface_explorer.server`, not by running `server.py` directly.
@@ -124,4 +123,9 @@ Each run uploads one artifact per platform:
 - `macos-x86_64`
 - `macos-arm64`
 
-The artifacts are `.tar.gz` archives containing the built `interface_distance` binary for that platform.
+The workflow outputs should be unpacked into these tracked paths:
+
+- `interface_distance/bin/linux-x86_64/interface_distance`
+- `interface_distance/bin/windows-x86_64/interface_distance.exe`
+- `interface_distance/bin/macos-x86_64/interface_distance`
+- `interface_distance/bin/macos-arm64/interface_distance`

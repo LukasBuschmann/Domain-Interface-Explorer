@@ -3,11 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
+
+from interface_distance import validate_runtime_binary
 
 from domain_interface_explorer.serverlib.config import (
     DEFAULT_CACHE_DIR,
@@ -580,6 +583,14 @@ def build_handler(
 
 def main() -> None:
     args = parse_args()
+    binary_status = validate_runtime_binary()
+    if not binary_status.available:
+        print(
+            "WARNING: "
+            f"{binary_status.reason}. Falling back to the Python overlap-distance implementation.",
+            file=sys.stderr,
+            flush=True,
+        )
     pfam_option_stats = load_cached_pfam_option_stats(
         args.cache_dir.resolve(),
         args.interface_dir.resolve(),
