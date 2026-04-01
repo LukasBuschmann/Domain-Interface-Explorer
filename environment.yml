@@ -1,0 +1,13 @@
+name: domain_interface_explorer
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+dependencies:
+  - python=3.11
+  - numpy
+  - scikit-learn
+  - tqdm
+  - hdbscan
+  - pymol-open-source

@@ -1,0 +1,750 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DIE</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/vendor/3Dmol-min.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="title-block">
+          <h1>DIE <span class="title-emoji">💀</span></h1>
+          <p class="title-subtitle">domain interface explorer</p>
+          <p id="app-status" class="visually-hidden" aria-live="polite"></p>
+        </div>
+        <div class="controls">
+          <label class="picker-label">
+            <span>MSA</span>
+            <div class="picker-with-settings">
+              <div class="msa-picker">
+                <button
+                  id="msa-picker-button"
+                  class="picker-button"
+                  type="button"
+                  aria-haspopup="listbox"
+                  aria-expanded="false"
+                >
+                  <span id="msa-picker-selection" class="picker-selection">Select MSA</span>
+                  <span class="picker-caret">▾</span>
+                </button>
+                <div id="msa-picker-menu" class="msa-picker-menu hidden">
+                  <input
+                    id="msa-picker-search"
+                    class="msa-picker-search"
+                    type="text"
+                    placeholder="Filter PFAMs"
+                    autocomplete="off"
+                  >
+                  <div id="msa-picker-filters" class="msa-picker-filters">
+                    <button type="button" class="msa-filter-chip" data-filter-key="alignment_length" data-filter-direction="big">Long</button>
+                    <button type="button" class="msa-filter-chip" data-filter-key="alignment_length" data-filter-direction="small">Short</button>
+                    <button type="button" class="msa-filter-chip" data-filter-key="interface_rows" data-filter-direction="big">Many Rows</button>
+                    <button type="button" class="msa-filter-chip" data-filter-key="interface_rows" data-filter-direction="small">Few Rows</button>
+                    <button type="button" class="msa-filter-chip" data-filter-key="interaction_partners" data-filter-direction="big">Many Partners</button>
+                    <button type="button" class="msa-filter-chip" data-filter-key="interaction_partners" data-filter-direction="small">Few Partners</button>
+                    <button type="button" class="msa-filter-chip" data-filter-key="avg_interface_residues_per_row" data-filter-direction="big">Dense</button>
+                    <button type="button" class="msa-filter-chip" data-filter-key="avg_interface_residues_per_row" data-filter-direction="small">Sparse</button>
+                  </div>
+                  <div id="msa-picker-options" class="msa-picker-options"></div>
+                </div>
+                <select id="msa-select" class="visually-hidden"></select>
+              </div>
+              <button
+                id="selection-settings-toggle"
+                class="selection-settings-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="selection-settings-panel"
+                title="Selection settings"
+              >
+                &#9881;
+              </button>
+              <div id="selection-settings-panel" class="selection-settings-panel hidden">
+                <div class="selection-settings-header">
+                  <h3 class="selection-settings-title">Selection</h3>
+                </div>
+                <label>
+                  <span>Minimal interface size</span>
+                  <input
+                    id="selection-min-interface-size"
+                    class="embedding-settings-input"
+                    type="number"
+                    step="1"
+                    min="0"
+                    value="5"
+                  >
+                </label>
+                <button
+                  id="selection-settings-apply"
+                  class="embedding-settings-apply"
+                  type="button"
+                >
+                  Apply
+                </button>
+              </div>
+            </div>
+          </label>
+          <input id="interface-select" type="hidden">
+          <label>
+            <span>Partner</span>
+            <select id="partner-select"></select>
+          </label>
+        </div>
+      </header>
+
+      <div id="loading-panel" class="loading-panel hidden" aria-live="polite">
+        <div class="loading-copy">
+          <strong id="loading-label">Loading…</strong>
+          <span id="loading-detail">Preparing data</span>
+        </div>
+        <div class="progress-track">
+          <div id="progress-bar" class="progress-bar"></div>
+        </div>
+      </div>
+
+      <main class="viewer-layout">
+        <section class="workspace-layout">
+          <section class="viewer-panel">
+            <div id="msa-panel-tabs" class="msa-panel-tabs" role="tablist" aria-label="MSA panel view">
+              <button
+                type="button"
+                class="msa-panel-tab active"
+                data-panel-view="msa"
+                role="tab"
+                aria-selected="true"
+              >
+                MSA
+              </button>
+              <button
+                type="button"
+                class="msa-panel-tab"
+                data-panel-view="embeddings"
+                role="tab"
+                aria-selected="false"
+              >
+                Embeddings
+              </button>
+              <button
+                type="button"
+                class="msa-panel-tab"
+                data-panel-view="distances"
+                role="tab"
+                aria-selected="false"
+              >
+                Distances
+              </button>
+              <button
+                type="button"
+                class="msa-panel-tab"
+                data-panel-view="columns"
+                role="tab"
+                aria-selected="false"
+              >
+                Columns
+              </button>
+            </div>
+            <div id="msa-legend" class="legend">
+              <span class="legend-item">
+                <span class="swatch interface"></span>
+                Interface
+              </span>
+              <span class="legend-item">
+                <span class="swatch surface"></span>
+                Surface
+              </span>
+              <span class="legend-item">
+                <span class="swatch conservation"></span>
+                Column conservedness
+              </span>
+              <label class="legend-search">
+                <span>Row Search</span>
+                <input
+                  id="row-search"
+                  class="row-search-input"
+                  type="search"
+                  placeholder="Fuzzy search row names"
+                  autocomplete="off"
+                  spellcheck="false"
+                >
+              </label>
+              <div id="msa-cluster-legend" class="msa-cluster-legend hidden"></div>
+            </div>
+            <div id="viewer-root" class="viewer-root">
+              <div class="corner-cell">Rows</div>
+              <canvas id="header-canvas" class="header-canvas"></canvas>
+              <canvas id="labels-canvas" class="labels-canvas"></canvas>
+              <div class="grid-viewport">
+                <div id="grid-scroll" class="grid-scroll">
+                  <div id="grid-spacer" class="grid-spacer"></div>
+                </div>
+                <canvas id="grid-canvas" class="grid-canvas"></canvas>
+              </div>
+            </div>
+            <div id="embedding-root" class="embedding-root panel-view-hidden">
+              <canvas id="embedding-canvas" class="embedding-canvas"></canvas>
+              <div id="embedding-loading" class="embedding-loading hidden">
+                <strong id="embedding-loading-label">Loading embeddings</strong>
+                <div class="embedding-loading-track">
+                  <div class="embedding-loading-bar"></div>
+                </div>
+              </div>
+              <button
+                id="embedding-settings-toggle"
+                class="embedding-settings-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="embedding-settings-panel"
+                title="Embedding settings"
+              >
+                &#9881;
+              </button>
+              <div id="embedding-settings-panel" class="embedding-settings-panel hidden">
+                <div class="embedding-settings-header">
+                  <div class="embedding-settings-mode" role="tablist" aria-label="Embedding settings section">
+                    <button
+                      type="button"
+                      class="embedding-settings-mode-button active"
+                      data-settings-section="tsne"
+                      aria-pressed="true"
+                    >
+                      t-SNE
+                    </button>
+                    <button
+                      type="button"
+                      class="embedding-settings-mode-button"
+                      data-settings-section="clustering"
+                      aria-pressed="false"
+                    >
+                      Clustering
+                    </button>
+                  </div>
+                </div>
+                <section class="embedding-settings-section" data-settings-section-panel="tsne">
+                  <h3 class="embedding-settings-section-title">t-SNE</h3>
+                  <label>
+                    <span>
+                      Distance
+                      <span
+                        class="embedding-settings-help"
+                        tabindex="0"
+                        title="Controls how interface sets are compared before t-SNE. Dice emphasizes relative overlap for smaller sets, Jaccard penalizes non-shared positions more evenly, and Overlap asks how fully the smaller set is covered by the larger one."
+                      >?</span>
+                    </span>
+                    <select id="embedding-distance" class="embedding-settings-input">
+                      <option value="dice">Dice</option>
+                      <option value="jaccard">Jaccard</option>
+                      <option value="overlap">Overlap</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>
+                      Perplexity
+                      <span
+                        class="embedding-settings-help"
+                        tabindex="0"
+                        title="Sets the size of the local neighborhood t-SNE tries to preserve. Lower values sharpen small local groups; higher values smooth toward broader structure."
+                      >?</span>
+                    </span>
+                    <input
+                      id="embedding-perplexity"
+                      class="embedding-settings-input"
+                      type="number"
+                      step="0.1"
+                      min="0.1"
+                      placeholder="auto"
+                    >
+                  </label>
+                  <label>
+                    <span>
+                      Learning Rate
+                      <span
+                        class="embedding-settings-help"
+                        tabindex="0"
+                        title="Controls how far points move during optimization. Too low can stagnate; too high can make the map unstable. Auto is usually a good default."
+                      >?</span>
+                    </span>
+                    <input
+                      id="embedding-learning-rate"
+                      class="embedding-settings-input"
+                      type="text"
+                      value="auto"
+                      placeholder="auto"
+                    >
+                  </label>
+                  <label>
+                    <span>
+                      Iterations
+                      <span
+                        class="embedding-settings-help"
+                        tabindex="0"
+                        title="Number of optimization steps. More iterations can stabilize the map but take longer to compute."
+                      >?</span>
+                    </span>
+                    <input
+                      id="embedding-max-iter"
+                      class="embedding-settings-input"
+                      type="number"
+                      step="50"
+                      min="1"
+                      value="1000"
+                    >
+                  </label>
+                  <label>
+                    <span>
+                      Early Exaggeration
+                      <span
+                        class="embedding-settings-help"
+                        tabindex="0"
+                        title="Temporarily pushes groups apart early in optimization. Higher values can separate clusters more strongly, but too much can distort the map."
+                      >?</span>
+                    </span>
+                    <input
+                      id="embedding-early-exaggeration"
+                      class="embedding-settings-input"
+                      type="number"
+                      step="0.1"
+                      min="0.1"
+                      value="12"
+                    >
+                  </label>
+                  <button id="embedding-tsne-apply" class="embedding-settings-apply" type="button">
+                    Apply
+                  </button>
+                </section>
+                <section
+                  class="embedding-settings-section embedding-settings-section-hidden"
+                  data-settings-section-panel="clustering"
+                >
+                  <h3 class="embedding-settings-section-title">Clustering</h3>
+                  <div class="embedding-settings-mode" role="tablist" aria-label="Clustering method">
+                    <button
+                      type="button"
+                      class="embedding-clustering-mode-button active"
+                      data-clustering-method="hierarchical"
+                      aria-pressed="true"
+                    >
+                      Hierarchical
+                    </button>
+                    <button
+                      type="button"
+                      class="embedding-clustering-mode-button"
+                      data-clustering-method="hdbscan"
+                      aria-pressed="false"
+                    >
+                      HDBSCAN
+                    </button>
+                  </div>
+                  <label>
+                    <span>
+                      Distance
+                      <span
+                        class="embedding-settings-help"
+                        tabindex="0"
+                        title="Distance matrix used by the clustering algorithm. This can differ from the t-SNE distance, so the point layout and the cluster assignment may emphasize different structure."
+                      >?</span>
+                    </span>
+                    <select id="embedding-cluster-distance" class="embedding-settings-input">
+                      <option value="dice">Dice</option>
+                      <option value="jaccard">Jaccard</option>
+                      <option value="overlap">Overlap</option>
+                    </select>
+                  </label>
+                  <label data-clustering-panel="hdbscan">
+                    <span>
+                      Min Cluster Size
+                      <span
+                        class="embedding-settings-help"
+                        tabindex="0"
+                        title="Smaller values allow smaller groups to become clusters. Larger values demand broader, denser groups."
+                      >?</span>
+                    </span>
+                    <input
+                      id="embedding-cluster-min-size"
+                      class="embedding-settings-input"
+                      type="number"
+                      step="1"
+                      min="1"
+                      value="25"
+                    >
+                  </label>
+                  <label data-clustering-panel="hdbscan">
+                    <span>
+                      Min Samples
+                      <span
+                        class="embedding-settings-help"
+                        tabindex="0"
+                        title="Higher values make clustering more conservative and label more points as noise. Leave blank to let HDBSCAN use its default behavior."
+                      >?</span>
+                    </span>
+                    <input
+                      id="embedding-cluster-min-samples"
+                      class="embedding-settings-input"
+                      type="number"
+                      step="1"
+                      min="1"
+                      placeholder="auto"
+                    >
+                  </label>
+                  <label data-clustering-panel="hdbscan">
+                    <span>
+                      Cluster Selection Epsilon
+                      <span
+                        class="embedding-settings-help"
+                        tabindex="0"
+                        title="Merges nearby dense branches after the hierarchy is built. Increasing it tends to produce fewer, broader clusters."
+                      >?</span>
+                    </span>
+                    <input
+                      id="embedding-cluster-epsilon"
+                      class="embedding-settings-input"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value="0.25"
+                    >
+                  </label>
+                  <label data-clustering-panel="hierarchical" class="embedding-settings-section-hidden">
+                    <span>
+                      Linkage
+                      <span
+                        class="embedding-settings-help"
+                        tabindex="0"
+                        title="Defines how distances between groups are measured while merging. Single can chain clusters, complete favors tighter groups, and average is a balanced default."
+                      >?</span>
+                    </span>
+                    <select id="embedding-cluster-linkage" class="embedding-settings-input">
+                      <option value="average">Average</option>
+                      <option value="complete">Complete</option>
+                      <option value="single">Single</option>
+                    </select>
+                  </label>
+                  <div
+                    class="embedding-settings-mode embedding-settings-section-hidden"
+                    data-clustering-panel="hierarchical"
+                    role="tablist"
+                    aria-label="Hierarchical target"
+                  >
+                    <button
+                      type="button"
+                      class="embedding-clustering-mode-button active"
+                      data-hierarchical-target="distance_threshold"
+                      aria-pressed="true"
+                    >
+                      Cutoff
+                    </button>
+                    <button
+                      type="button"
+                      class="embedding-clustering-mode-button"
+                      data-hierarchical-target="n_clusters"
+                      aria-pressed="false"
+                    >
+                      N Clusters
+                    </button>
+                  </div>
+                  <label
+                    data-clustering-panel="hierarchical"
+                    data-hierarchical-target-panel="n_clusters"
+                    class="embedding-settings-section-hidden"
+                  >
+                    <span>
+                      Number Of Clusters
+                      <span
+                        class="embedding-settings-help"
+                        tabindex="0"
+                        title="Cuts the hierarchy to a fixed number of groups. Use this when you already have a rough target for how many clusters you want to inspect."
+                      >?</span>
+                    </span>
+                    <input
+                      id="embedding-cluster-n-clusters"
+                      class="embedding-settings-input"
+                      type="number"
+                      step="1"
+                      min="1"
+                      value="8"
+                      placeholder="auto"
+                    >
+                  </label>
+                  <label
+                    data-clustering-panel="hierarchical"
+                    data-hierarchical-target-panel="distance_threshold"
+                    class="embedding-settings-section-hidden"
+                  >
+                    <span>
+                      Cutoff Distance
+                      <span
+                        class="embedding-settings-help"
+                        tabindex="0"
+                        title="Cuts the hierarchy at a distance level instead of a fixed cluster count. Lower values create more clusters; higher values merge more aggressively."
+                      >?</span>
+                    </span>
+                    <input
+                      id="embedding-cluster-distance-threshold"
+                      class="embedding-settings-input"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value="0.5"
+                    >
+                  </label>
+                  <label
+                    data-clustering-panel="hierarchical"
+                    data-hierarchical-target-panel="distance_threshold"
+                    class="embedding-settings-section-hidden"
+                  >
+                    <span>
+                      Minimal Cluster Size
+                      <span
+                        class="embedding-settings-help"
+                        tabindex="0"
+                        title="After cutting the hierarchy, clusters smaller than this size are relabeled as noise instead of being kept as standalone groups."
+                      >?</span>
+                    </span>
+                    <input
+                      id="embedding-cluster-hierarchical-min-size"
+                      class="embedding-settings-input"
+                      type="number"
+                      step="1"
+                      min="1"
+                      value="10"
+                    >
+                  </label>
+                  <button id="embedding-clustering-apply" class="embedding-settings-apply" type="button">
+                    Apply
+                  </button>
+                </section>
+              </div>
+              <div id="embedding-partner-legend" class="embedding-partner-legend"></div>
+              <div id="embedding-info" class="embedding-info">
+                3D t-SNE on Dice interface distance. Drag to rotate.
+              </div>
+            </div>
+            <div id="distance-root" class="distance-root panel-view-hidden">
+              <canvas id="distance-canvas" class="distance-canvas"></canvas>
+              <div id="distance-loading" class="embedding-loading hidden">
+                <strong id="distance-loading-label">Loading distance matrix</strong>
+                <div class="embedding-loading-track">
+                  <div class="embedding-loading-bar"></div>
+                </div>
+              </div>
+              <div id="distance-info" class="embedding-info">
+                Interface distance matrix view.
+              </div>
+            </div>
+            <div id="columns-root" class="columns-root panel-view-hidden">
+              <canvas id="columns-canvas" class="columns-canvas"></canvas>
+              <div id="columns-loading" class="embedding-loading hidden">
+                <strong id="columns-loading-label">Loading clustering data</strong>
+                <div class="embedding-loading-track">
+                  <div class="embedding-loading-bar"></div>
+                </div>
+              </div>
+              <div id="columns-cluster-legend" class="embedding-partner-legend"></div>
+              <div id="columns-info" class="embedding-info">
+                Cluster-column interaction overview.
+              </div>
+            </div>
+            <section class="details-bar">
+              <section class="details-card cell-details-panel">
+                <h2>Cell Details</h2>
+                <dl id="details-list">
+                  <dt>Row</dt><dd>-</dd>
+                  <dt>Protein</dt><dd>-</dd>
+                  <dt>Fragment</dt><dd>-</dd>
+                  <dt>MSA Column</dt><dd>-</dd>
+                  <dt>Conserved</dt><dd>-</dd>
+                  <dt>Residue</dt><dd>-</dd>
+                  <dt>Residue ID</dt><dd>-</dd>
+                  <dt>State</dt><dd>-</dd>
+                </dl>
+              </section>
+
+              <section class="details-card stats-panel">
+                <h2>Alignment</h2>
+                <div class="stats">
+                  <div><strong id="row-count">0</strong><span>rows</span></div>
+                  <div><strong id="column-count">0</strong><span>shown cols</span></div>
+                </div>
+              </section>
+            </section>
+          </section>
+
+          <section class="representative-shell representative-panel">
+            <h2>Representative</h2>
+            <p id="representative-copy" class="structure-copy">No representative row loaded.</p>
+            <div class="representative-stage">
+              <div id="representative-viewer" class="representative-viewer">
+                <div id="representative-partner-filter" class="representative-partner-filter hidden">
+                  <div class="representative-partner-filter-header">
+                    <span class="representative-partner-filter-title">Partners</span>
+                  </div>
+                  <div id="representative-partner-filter-list" class="representative-partner-filter-list"></div>
+                </div>
+                <div id="representative-column-legend" class="column-legend column-legend-overlay hidden">
+                  <div id="representative-column-legend-bar" class="column-legend-bar"></div>
+                  <div class="column-legend-scale">
+                    <span id="representative-column-legend-start">0</span>
+                    <span id="representative-column-legend-mid">0</span>
+                    <span id="representative-column-legend-end">0</span>
+                  </div>
+                </div>
+                <div id="representative-cluster-legend" class="representative-cluster-legend hidden"></div>
+              </div>
+              <div id="representative-hover-card" class="representative-hover-card hidden">
+                <strong id="representative-hover-title">Representative Residue</strong>
+                <dl id="representative-hover-details" class="representative-hover-details">
+                  <div><dt>Residue</dt><dd>-</dd></div>
+                  <div><dt>Amino acid</dt><dd>-</dd></div>
+                  <div><dt>Conserved</dt><dd>-</dd></div>
+                  <div><dt id="representative-hover-accent-label">Dominant</dt><dd>-</dd></div>
+                </dl>
+                <div class="structure-hover-distribution-block">
+                  <span id="representative-hover-distribution-title" class="structure-hover-histogram-title">Partner Distribution</span>
+                  <div id="representative-hover-distribution-layout" class="structure-hover-distribution-layout hidden">
+                    <div id="representative-hover-distribution-chart" class="structure-hover-distribution-chart"></div>
+                    <div
+                      id="representative-hover-distribution-pie-legend"
+                      class="structure-hover-distribution-legend"
+                    ></div>
+                  </div>
+                  <div id="representative-hover-distribution-legend" class="representative-hover-bar-chart">
+                    <p class="structure-hover-empty">Hover a representative residue dot.</p>
+                  </div>
+                </div>
+              </div>
+              <div class="representative-controls">
+                <span class="representative-lens-label">Lens</span>
+                <div id="representative-lens-group" class="representative-lens-group" role="group" aria-label="Representative lens">
+                  <button type="button" class="representative-lens-button active" data-lens="interface">Interface</button>
+                  <button type="button" class="representative-lens-button" data-lens="conservedness">Conserved</button>
+                  <button type="button" class="representative-lens-button" data-lens="column">Column</button>
+                  <button type="button" class="representative-lens-button" data-lens="partners">Partners</button>
+                  <button type="button" class="representative-lens-button" data-lens="cluster">Cluster</button>
+                </div>
+              </div>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div class="visually-hidden" aria-hidden="true">
+      <p id="selected-row-copy">Select a row in the alignment.</p>
+      <button id="load-structure-button" type="button" disabled>Open Interactive Structure</button>
+      <p id="structure-status">Click a row name to open the structure.</p>
+    </div>
+
+    <div id="structure-modal" class="structure-modal hidden" aria-hidden="true">
+      <div class="structure-modal-backdrop"></div>
+      <div class="structure-modal-card">
+        <div class="structure-modal-header">
+          <div>
+            <h2 id="structure-modal-title">Interactive Structure</h2>
+            <p id="structure-modal-subtitle">No structure loaded.</p>
+          </div>
+          <button id="close-structure-modal" class="structure-close-button" type="button">Close</button>
+        </div>
+        <div class="structure-viewer-shell">
+          <div id="structure-viewer" class="structure-viewer"></div>
+          <div class="structure-column-overlay">
+            <label class="structure-column-toggle" for="structure-column-view-toggle">
+              <input id="structure-column-view-toggle" type="checkbox">
+              <span>Column</span>
+            </label>
+            <div id="structure-column-legend" class="column-legend column-legend-compact hidden">
+              <div id="structure-column-legend-bar" class="column-legend-bar"></div>
+              <div class="column-legend-scale">
+                <span id="structure-column-legend-start">0</span>
+                <span id="structure-column-legend-mid">0</span>
+                <span id="structure-column-legend-end">0</span>
+              </div>
+            </div>
+          </div>
+          <div id="structure-hover-card" class="structure-hover-card hidden">
+            <strong>Main Residue</strong>
+            <dl id="structure-hover-details">
+              <div><dt>Residue</dt><dd>-</dd></div>
+              <div><dt>Amino acid</dt><dd>-</dd></div>
+              <div><dt>Conserved</dt><dd>-</dd></div>
+              <div><dt>MSA column</dt><dd>-</dd></div>
+            </dl>
+            <div class="structure-hover-histogram-block">
+              <span class="structure-hover-histogram-title">Top Residues In Column</span>
+              <div id="structure-hover-histogram" class="structure-hover-histogram">
+                <p class="structure-hover-empty">Hover a main-domain residue dot.</p>
+              </div>
+            </div>
+            <div class="structure-hover-distribution-block">
+              <span class="structure-hover-histogram-title">Column State Distribution</span>
+              <div class="structure-hover-distribution-layout">
+                <div id="structure-hover-distribution-chart" class="structure-hover-distribution-chart"></div>
+                <div id="structure-hover-distribution-legend" class="structure-hover-distribution-legend">
+                  <p class="structure-hover-empty">Hover a main-domain residue dot.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="structure-modal-footer">
+          <div class="structure-legend">
+            <span class="legend-item">
+              <span class="swatch structure-main-domain"></span>
+              Main domain
+            </span>
+            <span class="legend-item">
+              <span class="swatch structure-main-dots"></span>
+              Main residue dots
+            </span>
+            <span class="legend-item">
+              <span class="swatch structure-main-surface"></span>
+              Main surface
+            </span>
+            <span class="legend-item">
+              <span class="swatch structure-main-interface"></span>
+              Main interface
+            </span>
+            <span class="legend-item">
+              <span class="swatch structure-partner-domain"></span>
+              Partner domain
+            </span>
+            <span class="legend-item">
+              <span class="swatch structure-partner-surface"></span>
+              Partner surface
+            </span>
+            <span class="legend-item">
+              <span class="swatch structure-partner-interface"></span>
+              Partner interface
+            </span>
+          </div>
+          <p id="structure-modal-status" class="structure-status">
+            Whole protein: gray transparent. Main domain: gray. Main surface/interface: orange and red. Partner domain: muted blue with stronger blue interaction layers.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div id="cluster-compare-modal" class="structure-modal hidden" aria-hidden="true">
+      <div class="structure-modal-backdrop"></div>
+      <div class="cluster-compare-modal-card">
+        <div class="structure-modal-header">
+          <div>
+            <h2 id="cluster-compare-modal-title">Cluster Structure Comparison</h2>
+            <p id="cluster-compare-modal-subtitle">No cluster selected.</p>
+          </div>
+          <button id="close-cluster-compare-modal" class="structure-close-button" type="button">Close</button>
+        </div>
+        <div id="cluster-compare-loading" class="embedding-loading cluster-compare-loading hidden">
+          <strong id="cluster-compare-loading-label">Loading aligned structures…</strong>
+          <div class="embedding-loading-track">
+            <div id="cluster-compare-loading-bar" class="cluster-compare-loading-bar"></div>
+          </div>
+        </div>
+        <div id="cluster-compare-grid" class="cluster-compare-grid"></div>
+      </div>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+  </html>
