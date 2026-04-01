@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import random
+import tempfile
 from pathlib import Path
 
 from interface_distance import compute_interface_distance_matrix
@@ -417,21 +418,10 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
         raise ValueError("need at least two interfaces with non-empty interface sets")
     indicator_matrix, msa_columns = build_indicator_matrix(entries)
     if distance_metric == "overlap":
-        if (
-            int((interface_filter_settings or {}).get("min_interface_size", DEFAULT_MIN_INTERFACE_SIZE)) <= 0
-            and isinstance(interface_path, Path)
-        ):
-            distance_matrix = compute_interface_distance_matrix(input_file=interface_path)
-        else:
-            row_sets = [set(int(column) for column in entry["columns"]) for entry in entries]
-            distance_matrix = np.zeros((len(row_sets), len(row_sets)), dtype=np.float64)
-            for left_index in range(len(row_sets)):
-                left = row_sets[left_index]
-                for right_index in range(left_index + 1, len(row_sets)):
-                    right = row_sets[right_index]
-                    distance = overlap_distance_for_sets(left, right)
-                    distance_matrix[left_index, right_index] = distance
-                    distance_matrix[right_index, left_index] = distance
+        distance_matrix = compute_interface_distance_matrix_for_payload(
+            raw_interface_payload,
+            interface_path=interface_path if isinstance(interface_path, Path) else None,
+        )
     else:
         distance_matrix = pairwise_distances(indicator_matrix, metric=distance_metric).astype(
             np.float64, copy=False
@@ -443,6 +433,19 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
         "distance_matrix": distance_matrix,
         "distance": distance_metric,
     }
+
+
+def compute_interface_distance_matrix_for_payload(
+    interface_payload: dict[str, object],
+    *,
+    interface_path: Path | None = None,
+) -> object:
+    temp_name = interface_path.name if interface_path is not None else "interface_payload.json"
+    with tempfile.TemporaryDirectory(prefix="interface_distance_payload_") as tmp_dir:
+        temp_input_file = Path(tmp_dir) / temp_name
+        with temp_input_file.open("w", encoding="utf-8") as handle:
+            json.dump(interface_payload, handle)
+        return compute_interface_distance_matrix(input_file=temp_input_file)
 
 
 def load_interface_distance_data(
