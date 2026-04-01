@@ -1,0 +1,84 @@
+name: Build interface_distance
+
+on:
+  push:
+    paths:
+      - ".github/workflows/build-interface-distance.yml"
+      - "interface_distance/**"
+      - "README.md"
+  pull_request:
+    paths:
+      - ".github/workflows/build-interface-distance.yml"
+      - "interface_distance/**"
+      - "README.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            runs_on: ubuntu-24.04
+            binary_path: interface_distance/target/release/interface_distance
+            binary_name: interface_distance
+            archive_name: interface_distance-linux-x86_64.tar.gz
+          - name: windows-x86_64
+            runs_on: windows-2025
+            binary_path: interface_distance/target/release/interface_distance.exe
+            binary_name: interface_distance.exe
+            archive_name: interface_distance-windows-x86_64.tar.gz
+          - name: macos-x86_64
+            runs_on: macos-15-intel
+            binary_path: interface_distance/target/release/interface_distance
+            binary_name: interface_distance
+            archive_name: interface_distance-macos-x86_64.tar.gz
+          - name: macos-arm64
+            runs_on: macos-15
+            binary_path: interface_distance/target/release/interface_distance
+            binary_name: interface_distance
+            archive_name: interface_distance-macos-arm64.tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Rust stable toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo "rustup is not available on this runner" >&2
+            exit 1
+          fi
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Build release binary
+        run: cargo build --manifest-path interface_distance/Cargo.toml --release --locked
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          mkdir -p dist/package
+          cp "${{ matrix.binary_path }}" "dist/package/${{ matrix.binary_name }}"
+          tar -C dist/package -czf "dist/${{ matrix.archive_name }}" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/${{ matrix.archive_name }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

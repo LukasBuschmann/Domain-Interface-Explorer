@@ -103,3 +103,25 @@ python -m domain_interface_explorer.server \
 - The first structure request for a protein may download AlphaFold data from EBI.
 - Cache files are safe to delete if you want DIE to recompute them.
 - Start the server with `python -m domain_interface_explorer.server`, not by running `server.py` directly.
+
+## GitHub Actions Builds
+
+The repository includes a workflow at `.github/workflows/build-interface-distance.yml` that builds the
+`interface_distance` Rust helper on GitHub-hosted Linux, Windows, and macOS runners.
+
+To try it on a branch:
+
+```bash
+git push origin <branch-name>
+```
+
+You can also trigger it manually from the Actions tab with `workflow_dispatch`.
+
+Each run uploads one artifact per platform:
+
+- `linux-x86_64`
+- `windows-x86_64`
+- `macos-x86_64`
+- `macos-arm64`
+
+The artifacts are `.tar.gz` archives containing the built `interface_distance` binary for that platform.

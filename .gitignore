@@ -5,3 +5,4 @@ cache/*
 !cache/.gitkeep
 
 interface_distance/target/
+interface_distance/target-cross/
