@@ -122,7 +122,7 @@ You can also point the server at a different directory with `--interface-dir`.
 ## GitHub Actions Builds
 
 The repository includes a workflow at `.github/workflows/build-interface-distance.yml` that builds the
-`interface_distance` Rust helper on GitHub-hosted Linux, Windows, and macOS runners.
+`interface_distance` native C helper on GitHub-hosted Linux, Windows, and macOS runners.
 
 To try it on a branch:
 

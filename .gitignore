@@ -6,3 +6,6 @@ cache/*
 
 interface_distance/target/
 interface_distance/target-cross/
+interface_distance/native/interface_distance
+interface_distance/native/*.exe
+interface_distance/native/*.o

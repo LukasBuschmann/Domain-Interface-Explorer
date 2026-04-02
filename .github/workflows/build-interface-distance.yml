@@ -4,15 +4,11 @@ on:
   push:
     paths:
       - ".github/workflows/build-interface-distance.yml"
-      - "interface_distance/Cargo.toml"
-      - "interface_distance/Cargo.lock"
-      - "interface_distance/src/**"
+      - "interface_distance/native/**"
   pull_request:
     paths:
       - ".github/workflows/build-interface-distance.yml"
-      - "interface_distance/Cargo.toml"
-      - "interface_distance/Cargo.lock"
-      - "interface_distance/src/**"
+      - "interface_distance/native/**"
   workflow_dispatch:
 
 permissions:
@@ -51,21 +47,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select Rust stable toolchain
+      - name: Setup MSYS2
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            make
+            mingw-w64-x86_64-gcc
+
+      - name: Build release binary
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          if ! command -v rustup >/dev/null 2>&1; then
-            echo "rustup is not available on this runner" >&2
-            exit 1
-          fi
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustc --version
-          cargo --version
+          mkdir -p interface_distance/target/release
+          make -C interface_distance/native TARGET=../target/release/${{ matrix.binary_name }}
 
       - name: Build release binary
-        run: cargo build --manifest-path interface_distance/Cargo.toml --release --locked
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          mkdir -p interface_distance/target/release
+          make -C interface_distance/native \
+            CC=gcc \
+            TARGET=../target/release/${{ matrix.binary_name }} \
+            LDLIBS="-lm -pthread -static -static-libgcc"
 
       - name: Package artifact
         shell: bash
