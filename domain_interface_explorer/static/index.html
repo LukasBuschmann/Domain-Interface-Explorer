@@ -112,9 +112,18 @@
               <button
                 type="button"
                 class="msa-panel-tab active"
-                data-panel-view="msa"
+                data-panel-view="info"
                 role="tab"
                 aria-selected="true"
+              >
+                Info
+              </button>
+              <button
+                type="button"
+                class="msa-panel-tab"
+                data-panel-view="msa"
+                role="tab"
+                aria-selected="false"
               >
                 MSA
               </button>
@@ -146,7 +155,13 @@
                 Columns
               </button>
             </div>
-            <div id="msa-legend" class="legend">
+            <div id="info-root" class="info-root">
+              <div class="pfam-info-empty">
+                <strong>Choose a PFAM family</strong>
+                <p>Select a family from the picker to view its description, key counts, and the official Pfam page link.</p>
+              </div>
+            </div>
+            <div id="msa-legend" class="legend panel-view-hidden">
               <span class="legend-item">
                 <span class="swatch interface"></span>
                 Interface
@@ -172,7 +187,7 @@
               </label>
               <div id="msa-cluster-legend" class="msa-cluster-legend hidden"></div>
             </div>
-            <div id="viewer-root" class="viewer-root">
+            <div id="viewer-root" class="viewer-root panel-view-hidden">
               <div class="corner-cell">Rows</div>
               <canvas id="header-canvas" class="header-canvas"></canvas>
               <canvas id="labels-canvas" class="labels-canvas"></canvas>
@@ -546,7 +561,7 @@
                 Cluster-column interaction overview.
               </div>
             </div>
-            <section class="details-bar">
+            <section class="details-bar panel-view-hidden">
               <section class="details-card cell-details-panel">
                 <h2>Cell Details</h2>
                 <dl id="details-list">

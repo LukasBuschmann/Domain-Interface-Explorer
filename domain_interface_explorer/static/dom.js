@@ -21,6 +21,7 @@ export const elements = {
   partnerSelect: document.getElementById("partner-select"),
   rowSearchInput: document.getElementById("row-search"),
   msaPanelTabs: document.getElementById("msa-panel-tabs"),
+  infoRoot: document.getElementById("info-root"),
   msaLegend: document.getElementById("msa-legend"),
   msaClusterLegend: document.getElementById("msa-cluster-legend"),
   embeddingPartnerLegend: document.getElementById("embedding-partner-legend"),

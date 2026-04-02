@@ -441,7 +441,7 @@ async function refreshRepresentativeSelection(emptyMessage = "No representative 
   try {
     await loadRepresentativeStructure();
   } catch (error) {
-    representativeCopy.textContent = `Representative row: ${state.representativeRowKey}`;
+    representativeCopy.textContent = String(state.representativeRowKey || "");
     appStatus.textContent = error.message;
   }
 }
@@ -1001,6 +1001,8 @@ const msaViewController = createMsaViewController({
   renderRepresentativePartnerFilter,
   renderEmbeddingLegend,
   refreshRepresentativeSelection,
+  loadInteractiveStructure,
+  handleStructureLoadFailure,
   resetRepresentativePanel,
   resetStructurePanel,
   closeClusterCompareModal,
@@ -1019,6 +1021,7 @@ const {
   closeMsaPicker,
   displayAlignmentLength,
   drawGrid,
+  ensurePfamInfoLoaded,
   initialize,
   handleInitializeError,
   loadCurrentSelection,
@@ -1027,6 +1030,7 @@ const {
   renderMsaPickerOptions,
   scheduleLayoutSync,
   selectFilteredRow,
+  labelHitTargetAtClientPoint,
   selectRowByKey,
   setDetails,
   syncMsaPanelView,
@@ -1210,7 +1214,9 @@ msaPanelTabs.addEventListener("click", (event) => {
   state.msaPanelView = nextView;
   render();
   scheduleLayoutSync();
-  if (nextView === "embeddings") {
+  if (nextView === "info") {
+    void ensurePfamInfoLoaded();
+  } else if (nextView === "embeddings") {
     void ensureEmbeddingDataLoaded();
     void ensureEmbeddingClusteringLoaded();
   } else if (nextView === "distances") {
@@ -1630,10 +1636,15 @@ labelsCanvas.addEventListener("click", async (event) => {
   if (!state.msa) {
     return;
   }
-  const rect = labelsCanvas.getBoundingClientRect();
-  const y = event.clientY - rect.top;
-  const filteredRowIndex = Math.floor((y + gridScroll.scrollTop) / ROW_HEIGHT);
-  const row = selectFilteredRow(filteredRowIndex);
+  const target = labelHitTargetAtClientPoint(event.clientX, event.clientY);
+  if (!target) {
+    return;
+  }
+  if (target.href) {
+    window.open(target.href, "_blank", "noopener,noreferrer");
+    return;
+  }
+  const row = selectRowByKey(target.row?.row_key || "");
   if (!row || !interfaceSelect.value) {
     return;
   }

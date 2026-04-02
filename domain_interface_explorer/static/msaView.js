@@ -46,9 +46,11 @@ export function createMsaViewController({
   resetRepresentativeClusterSelection,
   renderRepresentativePartnerFilter,
   renderEmbeddingLegend,
-  refreshRepresentativeSelection,
-  resetRepresentativePanel,
-  resetStructurePanel,
+    refreshRepresentativeSelection,
+    loadInteractiveStructure,
+    handleStructureLoadFailure,
+    resetRepresentativePanel,
+    resetStructurePanel,
   closeClusterCompareModal,
   closeStructureModal,
   resizeClusterCompareViewers,
@@ -74,6 +76,7 @@ export function createMsaViewController({
     gridScroll,
     gridSpacer,
     headerCanvas,
+    infoRoot,
     interfaceSelect,
     labelsCanvas,
     loadingDetail,
@@ -110,6 +113,11 @@ export function createMsaViewController({
   let cachedMsaRowClusterAssignments = new Map();
   let cachedMsaRowClusterMemberships = new Map();
   let cachedMsaClusterCounts = new Map();
+  let pfamMetadataPollHandle = 0;
+  let pfamMetadataPollAttempts = 0;
+  const PFAM_METADATA_POLL_DELAY_MS = 5000;
+  const PFAM_METADATA_POLL_MAX_ATTEMPTS = 12;
+  const pfamNumberFormatter = new Intl.NumberFormat();
 
   function activeMsaPanelView() {
     return state.msaPanelView;
@@ -139,6 +147,9 @@ export function createMsaViewController({
   }
 
   function activePanelRoot() {
+    if (activeMsaPanelView() === "info") {
+      return infoRoot;
+    }
     if (activeMsaPanelView() === "msa") {
       return viewerRoot;
     }
@@ -152,7 +163,7 @@ export function createMsaViewController({
   }
 
   function syncPaneHeights() {
-    const panelRoots = [viewerRoot, embeddingRoot, distanceRoot, columnsRoot];
+    const panelRoots = [infoRoot, viewerRoot, embeddingRoot, distanceRoot, columnsRoot];
     panelRoots.forEach((root) => {
       if (root) {
         root.style.height = "";
@@ -198,6 +209,7 @@ export function createMsaViewController({
   }
 
   function syncMsaPanelView() {
+    const isInfoView = activeMsaPanelView() === "info";
     const isMsaView = activeMsaPanelView() === "msa";
     const isEmbeddingView = activeMsaPanelView() === "embeddings";
     const isDistanceView = activeMsaPanelView() === "distances";
@@ -210,6 +222,7 @@ export function createMsaViewController({
     detailsBar.classList.toggle("panel-view-hidden", !isMsaView);
     cellDetailsPanel.classList.toggle("panel-view-hidden", !isMsaView);
     statsPanel.classList.add("panel-view-hidden");
+    infoRoot.classList.toggle("panel-view-hidden", !isInfoView);
     msaLegend.classList.toggle("panel-view-hidden", !isMsaView);
     viewerRoot.classList.toggle("panel-view-hidden", !isMsaView);
     embeddingRoot.classList.toggle("panel-view-hidden", !isEmbeddingView);
@@ -378,6 +391,739 @@ export function createMsaViewController({
     return (state.msaOptions || []).find((option) => option.value === msaSelect.value) || null;
   }
 
+  function currentPfamId() {
+    return String(currentMsaOption()?.pfamId || "").trim();
+  }
+
+  function clearPfamInfoState() {
+    state.pfamInfo = null;
+    state.pfamInfoError = "";
+    state.pfamInfoLoading = false;
+    state.pfamInfoRequestId += 1;
+  }
+
+  function formatPfamCount(value) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+      return "—";
+    }
+    return pfamNumberFormatter.format(numericValue);
+  }
+
+  function appendPfamInfoMetaItem(container, label, value) {
+    const text = String(value || "").trim();
+    if (!text) {
+      return;
+    }
+    const item = document.createElement("div");
+    item.className = "pfam-info-meta-item";
+    const labelElement = document.createElement("span");
+    labelElement.className = "pfam-info-meta-label";
+    labelElement.textContent = label;
+    const valueElement = document.createElement("strong");
+    valueElement.className = "pfam-info-meta-value";
+    valueElement.textContent = text;
+    item.appendChild(labelElement);
+    item.appendChild(valueElement);
+    container.appendChild(item);
+  }
+
+  function appendPfamInfoStat(container, label, value) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+      return;
+    }
+    const item = document.createElement("div");
+    item.className = "pfam-info-stat";
+    const valueElement = document.createElement("strong");
+    valueElement.className = "pfam-info-stat-value";
+    valueElement.textContent = formatPfamCount(numericValue);
+    const labelElement = document.createElement("span");
+    labelElement.className = "pfam-info-stat-label";
+    labelElement.textContent = label;
+    item.appendChild(valueElement);
+    item.appendChild(labelElement);
+    container.appendChild(item);
+  }
+
+  function normalizeHistogramEntries(entries) {
+    if (!Array.isArray(entries)) {
+      return [];
+    }
+    return entries
+      .map((entry) => ({
+        size: Number(entry?.size),
+        count: Number(entry?.count),
+      }))
+      .filter((entry) => Number.isFinite(entry.size) && entry.size > 0 && Number.isFinite(entry.count) && entry.count > 0)
+      .sort((left, right) => left.size - right.size);
+  }
+
+  function interfaceSizeFromPayload(rowPayload) {
+    if (!rowPayload || typeof rowPayload !== "object") {
+      return 0;
+    }
+    const sourceValues = Array.isArray(rowPayload.interface_msa_columns_a)
+      ? rowPayload.interface_msa_columns_a
+      : Array.isArray(rowPayload.interface_residues_a)
+        ? rowPayload.interface_residues_a
+        : [];
+    const interfaceColumns = new Set();
+    for (const value of sourceValues) {
+      const numericValue = Number(value);
+      if (Number.isInteger(numericValue)) {
+        interfaceColumns.add(numericValue);
+      }
+    }
+    return interfaceColumns.size;
+  }
+
+  function filteredInterfaceEntries(interfacePayload, selectedPartner = state.selectedPartner) {
+    const entries = [];
+    for (const [partnerDomain, rows] of Object.entries(interfacePayload || {})) {
+      if (selectedPartner !== "__all__" && partnerDomain !== selectedPartner) {
+        continue;
+      }
+      if (!rows || typeof rows !== "object") {
+        continue;
+      }
+      for (const [rowKey, rowPayload] of Object.entries(rows)) {
+        entries.push({
+          partnerDomain,
+          rowKey,
+          rowPayload,
+        });
+      }
+    }
+    return entries;
+  }
+
+  function localInterfaceSummary(interfacePayload, selectedPartner = state.selectedPartner) {
+    const entries = filteredInterfaceEntries(interfacePayload, selectedPartner);
+    const countsBySize = new Map();
+    const datasetDomains = new Set();
+    for (const entry of entries) {
+      const rowKeyParts = String(entry.rowKey || "").split("_", 2);
+      const proteinId = rowKeyParts[0] || "";
+      const fragmentKey = rowKeyParts[1] || "";
+      datasetDomains.add(`${proteinId}@@${fragmentKey}`);
+      const interfaceSize = interfaceSizeFromPayload(entry.rowPayload);
+      if (interfaceSize <= 0) {
+        continue;
+      }
+      countsBySize.set(interfaceSize, (countsBySize.get(interfaceSize) || 0) + 1);
+    }
+    return {
+      datasetDomains: datasetDomains.size,
+      datasetInterfaces: entries.length,
+      histogramEntries: normalizeHistogramEntries(
+        [...countsBySize.entries()].map(([size, count]) => ({ size, count }))
+      ),
+    };
+  }
+
+  function histogramEntriesFromInterfacePayload(interfacePayload) {
+    return localInterfaceSummary(interfacePayload).histogramEntries;
+  }
+
+  function compressHistogramEntries(entries, maxBarCount = 24) {
+    if (entries.length <= maxBarCount) {
+      return entries.map((entry) => ({
+        start: entry.size,
+        end: entry.size,
+        count: entry.count,
+      }));
+    }
+    const minSize = entries[0]?.size || 1;
+    const maxSize = entries[entries.length - 1]?.size || minSize;
+    const binWidth = Math.max(1, Math.ceil((maxSize - minSize + 1) / maxBarCount));
+    const buckets = new Map();
+    for (const entry of entries) {
+      const bucketIndex = Math.floor((entry.size - minSize) / binWidth);
+      const bucketStart = minSize + bucketIndex * binWidth;
+      const bucketEnd = Math.min(maxSize, bucketStart + binWidth - 1);
+      const bucketKey = `${bucketStart}-${bucketEnd}`;
+      const current = buckets.get(bucketKey) || {
+        start: bucketStart,
+        end: bucketEnd,
+        count: 0,
+      };
+      current.count += entry.count;
+      buckets.set(bucketKey, current);
+    }
+    return [...buckets.values()].sort((left, right) => left.start - right.start);
+  }
+
+  function histogramBinLabel(bin) {
+    return bin.start === bin.end ? String(bin.start) : `${bin.start}-${bin.end}`;
+  }
+
+  function uniprotEntryUrl(accession) {
+    return `https://www.uniprot.org/uniprotkb/${encodeURIComponent(String(accession || "").trim())}`;
+  }
+
+  function pfamEntryUrl(accession) {
+    return `https://www.ebi.ac.uk/interpro/entry/pfam/${encodeURIComponent(String(accession || "").trim())}/`;
+  }
+
+  function rowLabelSegments(row, baseColor) {
+    const proteinId = String(row?.protein_id || "").trim();
+    const partnerDomain = String(row?.partner_domain || "").trim();
+    if (proteinId && partnerDomain) {
+      return [
+        {
+          text: proteinId,
+          color: "#8d5b2c",
+          href: uniprotEntryUrl(proteinId),
+        },
+        {
+          text: " | ",
+          color: baseColor,
+          href: "",
+        },
+        {
+          text: partnerDomain,
+          color: "#0b3f78",
+          href: pfamEntryUrl(partnerDomain),
+        },
+      ];
+    }
+    return [
+      {
+        text: String(row?.display_row_key || row?.row_key || ""),
+        color: baseColor,
+        href: "",
+      },
+    ];
+  }
+
+  function labelHitTargetAtClientPoint(clientX, clientY) {
+    if (!state.msa) {
+      return null;
+    }
+    const rect = labelsCanvas.getBoundingClientRect();
+    const localY = clientY - rect.top;
+    const filteredRowIndex = Math.floor((localY + gridScroll.scrollTop) / ROW_HEIGHT);
+    if (filteredRowIndex < 0 || filteredRowIndex >= state.filteredRowIndexes.length) {
+      return null;
+    }
+    const rowIndex = state.filteredRowIndexes[filteredRowIndex];
+    const row = state.msa.rows[rowIndex];
+    if (!row) {
+      return null;
+    }
+    const localX = clientX - rect.left;
+    if (localX < 22) {
+      return { row, href: "" };
+    }
+    const clusterKey = rowClusterKey(row.row_key);
+    const baseColor = clusterKey === null ? "#2e261d" : clusterColorForKey(clusterKey);
+    const segments = rowLabelSegments(row, baseColor);
+    const ctx = labelsCanvas.getContext("2d");
+    ctx.font = TEXT_FONT;
+    let currentX = 22;
+    for (const segment of segments) {
+      const width = ctx.measureText(segment.text).width;
+      if (localX >= currentX && localX <= currentX + width) {
+        return { row, href: segment.href || "" };
+      }
+      currentX += width;
+    }
+    return { row, href: "" };
+  }
+
+  function setPartnerFilterValue(partnerDomain) {
+    const nextValue = String(partnerDomain || "").trim() || "__all__";
+    const optionValues = new Set(
+      [...(partnerSelect?.options || [])].map((option) => String(option.value || ""))
+    );
+    state.selectedPartner = optionValues.has(nextValue) ? nextValue : "__all__";
+    if (partnerSelect) {
+      partnerSelect.value = state.selectedPartner;
+    }
+  }
+
+  function ensureRowVisible(rowKey) {
+    if (!state.msa || !gridScroll) {
+      return;
+    }
+    updateFilteredRows();
+    const filteredIndex = state.filteredRowIndexes.findIndex(
+      (rowIndex) => state.msa?.rows?.[rowIndex]?.row_key === rowKey
+    );
+    if (filteredIndex < 0) {
+      return;
+    }
+    const rowTop = filteredIndex * ROW_HEIGHT;
+    const rowBottom = rowTop + ROW_HEIGHT;
+    const viewTop = gridScroll.scrollTop;
+    const viewBottom = viewTop + gridScroll.clientHeight;
+    if (rowTop < viewTop) {
+      gridScroll.scrollTop = rowTop;
+    } else if (rowBottom > viewBottom) {
+      gridScroll.scrollTop = Math.max(0, rowBottom - gridScroll.clientHeight);
+    }
+  }
+
+  function pfamEntryUrl(accession) {
+    return `https://www.ebi.ac.uk/interpro/entry/pfam/${encodeURIComponent(String(accession || "").trim())}/`;
+  }
+
+  function createPfamEntryLink(accession, label, className = "pfam-info-link") {
+    const link = document.createElement("a");
+    link.className = className;
+    link.href = pfamEntryUrl(accession);
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = label;
+    return link;
+  }
+
+  function appendDescriptionWithPfamLinks(container, text) {
+    const descriptionText = String(text || "");
+    if (!descriptionText) {
+      return;
+    }
+    const pattern = /\[pfam:\s*(PF\d+)\]/gi;
+    let cursor = 0;
+    for (const match of descriptionText.matchAll(pattern)) {
+      const matchStart = match.index ?? 0;
+      const matchEnd = matchStart + match[0].length;
+      if (matchStart > cursor) {
+        container.appendChild(document.createTextNode(descriptionText.slice(cursor, matchStart)));
+      }
+      const accession = String(match[1] || "").toUpperCase();
+      container.appendChild(createPfamEntryLink(accession, accession));
+      cursor = matchEnd;
+    }
+    if (cursor < descriptionText.length) {
+      container.appendChild(document.createTextNode(descriptionText.slice(cursor)));
+    }
+  }
+
+  function histogramTargetsForBin(bin) {
+    const targets = [];
+    for (const { partnerDomain, rowKey, rowPayload } of filteredInterfaceEntries(state.interface?.data)) {
+      const interfaceSize = interfaceSizeFromPayload(rowPayload);
+      if (interfaceSize < bin.start || interfaceSize > bin.end) {
+        continue;
+      }
+      targets.push({
+        rowKey: interactionRowKey(rowKey, partnerDomain),
+        partnerDomain: String(partnerDomain || ""),
+      });
+    }
+    return targets;
+  }
+
+  async function showRandomInterfaceForHistogramBin(bin) {
+    if (!state.interface?.data || !state.msa) {
+      appStatus.textContent = "Load a filtered interface selection before using the histogram.";
+      return;
+    }
+    const candidates = histogramTargetsForBin(bin);
+    if (candidates.length === 0) {
+      appStatus.textContent = "No filtered interfaces are available in that histogram range.";
+      return;
+    }
+    const target = candidates[Math.floor(Math.random() * candidates.length)];
+    setLoading(5, "Loading selection", "Picking a random interface from the histogram");
+    try {
+      const selectedRow = selectRowByKey(String(target.rowKey || ""));
+      if (!selectedRow) {
+        throw new Error("The sampled interface is no longer available in the filtered selection.");
+      }
+      await loadInteractiveStructure();
+      setLoading(100, "Structure ready", String(selectedRow.display_row_key || selectedRow.row_key || ""));
+      window.setTimeout(hideLoading, 250);
+    } catch (error) {
+      handleStructureLoadFailure(error);
+    }
+  }
+
+  function renderPfamInfoHistogram() {
+    const histogramEntries = histogramEntriesFromInterfacePayload(state.interface?.data);
+    const section = document.createElement("section");
+    section.className = "pfam-info-histogram";
+
+    const title = document.createElement("div");
+    title.className = "pfam-info-histogram-title";
+    title.textContent = "Interface size";
+    section.appendChild(title);
+
+    if (!state.interface?.data) {
+      const empty = document.createElement("p");
+      empty.className = "pfam-info-histogram-empty";
+      empty.textContent = "Loading filtered interface-size data…";
+      section.appendChild(empty);
+      return section;
+    }
+
+    if (histogramEntries.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "pfam-info-histogram-empty";
+      empty.textContent = "No local interfaces pass the current minimum-size filter.";
+      section.appendChild(empty);
+      return section;
+    }
+
+    const chartBins = compressHistogramEntries(histogramEntries);
+    const maxCount = Math.max(...chartBins.map((entry) => entry.count), 1);
+    const chart = document.createElement("div");
+    chart.className = "pfam-info-histogram-chart";
+    chart.style.gridTemplateColumns = `repeat(${chartBins.length}, minmax(0, 1fr))`;
+    if (chartBins.length > 16) {
+      chart.classList.add("dense");
+    }
+
+    for (const bin of chartBins) {
+      const column = document.createElement("button");
+      column.type = "button";
+      column.className = "pfam-info-histogram-column";
+      column.title = `${histogramBinLabel(bin)} residues: ${formatPfamCount(bin.count)} filtered interfaces`;
+      column.addEventListener("click", () => {
+        void showRandomInterfaceForHistogramBin(bin);
+      });
+
+      const barArea = document.createElement("div");
+      barArea.className = "pfam-info-histogram-bar-area";
+
+      const bar = document.createElement("div");
+      bar.className = "pfam-info-histogram-bar";
+      bar.style.height = `${Math.max(6, (bin.count / maxCount) * 100)}%`;
+      barArea.appendChild(bar);
+
+      const label = document.createElement("span");
+      label.className = "pfam-info-histogram-bin-label";
+      label.textContent = histogramBinLabel(bin);
+
+      column.appendChild(barArea);
+      column.appendChild(label);
+      chart.appendChild(column);
+    }
+    section.appendChild(chart);
+
+    const footer = document.createElement("div");
+    footer.className = "pfam-info-histogram-axis";
+    const minLabel = document.createElement("span");
+    minLabel.textContent = histogramBinLabel(chartBins[0]);
+    const midLabel = document.createElement("span");
+    midLabel.textContent = histogramBinLabel(chartBins[Math.floor(chartBins.length / 2)]);
+    const maxLabel = document.createElement("span");
+    maxLabel.textContent = histogramBinLabel(chartBins[chartBins.length - 1]);
+    footer.appendChild(minLabel);
+    footer.appendChild(midLabel);
+    footer.appendChild(maxLabel);
+    section.appendChild(footer);
+
+    return section;
+  }
+
+  function renderInfoPanel() {
+    if (!infoRoot) {
+      return;
+    }
+    infoRoot.innerHTML = "";
+    const selected = currentMsaOption();
+    if (!selected) {
+      const empty = document.createElement("div");
+      empty.className = "pfam-info-empty";
+      const title = document.createElement("strong");
+      title.textContent = "Choose a PFAM family";
+      const copy = document.createElement("p");
+      copy.textContent =
+        "Select a family from the picker to view its description, key counts, and the official Pfam page link.";
+      empty.appendChild(title);
+      empty.appendChild(copy);
+      infoRoot.appendChild(empty);
+      return;
+    }
+
+    const pfamId = currentPfamId();
+    const cachedInfo = state.pfamInfoByPfamId?.[pfamId] || null;
+    const info = state.pfamInfo?.pfam_id === pfamId ? state.pfamInfo : cachedInfo;
+    const localSummary = state.interface?.data ? localInterfaceSummary(state.interface.data) : null;
+    const datasetDomainCount = Number(localSummary?.datasetDomains ?? selected.stats?.dataset_domains);
+    const datasetInterfaceCount = Number(localSummary?.datasetInterfaces ?? selected.stats?.dataset_interfaces);
+    const pfamDomainCount = Number(info?.stats?.matches);
+    const shell = document.createElement("div");
+    shell.className = "pfam-info-shell";
+
+    const hero = document.createElement("section");
+    hero.className = "pfam-info-hero";
+    const kicker = document.createElement("span");
+    kicker.className = "pfam-info-kicker";
+    kicker.textContent = "PFAM FAMILY";
+    hero.appendChild(kicker);
+
+    const title = document.createElement("h2");
+    title.className = "pfam-info-title";
+    const titleLink = createPfamEntryLink(
+      pfamId,
+      String(
+      info?.display_name || pfamDisplayName(selected) || pfamId
+      ),
+      "pfam-info-link pfam-info-title-link"
+    );
+    title.appendChild(titleLink);
+    hero.appendChild(title);
+
+    const titleMeta = document.createElement("div");
+    titleMeta.className = "pfam-info-title-meta";
+    const accession = document.createElement("span");
+    accession.className = "pfam-info-accession";
+    accession.textContent = pfamId;
+    titleMeta.appendChild(accession);
+    if (String(info?.short_name || "").trim()) {
+      const shortName = document.createElement("span");
+      shortName.className = "pfam-info-chip";
+      shortName.textContent = String(info.short_name);
+      titleMeta.appendChild(shortName);
+    }
+    if (String(info?.type || "").trim()) {
+      const typeChip = document.createElement("span");
+      typeChip.className = "pfam-info-chip";
+      typeChip.textContent = String(info.type);
+      titleMeta.appendChild(typeChip);
+    }
+    hero.appendChild(titleMeta);
+
+    const description = document.createElement("p");
+    description.className = "pfam-info-description";
+    const descriptionText = String(info?.description || "").trim();
+    if (descriptionText) {
+      appendDescriptionWithPfamLinks(description, descriptionText);
+    } else {
+      description.textContent = state.pfamInfoLoading
+        ? "Loading family description from InterPro…"
+        : "No description available.";
+    }
+    hero.appendChild(description);
+
+    const status = document.createElement("div");
+    status.className = "pfam-info-status";
+    if (state.pfamInfoLoading) {
+      status.textContent = "Loading Pfam family details…";
+      hero.appendChild(status);
+    } else if (String(state.pfamInfoError || "").trim()) {
+      status.classList.add("error");
+      status.textContent = state.pfamInfoError;
+      hero.appendChild(status);
+    }
+    shell.appendChild(hero);
+    shell.appendChild(renderPfamInfoHistogram());
+
+    const metaGrid = document.createElement("section");
+    metaGrid.className = "pfam-info-meta-grid";
+    if (Number.isFinite(datasetDomainCount)) {
+      appendPfamInfoMetaItem(
+        metaGrid,
+        "Dataset domains",
+        Number.isFinite(pfamDomainCount) && pfamDomainCount >= 0
+          ? `${formatPfamCount(datasetDomainCount)} of ${formatPfamCount(pfamDomainCount)} Pfam domains`
+          : formatPfamCount(datasetDomainCount)
+      );
+    }
+    appendPfamInfoMetaItem(metaGrid, "Integrated InterPro", info?.integrated_interpro);
+    if (info?.set_info) {
+      appendPfamInfoMetaItem(
+        metaGrid,
+        "Clan / set",
+        [info.set_info.name, info.set_info.accession].filter(Boolean).join(" | ")
+      );
+    }
+    if (info?.representative_structure) {
+      appendPfamInfoMetaItem(
+        metaGrid,
+        "Representative structure",
+        [info.representative_structure.accession, info.representative_structure.name]
+          .filter(Boolean)
+          .join(" | ")
+      );
+    }
+    if (metaGrid.children.length > 0) {
+      shell.appendChild(metaGrid);
+    }
+
+    const statsGrid = document.createElement("section");
+    statsGrid.className = "pfam-info-stats-grid";
+    appendPfamInfoStat(statsGrid, "Interfaces in dataset", datasetInterfaceCount);
+    appendPfamInfoStat(statsGrid, "Pfam domains", info?.stats?.matches);
+    appendPfamInfoStat(statsGrid, "Pfam proteins", info?.stats?.proteins);
+    appendPfamInfoStat(statsGrid, "Proteomes", info?.stats?.proteomes);
+    appendPfamInfoStat(statsGrid, "Taxa", info?.stats?.taxa);
+    appendPfamInfoStat(statsGrid, "Structures", info?.stats?.structures);
+    appendPfamInfoStat(statsGrid, "AlphaFold models", info?.stats?.alphafold_models);
+    appendPfamInfoStat(
+      statsGrid,
+      "Domain architectures",
+      info?.stats?.domain_architectures
+    );
+    if (statsGrid.children.length > 0) {
+      shell.appendChild(statsGrid);
+    }
+
+    infoRoot.appendChild(shell);
+  }
+
+  async function ensurePfamInfoLoaded() {
+    const pfamId = currentPfamId();
+    if (!pfamId) {
+      clearPfamInfoState();
+      renderInfoPanel();
+      return null;
+    }
+    const cachedInfo = state.pfamInfoByPfamId?.[pfamId] || null;
+    if (cachedInfo) {
+      state.pfamInfo = cachedInfo;
+      state.pfamInfoError = "";
+      state.pfamInfoLoading = false;
+      renderInfoPanel();
+      return cachedInfo;
+    }
+    const requestId = state.pfamInfoRequestId + 1;
+    state.pfamInfoRequestId = requestId;
+    state.pfamInfoLoading = true;
+    state.pfamInfoError = "";
+    state.pfamInfo = null;
+    renderInfoPanel();
+    try {
+      const payload = await fetchJson(`/api/pfam-info?pfam_id=${encodeURIComponent(pfamId)}`);
+      if (requestId !== state.pfamInfoRequestId || currentPfamId() !== pfamId) {
+        return payload;
+      }
+      state.pfamInfoByPfamId = {
+        ...(state.pfamInfoByPfamId || {}),
+        [pfamId]: payload,
+      };
+      state.pfamInfo = payload;
+      state.pfamInfoError = "";
+      return payload;
+    } catch (error) {
+      if (requestId !== state.pfamInfoRequestId || currentPfamId() !== pfamId) {
+        return null;
+      }
+      state.pfamInfoError = error.message;
+      state.pfamInfo = cachedInfo;
+      return null;
+    } finally {
+      if (requestId === state.pfamInfoRequestId && currentPfamId() === pfamId) {
+        state.pfamInfoLoading = false;
+        renderInfoPanel();
+      }
+    }
+  }
+
+  function pfamDisplayName(option) {
+    const displayName = String(option?.displayName || "").trim();
+    if (!displayName || displayName.toLowerCase() === String(option?.pfamId || "").trim().toLowerCase()) {
+      return String(option?.pfamId || "");
+    }
+    return displayName;
+  }
+
+  function pfamShowsSeparateAccession(option) {
+    const displayName = String(option?.displayName || "").trim().toLowerCase();
+    const pfamId = String(option?.pfamId || "").trim().toLowerCase();
+    return Boolean(displayName) && displayName !== pfamId;
+  }
+
+  function appendPfamLabel(container, option) {
+    const label = document.createElement("span");
+    label.className = "msa-picker-option-label";
+
+    const name = document.createElement("span");
+    name.className = "msa-picker-option-name";
+    name.textContent = pfamDisplayName(option);
+    label.appendChild(name);
+
+    if (pfamShowsSeparateAccession(option)) {
+      const accession = document.createElement("span");
+      accession.className = "msa-picker-option-accession";
+      accession.textContent = option.pfamId;
+      label.appendChild(accession);
+    }
+
+    container.appendChild(label);
+  }
+
+  function buildMsaOptionsFromFiles(files) {
+    return [...new Set((files?.pairs || []).map((pair) => pair.msaFile))]
+      .sort()
+      .map((name) => ({
+        value: name,
+        pfamId: name.replace(/\.json$/i, ""),
+        stats: files?.pfam_option_stats?.[name.replace(/\.json$/i, "")] || null,
+        displayName:
+          files?.pfam_option_stats?.[name.replace(/\.json$/i, "")]?.display_name || "",
+      }));
+  }
+
+  function applyFilesPayload(files, { preserveSelection = true } = {}) {
+    const previousSelection = preserveSelection ? msaSelect.value : "";
+    state.files = files;
+    state.files.pairs = buildPairs(state.files);
+    state.msaOptions = buildMsaOptionsFromFiles(state.files);
+    setOptions(
+      msaSelect,
+      [{ value: "", label: "Select MSA" }].concat(
+        state.msaOptions.map((option) => ({
+          value: option.value,
+          label: pfamShowsSeparateAccession(option)
+            ? `${pfamDisplayName(option)} (${option.pfamId})`
+            : pfamDisplayName(option),
+        }))
+      )
+    );
+    if (previousSelection && state.msaOptions.some((option) => option.value === previousSelection)) {
+      msaSelect.value = previousSelection;
+    }
+  }
+
+  function hasMissingPfamDisplayNames() {
+    return (state.msaOptions || []).some(
+      (option) => !String(option?.displayName || "").trim() && String(option?.pfamId || "").trim()
+    );
+  }
+
+  async function pollPfamMetadataIfNeeded() {
+    if (!hasMissingPfamDisplayNames() || pfamMetadataPollAttempts >= PFAM_METADATA_POLL_MAX_ATTEMPTS) {
+      return;
+    }
+    window.clearTimeout(pfamMetadataPollHandle);
+    pfamMetadataPollHandle = window.setTimeout(async () => {
+      pfamMetadataPollAttempts += 1;
+      try {
+        const files = await fetchJson("/api/files");
+        files.pairs = buildPairs(files);
+        const nextOptions = buildMsaOptionsFromFiles(files);
+        const namesImproved = nextOptions.some(
+          (option) =>
+            String(option.displayName || "").trim() &&
+            !(state.msaOptions || []).some(
+              (current) =>
+                current.value === option.value &&
+                String(current.displayName || "").trim() === String(option.displayName || "").trim()
+            )
+        );
+        if (namesImproved) {
+          applyFilesPayload(files);
+          updatePairedOptions();
+          syncMsaPickerSelection();
+          renderMsaPickerOptions(msaPickerSearch.value || "");
+        } else {
+          state.files = files;
+          state.files.pairs = files.pairs;
+        }
+      } catch (_error) {
+        // Keep the current labels and try again later.
+      }
+      if (hasMissingPfamDisplayNames()) {
+        void pollPfamMetadataIfNeeded();
+      }
+    }, PFAM_METADATA_POLL_DELAY_MS);
+  }
+
   function syncMsaPickerSelection() {
     msaPickerSelection.innerHTML = "";
     const selected = currentMsaOption();
@@ -386,10 +1132,7 @@ export function createMsaViewController({
       return;
     }
 
-    const name = document.createElement("span");
-    name.className = "msa-picker-option-name";
-    name.textContent = selected.pfamId;
-    msaPickerSelection.appendChild(name);
+    appendPfamLabel(msaPickerSelection, selected);
 
     const badges = pfamBadges(selected.stats);
     if (badges.length > 0) {
@@ -415,7 +1158,10 @@ export function createMsaViewController({
     msaPickerOptions.innerHTML = "";
 
     const options = (state.msaOptions || []).filter((option) => {
-      if (query && !option.pfamId.toLowerCase().includes(query)) {
+      const searchable = [option.pfamId, option.displayName]
+        .map((value) => String(value || "").toLowerCase())
+        .join(" ");
+      if (query && !searchable.includes(query)) {
         return false;
       }
       return optionMatchesBadgeFilters(option);
@@ -438,10 +1184,7 @@ export function createMsaViewController({
       }
       button.dataset.value = option.value;
 
-      const name = document.createElement("span");
-      name.className = "msa-picker-option-name";
-      name.textContent = option.pfamId;
-      button.appendChild(name);
+      appendPfamLabel(button, option);
 
       const badges = pfamBadges(option.stats);
       if (badges.length > 0) {
@@ -954,8 +1697,13 @@ export function createMsaViewController({
         ctx.fill();
       }
       const clusterKey = rowClusterKey(row.row_key);
-      ctx.fillStyle = clusterKey === null ? "#2e261d" : clusterColorForKey(clusterKey);
-      ctx.fillText(row.display_row_key || row.row_key, 22, y + ROW_HEIGHT / 2);
+      const baseColor = clusterKey === null ? "#2e261d" : clusterColorForKey(clusterKey);
+      let currentX = 22;
+      for (const segment of rowLabelSegments(row, baseColor)) {
+        ctx.fillStyle = segment.color;
+        ctx.fillText(segment.text, currentX, y + ROW_HEIGHT / 2);
+        currentX += ctx.measureText(segment.text).width;
+      }
     }
   }
 
@@ -1137,7 +1885,13 @@ export function createMsaViewController({
 
   async function loadCurrentSelection() {
     syncMsaSelectionInUrl(msaSelect.value);
-    if (!msaSelect.value || !interfaceSelect.value) {
+    if (!msaSelect.value) {
+      clearPfamInfoState();
+      clearViewer();
+      return;
+    }
+    void ensurePfamInfoLoaded();
+    if (!interfaceSelect.value) {
       clearViewer();
       return;
     }
@@ -1157,9 +1911,12 @@ export function createMsaViewController({
     renderMsaClusterLegend();
     renderColumnsClusterLegend();
     updateStats();
+    renderInfoPanel();
     syncMsaPanelView();
     syncPaneHeights();
-    if (activeMsaPanelView() === "msa") {
+    if (activeMsaPanelView() === "info") {
+      // No canvas work needed for the static family info panel.
+    } else if (activeMsaPanelView() === "msa") {
       resizeCanvases();
       drawGrid();
     } else if (activeMsaPanelView() === "embeddings") {
@@ -1396,24 +2153,8 @@ export function createMsaViewController({
   }
 
   async function initialize() {
-    state.files = await fetchJson("/api/files");
-    state.files.pairs = buildPairs(state.files);
-    state.msaOptions = [...new Set(state.files.pairs.map((pair) => pair.msaFile))]
-      .sort()
-      .map((name) => ({
-        value: name,
-        pfamId: name.replace(/\.json$/i, ""),
-        stats: state.files.pfam_option_stats?.[name.replace(/\.json$/i, "")] || null,
-      }));
-    setOptions(
-      msaSelect,
-      [{ value: "", label: "Select MSA" }].concat(
-        state.msaOptions.map((option) => ({
-          value: option.value,
-          label: option.pfamId,
-        }))
-      )
-    );
+    const files = await fetchJson("/api/files");
+    applyFilesPayload(files, { preserveSelection: false });
     setOptions(partnerSelect, [{ value: "__all__", label: "All partners" }], "__all__");
     const msaFromUrl = msaFileFromUrl();
     if (msaFromUrl) {
@@ -1422,6 +2163,9 @@ export function createMsaViewController({
     }
     syncMsaPickerSelection();
     renderMsaPickerOptions();
+    if (msaFromUrl) {
+      void ensurePfamInfoLoaded();
+    }
     syncRepresentativeLensControls();
     syncMsaPanelView();
     syncSelectionSettingsUi();
@@ -1430,6 +2174,9 @@ export function createMsaViewController({
     );
     syncEmbeddingSettingsUi();
     clearViewer();
+    if (hasMissingPfamDisplayNames()) {
+      void pollPfamMetadataIfNeeded();
+    }
     if (msaFromUrl) {
       await loadCurrentSelection();
     }
@@ -1504,6 +2251,7 @@ export function createMsaViewController({
     closeMsaPicker,
     displayAlignmentLength,
     drawGrid,
+    ensurePfamInfoLoaded,
     hideLoading,
     initialize,
     handleInitializeError,
@@ -1514,6 +2262,7 @@ export function createMsaViewController({
     renderMsaPickerOptions,
     scheduleLayoutSync,
     selectFilteredRow,
+    labelHitTargetAtClientPoint,
     selectRowByKey,
     setDetails,
     setLoading,
