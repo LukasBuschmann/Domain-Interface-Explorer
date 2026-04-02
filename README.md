@@ -2,20 +2,37 @@
 
 Domain Interface Explorer (DIE) is a browser-based tool for inspecting protein domain-domain interfaces in aligned sequence context. It lets you compare partner-specific interaction patterns, view conservation across aligned columns, cluster similar interfaces, and open linked structure previews for selected interfaces.
 
+## Getting the Repo
+
+If you use Git, clone the repository and enter the project directory:
+
+```bash
+git clone git@github.com:LukasBuschmann/Domain-Interface-Explorer.git
+cd Domain-Interface-Explorer
+```
+
+To update it later:
+
+```bash
+git pull
+```
+
+_If you do not use Git, open the repository on GitHub, choose `Code`, then `Download ZIP`. Extract the archive and open the extracted `Domain-Interface-Explorer` folder. To update later, download a fresh ZIP._
+
 ## Requirements
 
 - Conda or Mamba
-
-Rust is no longer required to run the server. It is only needed if you want to rebuild the
-bundled `interface_distance` helper archives from source.
+- _If you do not have Conda yet, install a minimal distribution first. Official install docs:_
+  - _Windows: https://docs.conda.io/projects/conda/en/stable/user-guide/install/windows.html_
+  - _macOS: https://docs.conda.io/projects/conda/en/stable/user-guide/install/macos.html_
+  - _Linux: https://docs.conda.io/projects/conda/en/stable/user-guide/install/linux.html_
 
 ## Installation
 
 Create the Conda environment from the environment file in this repository:
 
 ```bash
-conda env create -f environment.yml
-conda activate domain_interface_explorer
+conda env create -f environment.yml -p .conda_env
 ```
 
 ## Running the Server
@@ -23,6 +40,7 @@ conda activate domain_interface_explorer
 From the repository root:
 
 ```bash
+conda activate ./.conda_env
 python -m domain_interface_explorer.server
 ```
 
@@ -36,7 +54,6 @@ By default, DIE uses:
 
 - `./data` for interface JSON input
 - `./cache` for generated caches
-- the installed `pymol-open-source` Python package for optional alignment-based structure outputs
 
 The bundled sample dataset contains 5 interface files totaling about 10 MB, so the default startup command works out of the box.
 
@@ -72,6 +89,16 @@ python -m domain_interface_explorer.server \
   --cache-dir /path/to/cache
 ```
 
+## Adding Data
+
+To add new interface datasets, place the JSON files into the default data directory:
+
+```text
+./data
+```
+
+You can also point the server at a different directory with `--interface-dir`.
+
 ## Quick Feature Tour
 
 - Interface picker: Choose a domain-domain interface dataset from the loaded JSON files.
@@ -88,13 +115,6 @@ python -m domain_interface_explorer.server \
 
 ## Operational Notes
 
-- On supported Linux, Windows, and macOS systems, the server selects a prebundled
-  `interface_distance` binary from `interface_distance/bin/` and validates that it runs on the
-  current machine during startup.
-- If no working bundled binary is available for the current system, the server prints a warning and
-  falls back to the Python overlap-distance implementation.
-- If the embedded PyMOL API is unavailable, the server prints a warning and falls back to raw,
-  unaligned structure models.
 - The first structure request for a protein may download AlphaFold data from EBI.
 - Cache files are safe to delete if you want DIE to recompute them.
 - Start the server with `python -m domain_interface_explorer.server`, not by running `server.py` directly.
