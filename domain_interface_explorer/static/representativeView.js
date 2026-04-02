@@ -22,6 +22,95 @@ export function createRepresentativeViewController({
   visibleRepresentativeClusters,
   partnerColor,
 }) {
+  function uniprotEntryUrl(accession) {
+    return `https://www.uniprot.org/uniprotkb/${encodeURIComponent(String(accession || "").trim())}`;
+  }
+
+  function pfamEntryUrl(accession) {
+    return `https://www.ebi.ac.uk/interpro/entry/pfam/${encodeURIComponent(String(accession || "").trim())}/`;
+  }
+
+  function createExternalLink(label, href, className) {
+    const link = document.createElement("a");
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.className = className;
+    link.textContent = label;
+    return link;
+  }
+
+  function currentPfamId() {
+    const fromState = String(state.interface?.pfam_id || "").trim();
+    if (fromState) {
+      return fromState;
+    }
+    return String(interfaceSelect.value || "").split("_", 1)[0] || "";
+  }
+
+  function partnerPfamId(row, payload) {
+    const fromRow = String(row?.partner_domain || "").trim();
+    if (fromRow && fromRow !== "__all__") {
+      return fromRow;
+    }
+    const fromPayload = String(payload?.partner || "").trim();
+    if (fromPayload && fromPayload !== "__all__") {
+      return fromPayload;
+    }
+    const matchedPartner = Array.isArray(payload?.matched_partners) ? payload.matched_partners[0] : "";
+    return String(matchedPartner || "").trim();
+  }
+
+  function renderRepresentativeCopyContent(row, payload) {
+    const copy = elements.representativeCopy;
+    const uniprotId = String(payload?.uniprot_id || row?.protein_id || "").trim();
+    const mainPfamId = currentPfamId();
+    const partnerId = partnerPfamId(row, payload);
+    copy.replaceChildren();
+
+    if (!uniprotId && !mainPfamId && !partnerId) {
+      copy.textContent = representativeRowLabel(row);
+      return;
+    }
+
+    const content = document.createElement("span");
+    content.className = "structure-title-line";
+    if (uniprotId) {
+      content.appendChild(
+        createExternalLink(
+          uniprotId,
+          uniprotEntryUrl(uniprotId),
+          "structure-header-link structure-header-link-protein"
+        )
+      );
+    }
+    if (mainPfamId) {
+      if (content.childNodes.length > 0) {
+        content.appendChild(document.createTextNode(" | "));
+      }
+      content.appendChild(
+        createExternalLink(
+          mainPfamId,
+          pfamEntryUrl(mainPfamId),
+          "structure-header-link structure-header-link-main-pfam"
+        )
+      );
+    }
+    if (partnerId) {
+      if (content.childNodes.length > 0) {
+        content.appendChild(document.createTextNode(" | "));
+      }
+      content.appendChild(
+        createExternalLink(
+          partnerId,
+          pfamEntryUrl(partnerId),
+          "structure-header-link structure-header-link-partner-pfam"
+        )
+      );
+    }
+    copy.appendChild(content);
+  }
+
   function representativeRowKey(row) {
     return String(row?.interface_row_key || row?.row_key || "");
   }
@@ -438,7 +527,7 @@ export function createRepresentativeViewController({
     state.representativeRenderedRowKey = representative.row.row_key;
     renderRepresentativeClusterLegend(clusterLensData);
 
-    elements.representativeCopy.textContent = `Representative row: ${representativeRowLabel(representative.row)}`;
+    renderRepresentativeCopyContent(representative.row, representative.payload);
     syncColumnLegends();
   }
 
@@ -458,7 +547,7 @@ export function createRepresentativeViewController({
       return;
     }
 
-    elements.representativeCopy.textContent = `Loading representative: ${representativeRowLabel(row)}`;
+    elements.representativeCopy.textContent = `Loading ${representativeRowLabel(row)}`;
     const requestId = state.representativeRequestId + 1;
     state.representativeRequestId = requestId;
     const requestRowKey = representativeRowKey(row);
