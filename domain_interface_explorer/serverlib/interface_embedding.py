@@ -349,10 +349,13 @@ def interface_filter_settings_key(settings: dict[str, object] | None = None) -> 
     return json.dumps(normalized, sort_keys=True)
 
 
-def interface_residue_count(payload: dict[str, object]) -> int:
-    raw_values = payload.get("interface_residues_a")
+def interface_residue_count(payload: dict[str, object], side: str = "a") -> int:
+    normalized_side = str(side or "a").lower()
+    if normalized_side not in {"a", "b"}:
+        raise ValueError("interface side must be 'a' or 'b'")
+    raw_values = payload.get(f"interface_residues_{normalized_side}")
     if raw_values is None:
-        raw_values = payload.get("interface_msa_columns_a", [])
+        raw_values = payload.get(f"interface_msa_columns_{normalized_side}", [])
     residue_ids: set[int] = set()
     for value in raw_values or []:
         try:
@@ -377,7 +380,11 @@ def filter_interface_payload(
         kept_rows = {
             row_key: row_payload
             for row_key, row_payload in rows.items()
-            if isinstance(row_payload, dict) and interface_residue_count(row_payload) >= min_interface_size
+            if (
+                isinstance(row_payload, dict)
+                and interface_residue_count(row_payload, "a") >= min_interface_size
+                and interface_residue_count(row_payload, "b") >= min_interface_size
+            )
         }
         if kept_rows:
             filtered_payload[str(partner_domain)] = kept_rows

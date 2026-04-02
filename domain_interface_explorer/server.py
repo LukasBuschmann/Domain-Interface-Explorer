@@ -36,7 +36,9 @@ from domain_interface_explorer.serverlib.interface_embedding import (
 )
 from domain_interface_explorer.serverlib.stats_service import (
     load_cached_pfam_option_stats,
+    load_or_fetch_pfam_info,
     load_or_compute_clean_column_identity,
+    start_background_pfam_metadata_refresh,
 )
 from domain_interface_explorer.serverlib.structure_service import (
     aligned_model_cache_key,
@@ -93,6 +95,9 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/interface":
             self._handle_interface(parse_qs(parsed.query))
+            return
+        if parsed.path == "/api/pfam-info":
+            self._handle_pfam_info(parse_qs(parsed.query))
             return
         if parsed.path == "/api/embedding":
             self._handle_embedding(parse_qs(parsed.query))
@@ -194,6 +199,35 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 "data": filtered_payload,
             }
         )
+
+    def _handle_pfam_info(self, query: dict[str, list[str]]) -> None:
+        pfam_id = query.get("pfam_id", [""])[0]
+        if not pfam_id:
+            self._send_json({"error": "missing pfam_id"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            pfam_info = load_or_fetch_pfam_info(self.cache_dir, pfam_id)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except HTTPError as exc:
+            status = (
+                HTTPStatus.NOT_FOUND
+                if exc.code == HTTPStatus.NOT_FOUND
+                else HTTPStatus.BAD_GATEWAY
+            )
+            self._send_json(
+                {"error": f"failed to load PFAM info for {pfam_id}: {exc.reason}"},
+                status=status,
+            )
+            return
+        except URLError as exc:
+            self._send_json(
+                {"error": f"failed to load PFAM info for {pfam_id}: {exc.reason}"},
+                status=HTTPStatus.BAD_GATEWAY,
+            )
+            return
+        self._send_json(pfam_info)
 
     def _handle_embedding(self, query: dict[str, list[str]]) -> None:
         filename = query.get("file", [""])[0]
@@ -606,6 +640,7 @@ def main() -> None:
         f"Serving Domain Interface Explorer at http://{args.host}:{args.port} "
         f"(interface-dir={args.interface_dir}, cache-dir={args.cache_dir}, pymol-bin={args.pymol_bin})"
     )
+    start_background_pfam_metadata_refresh(args.cache_dir.resolve(), pfam_option_stats)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
