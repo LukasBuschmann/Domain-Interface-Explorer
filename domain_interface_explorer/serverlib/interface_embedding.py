@@ -5,9 +5,17 @@ import json
 import math
 import random
 import tempfile
+import threading
+from collections import OrderedDict
+from concurrent.futures import Future
 from pathlib import Path
 
-from interface_distance import compute_interface_distance_matrix
+from interface_distance import (
+    compute_interface_distance_matrix,
+    default_metadata_path,
+    load_distance_matrix,
+    load_metadata,
+)
 
 from .config import (
     CLUSTERING_CACHE_VERSION,
@@ -28,9 +36,12 @@ from .config import (
     DEFAULT_TSNE_RANDOM_STATE,
     DISTANCE_DATA_CACHE_LIMIT,
     EMBEDDING_CACHE_VERSION,
+    INTERFACE_DISTANCE_CACHE_VERSION,
 )
 
-DISTANCE_DATA_CACHE: dict[str, dict[str, object]] = {}
+DISTANCE_DATA_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
+DISTANCE_DATA_CACHE_LOCK = threading.Lock()
+DISTANCE_DATA_IN_FLIGHT: dict[str, Future] = {}
 MAX_DISTANCE_MATRIX_ROWS = 900
 
 
@@ -408,6 +419,38 @@ def distance_data_cache_key(
     )
 
 
+def interface_distance_cache_path(
+    cache_dir: Path,
+    interface_path: Path,
+    distance_metric: str,
+    interface_filter_settings: dict[str, object] | None = None,
+) -> Path:
+    key = hashlib.sha1(
+        (
+            INTERFACE_DISTANCE_CACHE_VERSION
+            + "|"
+            + distance_data_cache_key(interface_path, distance_metric, interface_filter_settings)
+        ).encode("utf-8")
+    ).hexdigest()
+    return cache_dir / "interface_distance" / f"{key}.bin"
+
+
+def interface_distance_cache_matches_entries(
+    metadata_rows: list[object],
+    entries: list[dict[str, object]],
+) -> bool:
+    if len(metadata_rows) != len(entries):
+        return False
+    for metadata_row, entry in zip(metadata_rows, entries, strict=True):
+        if (
+            str(metadata_row.partner_domain) != str(entry["partner_domain"])
+            or str(metadata_row.row_key) != str(entry["row_key"])
+            or int(metadata_row.column_count) != len(entry["columns"])
+        ):
+            return False
+    return True
+
+
 def compute_interface_distance_data(interface_payload: dict[str, object]) -> dict[str, object]:
     try:
         import numpy as np
@@ -418,6 +461,7 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
         ) from exc
     distance_metric = str(interface_payload["distance_metric"])
     interface_path = interface_payload.get("interface_path")
+    cache_dir = interface_payload.get("cache_dir")
     raw_interface_payload = interface_payload["payload"]
     interface_filter_settings = interface_payload.get("interface_filter_settings")
     entries = load_interface_entries(raw_interface_payload)
@@ -427,7 +471,14 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
     if distance_metric == "overlap":
         distance_matrix = compute_interface_distance_matrix_for_payload(
             raw_interface_payload,
+            entries=entries,
             interface_path=interface_path if isinstance(interface_path, Path) else None,
+            cache_dir=cache_dir if isinstance(cache_dir, Path) else None,
+            interface_filter_settings=(
+                interface_filter_settings
+                if isinstance(interface_filter_settings, dict) or interface_filter_settings is None
+                else None
+            ),
         )
     else:
         distance_matrix = pairwise_distances(indicator_matrix, metric=distance_metric).astype(
@@ -445,37 +496,90 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
 def compute_interface_distance_matrix_for_payload(
     interface_payload: dict[str, object],
     *,
+    entries: list[dict[str, object]],
     interface_path: Path | None = None,
+    cache_dir: Path | None = None,
+    interface_filter_settings: dict[str, object] | None = None,
 ) -> object:
+    cache_output_file: Path | None = None
+    cache_metadata_file: Path | None = None
+    if cache_dir is not None and interface_path is not None:
+        cache_output_file = interface_distance_cache_path(
+            cache_dir,
+            interface_path,
+            "overlap",
+            interface_filter_settings,
+        )
+        cache_metadata_file = default_metadata_path(cache_output_file)
+        if cache_output_file.exists() and cache_metadata_file.exists():
+            try:
+                metadata_rows = load_metadata(cache_metadata_file)
+                if interface_distance_cache_matches_entries(metadata_rows, entries):
+                    return load_distance_matrix(cache_output_file)
+            except (OSError, ValueError):
+                pass
+
     temp_name = interface_path.name if interface_path is not None else "interface_payload.json"
-    with tempfile.TemporaryDirectory(prefix="interface_distance_payload_") as tmp_dir:
+    temp_root = None
+    if cache_dir is not None:
+        temp_root = cache_dir / "interface_distance" / "payloads"
+        temp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="interface_distance_payload_", dir=temp_root) as tmp_dir:
         temp_input_file = Path(tmp_dir) / temp_name
         with temp_input_file.open("w", encoding="utf-8") as handle:
             json.dump(interface_payload, handle)
+        if cache_output_file is not None and cache_metadata_file is not None:
+            return compute_interface_distance_matrix(
+                input_file=temp_input_file,
+                output_file=cache_output_file,
+                metadata_out=cache_metadata_file,
+            )
         return compute_interface_distance_matrix(input_file=temp_input_file)
 
 
 def load_interface_distance_data(
+    cache_dir: Path,
     interface_path: Path,
     interface_payload: dict[str, dict[str, dict]],
     distance_metric: str,
     interface_filter_settings: dict[str, object] | None = None,
 ) -> dict[str, object]:
     cache_key = distance_data_cache_key(interface_path, distance_metric, interface_filter_settings)
-    cached = DISTANCE_DATA_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    distance_data = compute_interface_distance_data(
-        {
-            "payload": interface_payload,
-            "distance_metric": distance_metric,
-            "interface_path": interface_path,
-            "interface_filter_settings": interface_filter_settings,
-        }
-    )
-    DISTANCE_DATA_CACHE[cache_key] = distance_data
-    while len(DISTANCE_DATA_CACHE) > DISTANCE_DATA_CACHE_LIMIT:
-        DISTANCE_DATA_CACHE.pop(next(iter(DISTANCE_DATA_CACHE)))
+    owner = False
+    with DISTANCE_DATA_CACHE_LOCK:
+        cached = DISTANCE_DATA_CACHE.get(cache_key)
+        if cached is not None:
+            DISTANCE_DATA_CACHE.move_to_end(cache_key)
+            return cached
+        future = DISTANCE_DATA_IN_FLIGHT.get(cache_key)
+        if future is None:
+            future = Future()
+            DISTANCE_DATA_IN_FLIGHT[cache_key] = future
+            owner = True
+    if not owner:
+        return future.result()
+    try:
+        distance_data = compute_interface_distance_data(
+            {
+                "payload": interface_payload,
+                "distance_metric": distance_metric,
+                "interface_path": interface_path,
+                "cache_dir": cache_dir,
+                "interface_filter_settings": interface_filter_settings,
+            }
+        )
+    except Exception as exc:
+        with DISTANCE_DATA_CACHE_LOCK:
+            DISTANCE_DATA_IN_FLIGHT.pop(cache_key, None)
+            future.set_exception(exc)
+        raise
+    with DISTANCE_DATA_CACHE_LOCK:
+        DISTANCE_DATA_CACHE[cache_key] = distance_data
+        DISTANCE_DATA_CACHE.move_to_end(cache_key)
+        while len(DISTANCE_DATA_CACHE) > DISTANCE_DATA_CACHE_LIMIT:
+            DISTANCE_DATA_CACHE.popitem(last=False)
+        DISTANCE_DATA_IN_FLIGHT.pop(cache_key, None)
+        future.set_result(distance_data)
     return distance_data
 
 
@@ -725,6 +829,7 @@ def load_or_compute_clustering_payload(
     interface_filter_settings: dict[str, object] | None = None,
 ) -> dict[str, object]:
     distance_data = load_interface_distance_data(
+        cache_dir,
         interface_path,
         interface_payload,
         str(clustering_settings["distance"]),

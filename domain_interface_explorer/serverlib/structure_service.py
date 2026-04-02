@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import os
 import sys
+import tempfile
 import threading
 from dataclasses import dataclass
 from importlib.machinery import PathFinder
@@ -19,6 +21,8 @@ from .config import ALPHAFOLD_API
 _PYMOL_API_LOCK = threading.RLock()
 _PYMOL2_MODULE = None
 _PYMOL2_IMPORT_ERROR: Exception | None = None
+_CACHE_FILE_LOCKS: dict[str, threading.Lock] = {}
+_CACHE_FILE_LOCKS_GUARD = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -69,33 +73,92 @@ def prediction_cache_file(cache_dir: Path, accession: str) -> Path:
     return cache_dir / "alphafold" / accession / "predictions.json"
 
 
+def cache_file_lock(path: Path) -> threading.Lock:
+    key = str(path.resolve())
+    with _CACHE_FILE_LOCKS_GUARD:
+        lock = _CACHE_FILE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _CACHE_FILE_LOCKS[key] = lock
+        return lock
+
+
 def load_cached_predictions(cache_dir: Path, accession: str) -> list[dict] | None:
     cache_file = prediction_cache_file(cache_dir, accession)
     if not cache_file.exists():
         return None
-    with cache_file.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+    try:
+        with cache_file.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def write_text_atomic(destination: Path, text: str) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        handle.write(text)
+        temp_path = Path(handle.name)
+    os.replace(temp_path, destination)
+
+
+def write_bytes_atomic(destination: Path, data: bytes) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "wb",
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        handle.write(data)
+        temp_path = Path(handle.name)
+    os.replace(temp_path, destination)
 
 
 def save_cached_predictions(cache_dir: Path, accession: str, predictions: list[dict]) -> None:
     cache_file = prediction_cache_file(cache_dir, accession)
-    cache_file.parent.mkdir(parents=True, exist_ok=True)
-    with cache_file.open("w", encoding="utf-8") as handle:
-        json.dump(predictions, handle)
+    write_text_atomic(cache_file, json.dumps(predictions))
 
 
 def download_file(url: str, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
     request = Request(url, headers={"User-Agent": "domain-interface-explorer/1.0"})
-    with urlopen(request, timeout=60) as response, destination.open("wb") as handle:
-        handle.write(response.read())
+    with urlopen(request, timeout=60) as response:
+        payload = response.read()
+    write_bytes_atomic(destination, payload)
+
+
+def model_file_is_usable(model_path: Path) -> bool:
+    if not model_path.exists() or not model_path.is_file():
+        return False
+    if model_path.stat().st_size <= 0:
+        return False
+    if model_path.suffix.lower() == ".pdb":
+        try:
+            with model_path.open("r", encoding="utf-8", errors="ignore") as handle:
+                for line in handle:
+                    if line.startswith("ATOM"):
+                        return True
+        except OSError:
+            return False
+        return False
+    return True
 
 
 def choose_alphafold_prediction(cache_dir: Path, accession: str, start: int, end: int) -> dict:
-    predictions = load_cached_predictions(cache_dir, accession)
-    if predictions is None:
-        predictions = json_request(ALPHAFOLD_API.format(accession=accession))
-        save_cached_predictions(cache_dir, accession, predictions)
+    cache_file = prediction_cache_file(cache_dir, accession)
+    with cache_file_lock(cache_file):
+        predictions = load_cached_predictions(cache_dir, accession)
+        if predictions is None:
+            predictions = json_request(ALPHAFOLD_API.format(accession=accession))
+            save_cached_predictions(cache_dir, accession, predictions)
     if not predictions:
         raise FileNotFoundError(f"no AlphaFold prediction found for {accession}")
     for prediction in predictions:
@@ -116,8 +179,9 @@ def ensure_alphafold_model(cache_dir: Path, accession: str, start: int, end: int
         raise FileNotFoundError(f"prediction for {accession} has no downloadable structure")
     filename = Path(urlparse(structure_url).path).name
     destination = cache_dir / "alphafold" / accession / filename
-    if not destination.exists():
-        download_file(structure_url, destination)
+    with cache_file_lock(destination):
+        if not model_file_is_usable(destination):
+            download_file(structure_url, destination)
     return destination, prediction
 
 
@@ -273,6 +337,65 @@ def residue_selection_expression(object_name: str, residue_ids: list[int]) -> st
     return f"{object_name} and resi {joined}"
 
 
+def selection_ca_residue_ids(cmd, selection: str) -> list[int]:
+    residue_ids: set[int] = set()
+    cmd.iterate(
+        selection,
+        "residue_ids.add(int(resi))",
+        space={"residue_ids": residue_ids},
+    )
+    return sorted(residue_ids)
+
+
+def selection_ca_diagnostics(cmd, object_name: str, selection: str) -> dict[str, int | None]:
+    selected_residue_ids = selection_ca_residue_ids(cmd, selection)
+    all_ca_residue_ids = selection_ca_residue_ids(
+        cmd,
+        f"{object_name} and polymer.protein and name CA",
+    )
+    return {
+        "selected_ca_count": int(cmd.count_atoms(selection)),
+        "selected_min_resi": selected_residue_ids[0] if selected_residue_ids else None,
+        "selected_max_resi": selected_residue_ids[-1] if selected_residue_ids else None,
+        "total_ca_count": int(cmd.count_atoms(f"{object_name} and polymer.protein and name CA")),
+        "total_min_resi": all_ca_residue_ids[0] if all_ca_residue_ids else None,
+        "total_max_resi": all_ca_residue_ids[-1] if all_ca_residue_ids else None,
+    }
+
+
+def format_alignment_diagnostics(
+    *,
+    reference_model_path: Path,
+    reference_fragment_key: str,
+    reference_selection: str,
+    reference_diagnostics: dict[str, int | None],
+    mobile_model_path: Path,
+    mobile_fragment_key: str,
+    mobile_selection: str,
+    mobile_diagnostics: dict[str, int | None],
+) -> str:
+    return (
+        f"reference_model={reference_model_path.name} "
+        f"reference_fragment={reference_fragment_key} "
+        f"reference_selection={reference_selection!r} "
+        f"reference_selected_ca={reference_diagnostics['selected_ca_count']} "
+        f"reference_selected_span={reference_diagnostics['selected_min_resi']}-"
+        f"{reference_diagnostics['selected_max_resi']} "
+        f"reference_total_ca={reference_diagnostics['total_ca_count']} "
+        f"reference_total_span={reference_diagnostics['total_min_resi']}-"
+        f"{reference_diagnostics['total_max_resi']} | "
+        f"mobile_model={mobile_model_path.name} "
+        f"mobile_fragment={mobile_fragment_key} "
+        f"mobile_selection={mobile_selection!r} "
+        f"mobile_selected_ca={mobile_diagnostics['selected_ca_count']} "
+        f"mobile_selected_span={mobile_diagnostics['selected_min_resi']}-"
+        f"{mobile_diagnostics['selected_max_resi']} "
+        f"mobile_total_ca={mobile_diagnostics['total_ca_count']} "
+        f"mobile_total_span={mobile_diagnostics['total_min_resi']}-"
+        f"{mobile_diagnostics['total_max_resi']}"
+    )
+
+
 def render_structure_image(
     model_path: Path,
     image_path: Path,
@@ -347,7 +470,32 @@ def render_aligned_model(
                 cmd.reinitialize()
                 cmd.load(str(reference_model_path), "reference_model")
                 cmd.load(str(mobile_model_path), "mobile_model")
+                reference_diagnostics = selection_ca_diagnostics(
+                    cmd,
+                    "reference_model",
+                    reference_selection,
+                )
+                mobile_diagnostics = selection_ca_diagnostics(
+                    cmd,
+                    "mobile_model",
+                    mobile_selection,
+                )
+                alignment_diagnostics = format_alignment_diagnostics(
+                    reference_model_path=reference_model_path,
+                    reference_fragment_key=reference_fragment_key,
+                    reference_selection=reference_selection,
+                    reference_diagnostics=reference_diagnostics,
+                    mobile_model_path=mobile_model_path,
+                    mobile_fragment_key=mobile_fragment_key,
+                    mobile_selection=mobile_selection,
+                    mobile_diagnostics=mobile_diagnostics,
+                )
                 cmd.cealign(reference_selection, mobile_selection)
                 cmd.save(str(output_path), "mobile_model")
     except Exception as exc:
-        raise RuntimeError(str(exc) or "PyMOL alignment failed") from exc
+        error_message = str(exc).strip() or "PyMOL cealign failed"
+        if error_message.lower() in {"error", "error:"}:
+            error_message = "PyMOL cealign failed"
+        if "alignment_diagnostics" in locals():
+            error_message = f"{error_message} | {alignment_diagnostics}"
+        raise RuntimeError(error_message) from exc

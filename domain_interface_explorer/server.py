@@ -244,6 +244,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             distance_data = load_interface_distance_data(
+                self.cache_dir,
                 path,
                 interface_payload,
                 str(settings["distance"]),
@@ -342,6 +343,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             distance_data = load_interface_distance_data(
+                self.cache_dir,
                 path,
                 interface_payload,
                 str(clustering_settings["distance"]),
