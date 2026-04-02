@@ -16,7 +16,6 @@ from domain_interface_explorer.serverlib.config import (
     DEFAULT_CACHE_DIR,
     DEFAULT_HOST,
     DEFAULT_INTERFACE_DIR,
-    DEFAULT_PYMOL_BIN,
     STATIC_DIR,
 )
 from domain_interface_explorer.serverlib.interface_embedding import (
@@ -49,8 +48,8 @@ from domain_interface_explorer.serverlib.structure_service import (
     fragment_key_to_ranges,
     parse_row_key,
     render_aligned_model,
-    render_structure_image,
     structure_cache_key,
+    validate_pymol_api,
 )
 
 
@@ -60,7 +59,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--interface-dir", type=Path, default=DEFAULT_INTERFACE_DIR)
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
-    parser.add_argument("--pymol-bin", type=Path, default=DEFAULT_PYMOL_BIN)
     return parser.parse_args()
 
 
@@ -82,7 +80,6 @@ def safe_file_path(directory: Path, filename: str) -> Path | None:
 class ViewerRequestHandler(BaseHTTPRequestHandler):
     interface_dir: Path
     cache_dir: Path
-    pymol_bin: Path
     pfam_option_stats: dict[str, dict[str, object]]
 
     def do_GET(self) -> None:
@@ -481,7 +478,6 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 aligned_model_path = self.cache_dir / "aligned" / f"{aligned_cache_key}.pdb"
                 if not aligned_model_path.exists():
                     render_aligned_model(
-                        self.pymol_bin,
                         reference_model_path,
                         reference_fragment_key,
                         model_path,
@@ -602,7 +598,6 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
 def build_handler(
     interface_dir: Path,
     cache_dir: Path,
-    pymol_bin: Path,
     pfam_option_stats: dict[str, dict[str, object]],
 ):
     class ConfiguredHandler(ViewerRequestHandler):
@@ -610,7 +605,6 @@ def build_handler(
 
     ConfiguredHandler.interface_dir = interface_dir
     ConfiguredHandler.cache_dir = cache_dir
-    ConfiguredHandler.pymol_bin = pymol_bin
     ConfiguredHandler.pfam_option_stats = pfam_option_stats
     return ConfiguredHandler
 
@@ -625,6 +619,14 @@ def main() -> None:
             file=sys.stderr,
             flush=True,
         )
+    pymol_status = validate_pymol_api()
+    if not pymol_status.available:
+        print(
+            "WARNING: "
+            f"{pymol_status.reason}. Alignment-based structure outputs will fall back to raw models.",
+            file=sys.stderr,
+            flush=True,
+        )
     pfam_option_stats = load_cached_pfam_option_stats(
         args.cache_dir.resolve(),
         args.interface_dir.resolve(),
@@ -632,13 +634,13 @@ def main() -> None:
     handler = build_handler(
         args.interface_dir.resolve(),
         args.cache_dir.resolve(),
-        args.pymol_bin.resolve(),
         pfam_option_stats,
     )
     server = ThreadingHTTPServer((args.host, args.port), handler)
     print(
         f"Serving Domain Interface Explorer at http://{args.host}:{args.port} "
-        f"(interface-dir={args.interface_dir}, cache-dir={args.cache_dir}, pymol-bin={args.pymol_bin})"
+        f"(interface-dir={args.interface_dir}, cache-dir={args.cache_dir}, "
+        f"pymol-api={'available' if pymol_status.available else 'unavailable'})"
     )
     start_background_pfam_metadata_refresh(args.cache_dir.resolve(), pfam_option_stats)
     try:

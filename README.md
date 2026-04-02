@@ -36,8 +36,7 @@ By default, DIE uses:
 
 - `./data` for interface JSON input
 - `./cache` for generated caches
-- the active Conda environment's `bin/pymol` if a Conda environment is active
-- otherwise `./.conda_env/bin/pymol`
+- the installed `pymol-open-source` Python package for optional alignment-based structure outputs
 
 The bundled sample dataset contains 5 interface files totaling about 10 MB, so the default startup command works out of the box.
 
@@ -63,10 +62,6 @@ Current options:
   Default: `./cache`
   Directory where DIE stores selector stats, embeddings, clustering results, AlphaFold downloads, aligned models, and rendered images.
 
-- `--pymol-bin PYMOL_BIN`
-  Default: active Conda environment `bin/pymol` when detectable, otherwise `./.conda_env/bin/pymol`
-  PyMOL executable used for alignment-based structure outputs.
-
 Example with custom paths:
 
 ```bash
@@ -74,8 +69,7 @@ python -m domain_interface_explorer.server \
   --host 0.0.0.0 \
   --port 8080 \
   --interface-dir /path/to/interface-json-dir \
-  --cache-dir /path/to/cache \
-  --pymol-bin /path/to/pymol
+  --cache-dir /path/to/cache
 ```
 
 ## Quick Feature Tour
@@ -90,7 +84,7 @@ python -m domain_interface_explorer.server \
 - Column view: Explore how interface signal is distributed across alignment columns.
 - Structure preview: Open an interactive 3D view for a selected interface using bundled 3Dmol.js.
 - AlphaFold integration: Fetch models on demand and cache them locally for later reuse.
-- PyMOL alignment support: If PyMOL is installed, DIE can generate aligned structure outputs for comparative viewing.
+- Embedded PyMOL alignment support: If the `pymol-open-source` package imports successfully, DIE can generate aligned structure outputs for comparative viewing without a separate `pymol` binary.
 
 ## Operational Notes
 
@@ -99,6 +93,8 @@ python -m domain_interface_explorer.server \
   current machine during startup.
 - If no working bundled binary is available for the current system, the server prints a warning and
   falls back to the Python overlap-distance implementation.
+- If the embedded PyMOL API is unavailable, the server prints a warning and falls back to raw,
+  unaligned structure models.
 - The first structure request for a protein may download AlphaFold data from EBI.
 - Cache files are safe to delete if you want DIE to recompute them.
 - Start the server with `python -m domain_interface_explorer.server`, not by running `server.py` directly.

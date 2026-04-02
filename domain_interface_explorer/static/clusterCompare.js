@@ -81,6 +81,39 @@ export function createClusterCompareController({
     elements.clusterCompareGrid.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
   }
 
+  function renderClusterCompareFatalError(message) {
+    if (!elements.clusterCompareGrid) {
+      return;
+    }
+    elements.clusterCompareGrid.innerHTML = "";
+    const panel = document.createElement("article");
+    panel.className = "cluster-compare-error-panel";
+    const heading = document.createElement("strong");
+    heading.textContent = "Unable to load structure comparison";
+    const body = document.createElement("p");
+    body.textContent = message || "Unknown cluster comparison error.";
+    panel.append(heading, body);
+    elements.clusterCompareGrid.append(panel);
+  }
+
+  function renderClusterCompareTileError(tileIndex) {
+    const tile = state.clusterCompareTiles[tileIndex];
+    if (!tile?.viewerRoot) {
+      return;
+    }
+    tile.viewer?.clear?.();
+    tile.viewerRoot.replaceChildren();
+    tile.viewerRoot.classList.add("cluster-compare-tile-viewer-error");
+    const errorBox = document.createElement("div");
+    errorBox.className = "cluster-compare-tile-error";
+    const heading = document.createElement("strong");
+    heading.textContent = "Structure unavailable";
+    const body = document.createElement("p");
+    body.textContent = tile.error || "Unknown structure loading error.";
+    errorBox.append(heading, body);
+    tile.viewerRoot.append(errorBox);
+  }
+
   function openClusterCompareModal() {
     elements.clusterCompareModal?.classList.remove("hidden");
     elements.clusterCompareModal?.setAttribute("aria-hidden", "false");
@@ -224,6 +257,7 @@ export function createClusterCompareController({
     if (!tile || tile.error || !tile.viewerRoot || !window.$3Dmol) {
       return;
     }
+    tile.viewerRoot.classList.remove("cluster-compare-tile-viewer-error");
 
     if (!tile.viewer) {
       tile.viewer = window.$3Dmol.createViewer(tile.viewerRoot, {
@@ -416,14 +450,24 @@ export function createClusterCompareController({
       for (let index = 0; index < state.clusterCompareTiles.length; index += 1) {
         const tile = state.clusterCompareTiles[index];
         if (tile.error) {
+          renderClusterCompareTileError(index);
           continue;
         }
-        renderClusterCompareTile(index);
+        try {
+          renderClusterCompareTile(index);
+        } catch (error) {
+          tile.error = error.message || "Unknown structure render error.";
+          renderClusterCompareTileError(index);
+        }
       }
       initializeClusterCompareSharedView();
     } catch (error) {
       if (requestId === state.clusterCompareRequestId) {
-        closeClusterCompareModal();
+        clearClusterCompareTiles();
+        if (elements.clusterCompareModalSubtitle) {
+          elements.clusterCompareModalSubtitle.textContent = error.message || "Unable to load cluster structure comparison.";
+        }
+        renderClusterCompareFatalError(error.message || "Unable to load cluster structure comparison.");
       }
       throw error;
     } finally {

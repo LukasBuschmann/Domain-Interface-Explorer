@@ -1,28 +1,15 @@
 from __future__ import annotations
 
-import os
-import sys
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def active_conda_prefix() -> Path | None:
-    conda_prefix = os.environ.get("CONDA_PREFIX")
-    if conda_prefix:
-        return Path(conda_prefix)
-    prefix = Path(sys.prefix)
-    if (prefix / "conda-meta").exists():
-        return prefix
-    return None
-
-
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 DEFAULT_INTERFACE_DIR = PROJECT_ROOT / "data"
 DEFAULT_CACHE_DIR = PROJECT_ROOT / "cache"
-DEFAULT_PYMOL_BIN = (active_conda_prefix() or (PROJECT_ROOT / ".conda_env")) / "bin" / "pymol"
 STATIC_DIR = PROJECT_ROOT / "domain_interface_explorer" / "static"
 ALPHAFOLD_API = "https://alphafold.ebi.ac.uk/api/prediction/{accession}"
 SELECTOR_STATS_CACHE_VERSION = "7"
@@ -34,7 +21,7 @@ INTERPRO_PFAM_ENTRY_API = "https://www.ebi.ac.uk/interpro/api/entry/pfam/{access
 INTERPRO_PFAM_ENTRY_PAGE = "https://www.ebi.ac.uk/interpro/entry/pfam/{accession}/"
 PFAM_INFO_REFRESH_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 EMBEDDING_CACHE_VERSION = "2"
-CLUSTERING_CACHE_VERSION = "2"
+CLUSTERING_CACHE_VERSION = "3"
 DEFAULT_TSNE_LEARNING_RATE = "auto"
 DEFAULT_TSNE_MAX_ITER = 1000
 DEFAULT_TSNE_EARLY_EXAGGERATION = 12.0

@@ -724,6 +724,12 @@ def load_or_compute_clustering_payload(
     clustering_settings: dict[str, object],
     interface_filter_settings: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    distance_data = load_interface_distance_data(
+        interface_path,
+        interface_payload,
+        str(clustering_settings["distance"]),
+        interface_filter_settings,
+    )
     cache_path = clustering_cache_path(
         cache_dir,
         interface_path,
@@ -732,13 +738,9 @@ def load_or_compute_clustering_payload(
     )
     if cache_path.exists():
         with cache_path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
-    distance_data = load_interface_distance_data(
-        interface_path,
-        interface_payload,
-        str(clustering_settings["distance"]),
-        interface_filter_settings,
-    )
+            cached_payload = json.load(handle)
+        if clustering_payload_matches_distance_data(cached_payload, distance_data):
+            return cached_payload
     if clustering_settings["method"] == "hierarchical":
         clustering_payload = compute_hierarchical_clustering_payload(distance_data, clustering_settings)
     else:
@@ -755,6 +757,25 @@ def load_or_compute_clustering_payload(
     return response_payload
 
 
+def clustering_payload_matches_distance_data(
+    clustering_payload: dict[str, object],
+    distance_data: dict[str, object],
+) -> bool:
+    points = clustering_payload.get("points")
+    entries = distance_data.get("entries")
+    if not isinstance(points, list) or not isinstance(entries, list):
+        return False
+    if len(points) != len(entries):
+        return False
+    for point, entry in zip(points, entries, strict=True):
+        if (
+            str(point.get("row_key", "")) != str(entry.get("row_key", ""))
+            or str(point.get("partner_domain", "")) != str(entry.get("partner_domain", ""))
+        ):
+            return False
+    return True
+
+
 def compute_cluster_compare_payload(
     distance_data: dict[str, object],
     clustering_payload: dict[str, object],
@@ -764,6 +785,11 @@ def compute_cluster_compare_payload(
     clustering_points = clustering_payload["points"]
     entries = distance_data["entries"]
     distance_matrix = distance_data["distance_matrix"]
+    if len(clustering_points) != len(entries) or distance_matrix.shape[0] != len(entries):
+        raise ValueError(
+            "clustering data is out of sync with the current filtered interface rows; "
+            "please recompute clustering"
+        )
     cluster_indices = [
         index for index, point in enumerate(clustering_points) if int(point["cluster_label"]) == cluster_label
     ]

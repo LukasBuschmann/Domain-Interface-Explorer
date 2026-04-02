@@ -1,15 +1,30 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
-import subprocess
-import tempfile
+import sys
+import threading
+from dataclasses import dataclass
+from importlib.machinery import PathFinder
 from pathlib import Path
+from types import ModuleType
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from .config import ALPHAFOLD_API
+
+
+_PYMOL_API_LOCK = threading.RLock()
+_PYMOL2_MODULE = None
+_PYMOL2_IMPORT_ERROR: Exception | None = None
+
+
+@dataclass(frozen=True)
+class PyMOLAPIStatus:
+    available: bool
+    reason: str
 
 
 def parse_row_key(row_key: str) -> tuple[str, str]:
@@ -204,81 +219,115 @@ def aligned_model_cache_key(
     return hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def pymol_residue_selection(name: str, residue_ids: list[int]) -> str:
+def _install_imp_compat_module() -> None:
+    if "imp" in sys.modules:
+        return
+    compat_module = ModuleType("imp")
+
+    def find_module(name: str, path: list[str] | None = None):
+        spec = PathFinder.find_spec(name, path)
+        if spec is None:
+            raise ImportError(name)
+        if spec.submodule_search_locations:
+            location = list(spec.submodule_search_locations)[0]
+        else:
+            location = spec.origin
+        if location is None:
+            raise ImportError(name)
+        return None, location, ("", "", 5)
+
+    compat_module.find_module = find_module  # type: ignore[attr-defined]
+    sys.modules["imp"] = compat_module
+
+
+def load_pymol2_module():
+    global _PYMOL2_MODULE, _PYMOL2_IMPORT_ERROR
+    if _PYMOL2_MODULE is not None:
+        return _PYMOL2_MODULE
+    if _PYMOL2_IMPORT_ERROR is not None:
+        raise RuntimeError(f"PyMOL API unavailable: {_PYMOL2_IMPORT_ERROR}") from _PYMOL2_IMPORT_ERROR
+    try:
+        _install_imp_compat_module()
+        _PYMOL2_MODULE = importlib.import_module("pymol2")
+        return _PYMOL2_MODULE
+    except Exception as exc:  # pragma: no cover - exercised indirectly in startup/runtime checks
+        _PYMOL2_IMPORT_ERROR = exc
+        raise RuntimeError(f"PyMOL API unavailable: {exc}") from exc
+
+
+def validate_pymol_api() -> PyMOLAPIStatus:
+    try:
+        pymol2 = load_pymol2_module()
+        with _PYMOL_API_LOCK:
+            with pymol2.PyMOL() as session:
+                session.cmd.reinitialize()
+        return PyMOLAPIStatus(available=True, reason="PyMOL API available")
+    except Exception as exc:
+        return PyMOLAPIStatus(available=False, reason=str(exc))
+
+
+def residue_selection_expression(object_name: str, residue_ids: list[int]) -> str:
     if not residue_ids:
-        return f"select {name}, none"
+        return "none"
     joined = "+".join(str(residue_id) for residue_id in residue_ids)
-    return f"select {name}, resi {joined}"
+    return f"{object_name} and resi {joined}"
 
 
 def render_structure_image(
-    pymol_bin: Path,
     model_path: Path,
     image_path: Path,
     fragment_key_name: str,
     interface_residues: list[int],
     surface_residues: list[int],
 ) -> None:
-    if not pymol_bin.exists():
-        raise FileNotFoundError(f"PyMOL binary not found at {pymol_bin}")
     image_path.parent.mkdir(parents=True, exist_ok=True)
     fragment_start, fragment_end = fragment_bounds(fragment_key_name)
-    pml = f"""
-reinitialize
-load {model_path.as_posix()}, model
-hide everything, all
-show cartoon, model
-color gray70, model
-set cartoon_transparency, 0.72, model
-select fragment_sel, resi {fragment_start}-{fragment_end}
-show cartoon, fragment_sel
-color gray80, fragment_sel
-set cartoon_transparency, 0.0, fragment_sel
-{pymol_residue_selection("surface_sel", surface_residues)}
-color tv_orange, surface_sel
-set cartoon_transparency, 0.0, surface_sel
-show sticks, surface_sel
-set stick_radius, 0.18, surface_sel
-{pymol_residue_selection("interface_sel", interface_residues)}
-color firebrick, interface_sel
-set cartoon_transparency, 0.0, interface_sel
-show sticks, interface_sel
-set stick_radius, 0.24, interface_sel
-orient fragment_sel
-zoom fragment_sel, 10
-bg_color white
-set antialias, 2
-set depth_cue, 0
-png {image_path.as_posix()}, width=1400, height=1050, ray=1
-quit
-""".strip()
-    with tempfile.NamedTemporaryFile("w", suffix=".pml", delete=False, encoding="utf-8") as handle:
-        handle.write(pml)
-        script_path = Path(handle.name)
     try:
-        subprocess.run(
-            [str(pymol_bin), "-cq", str(script_path)],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(exc.stderr.strip() or exc.stdout.strip() or "PyMOL render failed") from exc
-    finally:
-        script_path.unlink(missing_ok=True)
+        pymol2 = load_pymol2_module()
+        with _PYMOL_API_LOCK:
+            with pymol2.PyMOL() as session:
+                cmd = session.cmd
+                cmd.reinitialize()
+                object_name = "structure_model"
+                cmd.load(str(model_path), object_name)
+                cmd.hide("everything", "all")
+                cmd.show("cartoon", object_name)
+                cmd.color("gray70", object_name)
+                cmd.set("cartoon_transparency", 0.72, object_name)
+                fragment_selection = f"{object_name} and resi {fragment_start}-{fragment_end}"
+                cmd.select("fragment_sel", fragment_selection)
+                cmd.show("cartoon", "fragment_sel")
+                cmd.color("gray80", "fragment_sel")
+                cmd.set("cartoon_transparency", 0.0, "fragment_sel")
+                if surface_residues:
+                    cmd.select("surface_sel", residue_selection_expression(object_name, surface_residues))
+                    cmd.color("tv_orange", "surface_sel")
+                    cmd.set("cartoon_transparency", 0.0, "surface_sel")
+                    cmd.show("sticks", "surface_sel")
+                    cmd.set("stick_radius", 0.18, "surface_sel")
+                if interface_residues:
+                    cmd.select("interface_sel", residue_selection_expression(object_name, interface_residues))
+                    cmd.color("firebrick", "interface_sel")
+                    cmd.set("cartoon_transparency", 0.0, "interface_sel")
+                    cmd.show("sticks", "interface_sel")
+                    cmd.set("stick_radius", 0.24, "interface_sel")
+                cmd.orient("fragment_sel")
+                cmd.zoom("fragment_sel", 10)
+                cmd.bg_color("white")
+                cmd.set("antialias", 2)
+                cmd.set("depth_cue", 0)
+                cmd.png(str(image_path), width=1400, height=1050, ray=1)
+    except Exception as exc:
+        raise RuntimeError(str(exc) or "PyMOL render failed") from exc
 
 
 def render_aligned_model(
-    pymol_bin: Path,
     reference_model_path: Path,
     reference_fragment_key: str,
     mobile_model_path: Path,
     mobile_fragment_key: str,
     output_path: Path,
 ) -> None:
-    if not pymol_bin.exists():
-        raise FileNotFoundError(f"PyMOL binary not found at {pymol_bin}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     reference_start, reference_end = fragment_bounds(reference_fragment_key)
     mobile_start, mobile_end = fragment_bounds(mobile_fragment_key)
@@ -290,26 +339,15 @@ def render_aligned_model(
         "mobile_model and polymer.protein and name CA "
         f"and resi {mobile_start}-{mobile_end}"
     )
-    pml = f"""
-reinitialize
-load {reference_model_path.as_posix()}, reference_model
-load {mobile_model_path.as_posix()}, mobile_model
-cealign {reference_selection}, {mobile_selection}
-save {output_path.as_posix()}, mobile_model
-quit
-""".strip()
-    with tempfile.NamedTemporaryFile("w", suffix=".pml", delete=False, encoding="utf-8") as handle:
-        handle.write(pml)
-        script_path = Path(handle.name)
     try:
-        subprocess.run(
-            [str(pymol_bin), "-cq", str(script_path)],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(exc.stderr.strip() or exc.stdout.strip() or "PyMOL alignment failed") from exc
-    finally:
-        script_path.unlink(missing_ok=True)
+        pymol2 = load_pymol2_module()
+        with _PYMOL_API_LOCK:
+            with pymol2.PyMOL() as session:
+                cmd = session.cmd
+                cmd.reinitialize()
+                cmd.load(str(reference_model_path), "reference_model")
+                cmd.load(str(mobile_model_path), "mobile_model")
+                cmd.cealign(reference_selection, mobile_selection)
+                cmd.save(str(output_path), "mobile_model")
+    except Exception as exc:
+        raise RuntimeError(str(exc) or "PyMOL alignment failed") from exc
