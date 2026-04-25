@@ -208,13 +208,14 @@ def fragment_key_to_ranges(fragment_key: str) -> list[str]:
 
 def collect_row_structure_payload(
     interface_data: dict[str, dict[str, dict]], row_key: str, partner_filter: str
-) -> dict[str, list[int] | list[str]]:
+) -> dict[str, object]:
     interface_residues: set[int] = set()
     surface_residues: set[int] = set()
     partner_interface_residues: set[int] = set()
     partner_surface_residues: set[int] = set()
     partner_fragment_residues: set[int] = set()
     partner_fragment_ranges: set[str] = set()
+    residue_contacts: set[tuple[int, int]] = set()
     matched_partners: list[str] = []
     for partner_domain, rows in interface_data.items():
         if partner_filter != "__all__" and partner_domain != partner_filter:
@@ -228,6 +229,13 @@ def collect_row_structure_payload(
         surface_residues.update(int(value) for value in payload.get("surface_residue_ids_a", []))
         partner_interface_residues.update(int(value) for value in payload.get("interface_residues_b", []))
         partner_surface_residues.update(int(value) for value in payload.get("surface_residue_ids_b", []))
+        for contact in payload.get("residue_contacts", []):
+            if not isinstance(contact, (list, tuple)) or len(contact) < 2:
+                continue
+            try:
+                residue_contacts.add((int(contact[0]), int(contact[1])))
+            except (TypeError, ValueError):
+                continue
         partner_fragments = payload.get("fragments_b", [])
         if partner_fragments:
             partner_fragment_residues.update(expand_fragments_to_residue_ids(partner_fragments))
@@ -246,6 +254,7 @@ def collect_row_structure_payload(
         "partner_surface_residue_ids": sorted(partner_surface_residues),
         "partner_fragment_residue_ids": sorted(partner_fragment_residues),
         "partner_fragment_ranges": sorted(partner_fragment_ranges),
+        "residue_contacts": [list(contact) for contact in sorted(residue_contacts)],
         "matched_partners": sorted(matched_partners),
     }
 

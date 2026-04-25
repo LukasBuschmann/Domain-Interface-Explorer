@@ -346,12 +346,14 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
         try:
+            distance_scope = "expanded" if clustering_settings["method"] == "hdbscan" else "compressed"
             distance_data = load_interface_distance_data(
                 self.cache_dir,
                 path,
                 interface_payload,
                 str(clustering_settings["distance"]),
                 interface_filter_settings,
+                distance_scope=distance_scope,
             )
             clustering_payload = load_or_compute_clustering_payload(
                 self.cache_dir,
@@ -522,6 +524,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 "partner_surface_residue_ids": row_structure["partner_surface_residue_ids"],
                 "partner_fragment_residue_ids": row_structure["partner_fragment_residue_ids"],
                 "partner_fragment_ranges": row_structure["partner_fragment_ranges"],
+                "residue_contacts": row_structure["residue_contacts"],
                 "model_source": prediction.get("entryId", ""),
                 "model_url": (
                     f"/api/aligned-model/{Path(response_model_path).name}"

@@ -134,6 +134,7 @@ const {
   structureModal,
   structureMemberNext,
   structureMemberPrev,
+  structureContactViewToggle,
   structureModalStatus,
   structureModalSubtitle,
   structureModalTitle,
@@ -418,6 +419,9 @@ function syncColumnLegends() {
   );
   if (structureColumnViewToggle) {
     structureColumnViewToggle.checked = state.structureColumnView;
+  }
+  if (structureContactViewToggle) {
+    structureContactViewToggle.checked = state.structureContactsVisible;
   }
 }
 
@@ -1582,6 +1586,14 @@ representativeLensGroup.addEventListener("click", (event) => {
 
 structureColumnViewToggle.addEventListener("change", () => {
   state.structureColumnView = structureColumnViewToggle.checked;
+  syncColumnLegends();
+  if (state.structureData) {
+    renderInteractiveStructure();
+  }
+});
+
+structureContactViewToggle?.addEventListener("change", () => {
+  state.structureContactsVisible = structureContactViewToggle.checked;
   syncColumnLegends();
   if (state.structureData) {
     renderInteractiveStructure();

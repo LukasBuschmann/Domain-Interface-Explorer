@@ -272,6 +272,7 @@ export function createClusterCompareController({
     viewer.addModel(modelText, payload.model_format || "pdb");
     applyStructureStyles(viewer, payload, {
       columnView: false,
+      contactsVisible: false,
       residueLookup: new Map(),
     });
     viewer.resize();
@@ -344,12 +345,14 @@ export function createClusterCompareController({
     state.clusterCompareClusterLabel = Number(clusterLabel);
     state.clusterCompareSharedView = null;
     clearClusterCompareTiles();
-    openClusterCompareModal();
-
+    const clusterTitle = `${embeddingClusterLabel(clusterLabel)} Structure Comparison`;
     if (elements.clusterCompareModalTitle) {
-      elements.clusterCompareModalTitle.textContent =
-        `${embeddingClusterLabel(clusterLabel)} Structure Comparison`;
+      elements.clusterCompareModalTitle.textContent = clusterTitle;
     }
+    if (elements.clusterCompareModalSubtitle) {
+      elements.clusterCompareModalSubtitle.textContent = `Loading ${embeddingClusterLabel(clusterLabel)}...`;
+    }
+    openClusterCompareModal();
     setClusterCompareLoading(true, "Selecting diverse interfaces...", 12);
     try {
       await nextBrowserPaint();

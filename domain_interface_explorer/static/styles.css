@@ -8,7 +8,9 @@
   --interface: rgba(188, 64, 45, 0.72);
   --surface: rgba(215, 168, 76, 0.5);
   --structure-main-domain: #8f8a82;
-  --structure-main-dots: rgba(105, 97, 87, 0.62);
+  --structure-main-dots: rgba(143, 138, 130, 0.6);
+  --structure-partner-dots: rgba(91, 159, 227, 0.6);
+  --structure-contact-line: rgba(79, 79, 79, 0.6);
   --structure-main-surface: #d7a84c;
   --structure-main-interface: #bc402d;
   --structure-partner-domain: #b8c9dc;
@@ -1026,6 +1028,27 @@ select,
 
 .swatch.structure-main-dots {
   background: var(--structure-main-dots);
+  border-radius: 999px;
+}
+
+.swatch.structure-partner-dots {
+  background: var(--structure-partner-dots);
+  border-radius: 999px;
+}
+
+.swatch.structure-contact-line {
+  position: relative;
+  background: transparent;
+}
+
+.swatch.structure-contact-line::before {
+  content: "";
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 50%;
+  border-top: 3px dotted var(--structure-contact-line);
+  transform: translateY(-50%);
 }
 
 .swatch.structure-main-surface {

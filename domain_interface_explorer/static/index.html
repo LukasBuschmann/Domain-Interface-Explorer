@@ -720,6 +720,10 @@
               <input id="structure-column-view-toggle" type="checkbox">
               <span>Column</span>
             </label>
+            <label class="structure-column-toggle" for="structure-contact-view-toggle">
+              <input id="structure-contact-view-toggle" type="checkbox" checked>
+              <span>Residue contacts</span>
+            </label>
             <div id="structure-column-legend" class="column-legend column-legend-compact hidden">
               <div id="structure-column-legend-bar" class="column-legend-bar"></div>
               <div class="column-legend-scale">
@@ -762,7 +766,15 @@
             </span>
             <span class="legend-item">
               <span class="swatch structure-main-dots"></span>
-              Main residue dots
+              Main residue CA dots
+            </span>
+            <span class="legend-item">
+              <span class="swatch structure-partner-dots"></span>
+              Partner contact CA dots
+            </span>
+            <span class="legend-item">
+              <span class="swatch structure-contact-line"></span>
+              Residue contacts
             </span>
             <span class="legend-item">
               <span class="swatch structure-main-surface"></span>

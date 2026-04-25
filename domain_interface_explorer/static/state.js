@@ -100,6 +100,7 @@ export const state = {
   structureRenderedRowKey: null,
   structureRequestId: 0,
   structureColumnView: false,
+  structureContactsVisible: true,
   visibleRows: [],
   hover: null,
   filteredRowIndexes: [],

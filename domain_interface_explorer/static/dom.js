@@ -120,6 +120,7 @@ export const elements = {
   structureHoverDistributionChart: document.getElementById("structure-hover-distribution-chart"),
   structureHoverDistributionLegend: document.getElementById("structure-hover-distribution-legend"),
   structureColumnViewToggle: document.getElementById("structure-column-view-toggle"),
+  structureContactViewToggle: document.getElementById("structure-contact-view-toggle"),
   structureColumnLegend: document.getElementById("structure-column-legend"),
   structureColumnLegendStart: document.getElementById("structure-column-legend-start"),
   structureColumnLegendMid: document.getElementById("structure-column-legend-mid"),

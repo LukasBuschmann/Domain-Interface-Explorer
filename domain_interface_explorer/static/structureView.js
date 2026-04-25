@@ -22,6 +22,16 @@ export function createStructureViewController({
   const STRUCTURE_PREVIEW_CACHE_LIMIT = 40;
   const STRUCTURE_MODEL_TEXT_CACHE_LIMIT = 24;
   const STRUCTURE_PRELOAD_CONCURRENCY = 1;
+  const WHOLE_PROTEIN_COLOR = "#c7c3bc";
+  const MAIN_DOMAIN_COLOR = "#8f8a82";
+  const MAIN_SURFACE_COLOR = "#d7a84c";
+  const MAIN_INTERFACE_COLOR = "#bc402d";
+  const PARTNER_DOMAIN_COLOR = "#b8c9dc";
+  const PARTNER_SURFACE_COLOR = "#5b9fe3";
+  const PARTNER_INTERFACE_COLOR = "#0b3f78";
+  const RESIDUE_CONTACT_COLOR = "#4f4f4f";
+  const RESIDUE_CONTACT_OPACITY = 0.6;
+  const CA_SPHERE_OPACITY = 0.6;
   const structurePreviewInFlight = new Map();
   const structureModelTextInFlight = new Map();
 
@@ -504,17 +514,224 @@ export function createStructureViewController({
     );
   }
 
-  function applyStructureStyles(viewer, structurePayload, options = {}) {
-    const columnView = Boolean(options.columnView ?? state.structureColumnView);
-    const residueLookup = options.residueLookup || state.structureResidueLookup || new Map();
-    const fragmentResidues = mainFragmentResidues(structurePayload);
-    viewer.setStyle({}, { cartoon: { color: "#c7c3bc", opacity: 0.28 } });
+  function residueContactPairs(structurePayload) {
+    const contacts = Array.isArray(structurePayload?.residue_contacts)
+      ? structurePayload.residue_contacts
+      : [];
+    const pairs = [];
+    const seen = new Set();
+    for (const contact of contacts) {
+      if (!Array.isArray(contact) || contact.length < 2) {
+        continue;
+      }
+      const mainResidueId = Number.parseInt(contact[0], 10);
+      const partnerResidueId = Number.parseInt(contact[1], 10);
+      if (!Number.isFinite(mainResidueId) || !Number.isFinite(partnerResidueId)) {
+        continue;
+      }
+      const key = `${mainResidueId}:${partnerResidueId}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      pairs.push([mainResidueId, partnerResidueId]);
+    }
+    return pairs;
+  }
+
+  function atomHasCoordinates(atom) {
+    return (
+      Number.isFinite(Number(atom?.x)) &&
+      Number.isFinite(Number(atom?.y)) &&
+      Number.isFinite(Number(atom?.z))
+    );
+  }
+
+  function atomPoint(atom) {
+    return {
+      x: Number(atom.x),
+      y: Number(atom.y),
+      z: Number(atom.z),
+    };
+  }
+
+  function residueCaPoint(viewer, residueId) {
+    const caAtom = viewer
+      .selectedAtoms({ resi: residueId, atom: "CA" })
+      .find(atomHasCoordinates);
+    return caAtom ? atomPoint(caAtom) : null;
+  }
+
+  function partnerContactResidueIds(structurePayload) {
+    const residueIds = new Set();
+    for (const [_mainResidueId, partnerResidueId] of residueContactPairs(structurePayload)) {
+      residueIds.add(partnerResidueId);
+    }
+    return [...residueIds].sort((left, right) => left - right);
+  }
+
+  function residueIdSet(values) {
+    return new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => Number.parseInt(value, 10))
+        .filter(Number.isFinite)
+    );
+  }
+
+  function columnResidueColorMap(residueLookup) {
+    const colors = new Map();
+    for (const style of columnResidueStyles(residueLookup)) {
+      const residueId = Number.parseInt(style.residueId, 10);
+      if (Number.isFinite(residueId) && style.color) {
+        colors.set(residueId, style.color);
+      }
+    }
+    return colors;
+  }
+
+  function caSphereStyle(color, opacity, radius) {
+    return {
+      color,
+      opacity,
+      alpha: opacity,
+      radius,
+    };
+  }
+
+  function addCaSpheres(viewer, residueIds, sphereStyle) {
+    if (!Array.isArray(residueIds) || residueIds.length === 0) {
+      return;
+    }
+    viewer.addStyle(
+      { resi: residueIds, atom: "CA" },
+      { sphere: sphereStyle }
+    );
+  }
+
+  function addMainResidueSpheres(viewer, structurePayload, fragmentResidues, columnView, residueLookup) {
+    addCaSpheres(viewer, fragmentResidues, caSphereStyle(MAIN_DOMAIN_COLOR, CA_SPHERE_OPACITY, 0.56));
     if (columnView) {
       const residuesByColor = new Map();
-      for (const style of columnResidueStyles(residueLookup)) {
-        const bucket = residuesByColor.get(style.color) || [];
-        bucket.push(style.residueId);
-        residuesByColor.set(style.color, bucket);
+      for (const [residueId, color] of columnResidueColorMap(residueLookup).entries()) {
+        const bucket = residuesByColor.get(color) || [];
+        bucket.push(residueId);
+        residuesByColor.set(color, bucket);
+      }
+      for (const [color, residueIds] of residuesByColor.entries()) {
+        addCaSpheres(viewer, residueIds, caSphereStyle(color, CA_SPHERE_OPACITY, 0.56));
+      }
+      return;
+    }
+    addCaSpheres(viewer, structurePayload.surface_residue_ids, caSphereStyle(MAIN_SURFACE_COLOR, CA_SPHERE_OPACITY, 0.56));
+    addCaSpheres(viewer, structurePayload.interface_residue_ids, caSphereStyle(MAIN_INTERFACE_COLOR, CA_SPHERE_OPACITY, 0.56));
+  }
+
+  function addPartnerContactResidueSpheres(viewer, structurePayload, contactsVisible) {
+    if (!contactsVisible) {
+      return;
+    }
+    const contactResidues = partnerContactResidueIds(structurePayload);
+    if (contactResidues.length === 0) {
+      return;
+    }
+    const contactSet = residueIdSet(contactResidues);
+    const surfaceSet = residueIdSet(structurePayload.partner_surface_residue_ids);
+    const interfaceSet = residueIdSet(structurePayload.partner_interface_residue_ids);
+    const surfaceResidues = contactResidues.filter((residueId) => surfaceSet.has(residueId));
+    const interfaceResidues = contactResidues.filter((residueId) => interfaceSet.has(residueId));
+    const baseResidues = contactResidues.filter(
+      (residueId) =>
+        contactSet.has(residueId) &&
+        !surfaceSet.has(residueId) &&
+        !interfaceSet.has(residueId)
+    );
+    addCaSpheres(viewer, baseResidues, caSphereStyle(PARTNER_DOMAIN_COLOR, CA_SPHERE_OPACITY, 0.5));
+    addCaSpheres(viewer, surfaceResidues, caSphereStyle(PARTNER_SURFACE_COLOR, CA_SPHERE_OPACITY, 0.5));
+    addCaSpheres(viewer, interfaceResidues, caSphereStyle(PARTNER_INTERFACE_COLOR, CA_SPHERE_OPACITY, 0.5));
+  }
+
+  function pointBetween(start, end, fraction) {
+    return {
+      x: start.x + (end.x - start.x) * fraction,
+      y: start.y + (end.y - start.y) * fraction,
+      z: start.z + (end.z - start.z) * fraction,
+    };
+  }
+
+  function addResidueContactSegment(viewer, start, end) {
+    if (typeof viewer.addCylinder === "function") {
+      viewer.addCylinder({
+        start,
+        end,
+        color: RESIDUE_CONTACT_COLOR,
+        opacity: RESIDUE_CONTACT_OPACITY,
+        alpha: RESIDUE_CONTACT_OPACITY,
+        radius: 0.07,
+        fromCap: 1,
+        toCap: 1,
+      });
+      return;
+    }
+    if (typeof viewer.addLine === "function") {
+      viewer.addLine({
+        start,
+        end,
+        color: RESIDUE_CONTACT_COLOR,
+        opacity: RESIDUE_CONTACT_OPACITY,
+        alpha: RESIDUE_CONTACT_OPACITY,
+        linewidth: 2.5,
+      });
+    }
+  }
+
+  function addResidueContactDottedLine(viewer, start, end) {
+    const dotCount = 9;
+    const dashFraction = 0.035;
+    for (let index = 0; index < dotCount; index += 1) {
+      const center = (index + 0.5) / dotCount;
+      const segmentStart = Math.max(0, center - dashFraction);
+      const segmentEnd = Math.min(1, center + dashFraction);
+      addResidueContactSegment(
+        viewer,
+        pointBetween(start, end, segmentStart),
+        pointBetween(start, end, segmentEnd)
+      );
+    }
+  }
+
+  function renderResidueContactLines(viewer, structurePayload, contactsVisible) {
+    if (typeof viewer.removeAllShapes === "function") {
+      viewer.removeAllShapes();
+    }
+    if (!contactsVisible) {
+      return;
+    }
+    if (typeof viewer.addCylinder !== "function" && typeof viewer.addLine !== "function") {
+      return;
+    }
+    const pairs = residueContactPairs(structurePayload);
+    for (const [mainResidueId, partnerResidueId] of pairs) {
+      const start = residueCaPoint(viewer, mainResidueId);
+      const end = residueCaPoint(viewer, partnerResidueId);
+      if (!start || !end) {
+        continue;
+      }
+      addResidueContactDottedLine(viewer, start, end);
+    }
+  }
+
+  function applyStructureStyles(viewer, structurePayload, options = {}) {
+    const columnView = Boolean(options.columnView ?? state.structureColumnView);
+    const contactsVisible = Boolean(options.contactsVisible ?? state.structureContactsVisible);
+    const residueLookup = options.residueLookup || state.structureResidueLookup || new Map();
+    const fragmentResidues = mainFragmentResidues(structurePayload);
+    viewer.setStyle({}, { cartoon: { color: WHOLE_PROTEIN_COLOR, opacity: 0.28 } });
+    if (columnView) {
+      const residuesByColor = new Map();
+      for (const [residueId, color] of columnResidueColorMap(residueLookup).entries()) {
+        const bucket = residuesByColor.get(color) || [];
+        bucket.push(residueId);
+        residuesByColor.set(color, bucket);
       }
       for (const [color, residueIds] of residuesByColor.entries()) {
         viewer.setStyle({ resi: residueIds }, { cartoon: { color, opacity: 1.0 } });
@@ -522,62 +739,60 @@ export function createStructureViewController({
       if (structurePayload.partner_fragment_residue_ids.length > 0) {
         viewer.setStyle(
           { resi: structurePayload.partner_fragment_residue_ids },
-          { cartoon: { color: "#b8c9dc", opacity: 0.96 } }
+          { cartoon: { color: PARTNER_DOMAIN_COLOR, opacity: 0.96 } }
         );
       }
       if (structurePayload.partner_surface_residue_ids.length > 0) {
         viewer.setStyle(
           { resi: structurePayload.partner_surface_residue_ids },
-          { cartoon: { color: "#5b9fe3", opacity: 1.0 } }
+          { cartoon: { color: PARTNER_SURFACE_COLOR, opacity: 1.0 } }
         );
       }
       if (structurePayload.partner_interface_residue_ids.length > 0) {
         viewer.setStyle(
           { resi: structurePayload.partner_interface_residue_ids },
-          { cartoon: { color: "#0b3f78", opacity: 1.0 } }
+          { cartoon: { color: PARTNER_INTERFACE_COLOR, opacity: 1.0 } }
         );
       }
-      viewer.addStyle(
-        { resi: fragmentResidues, atom: "CA" },
-        { sphere: { color: "#696157", opacity: 0.62, radius: 0.56 } }
-      );
+      addMainResidueSpheres(viewer, structurePayload, fragmentResidues, columnView, residueLookup);
+      addPartnerContactResidueSpheres(viewer, structurePayload, contactsVisible);
+      renderResidueContactLines(viewer, structurePayload, contactsVisible);
       return;
     }
-    viewer.setStyle({ resi: fragmentResidues }, { cartoon: { color: "#8f8a82", opacity: 1.0 } });
+    viewer.setStyle({ resi: fragmentResidues }, { cartoon: { color: MAIN_DOMAIN_COLOR, opacity: 1.0 } });
     if (structurePayload.surface_residue_ids.length > 0) {
       viewer.setStyle(
         { resi: structurePayload.surface_residue_ids },
-        { cartoon: { color: "#d7a84c", opacity: 1.0 } }
+        { cartoon: { color: MAIN_SURFACE_COLOR, opacity: 1.0 } }
       );
     }
     if (structurePayload.interface_residue_ids.length > 0) {
       viewer.setStyle(
         { resi: structurePayload.interface_residue_ids },
-        { cartoon: { color: "#bc402d", opacity: 1.0 } }
+        { cartoon: { color: MAIN_INTERFACE_COLOR, opacity: 1.0 } }
       );
     }
     if (structurePayload.partner_fragment_residue_ids.length > 0) {
       viewer.setStyle(
         { resi: structurePayload.partner_fragment_residue_ids },
-        { cartoon: { color: "#b8c9dc", opacity: 0.96 } }
+        { cartoon: { color: PARTNER_DOMAIN_COLOR, opacity: 0.96 } }
       );
     }
     if (structurePayload.partner_surface_residue_ids.length > 0) {
       viewer.setStyle(
         { resi: structurePayload.partner_surface_residue_ids },
-        { cartoon: { color: "#5b9fe3", opacity: 1.0 } }
+        { cartoon: { color: PARTNER_SURFACE_COLOR, opacity: 1.0 } }
       );
     }
     if (structurePayload.partner_interface_residue_ids.length > 0) {
       viewer.setStyle(
         { resi: structurePayload.partner_interface_residue_ids },
-        { cartoon: { color: "#0b3f78", opacity: 1.0 } }
+        { cartoon: { color: PARTNER_INTERFACE_COLOR, opacity: 1.0 } }
       );
     }
-    viewer.addStyle(
-      { resi: fragmentResidues, atom: "CA" },
-      { sphere: { color: "#696157", opacity: 0.62, radius: 0.56 } }
-    );
+    addMainResidueSpheres(viewer, structurePayload, fragmentResidues, columnView, residueLookup);
+    addPartnerContactResidueSpheres(viewer, structurePayload, contactsVisible);
+    renderResidueContactLines(viewer, structurePayload, contactsVisible);
   }
 
   function formatStructureHover(atom) {
@@ -693,6 +908,7 @@ export function createStructureViewController({
         `Main surface: ${payload.surface_residue_ids.length} | ` +
         `Partner interface: ${payload.partner_interface_residue_ids.length} | ` +
         `Partner surface: ${payload.partner_surface_residue_ids.length} | ` +
+        `Contacts: ${residueContactPairs(payload).length} | ` +
         `AlphaFold: ${payload.model_source || "unknown"}`;
     syncColumnLegends();
   }

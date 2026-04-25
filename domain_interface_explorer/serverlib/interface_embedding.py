@@ -1035,7 +1035,14 @@ def compute_cluster_compare_payload(
 ) -> dict[str, object]:
     clustering_points = clustering_payload["points"]
     entries = distance_data["entries"]
-    distance_matrix = distance_data["distance_matrix"]
+    distance_matrix = distance_data.get("distance_matrix")
+    if distance_matrix is None:
+        return compute_compressed_cluster_compare_payload(
+            distance_data,
+            clustering_payload,
+            cluster_label,
+            limit,
+        )
     if len(clustering_points) != len(entries) or distance_matrix.shape[0] != len(entries):
         raise ValueError(
             "clustering data is out of sync with the current filtered interface rows; "
@@ -1141,6 +1148,157 @@ def compute_cluster_compare_payload(
         "cluster_label": cluster_label,
         "distance": str(distance_data["distance"]),
         "entry_count": len(cluster_indices),
+        "remaining_entry_count": remaining_count,
+        "selected_entries": selected_entries,
+    }
+
+
+def compute_compressed_cluster_compare_payload(
+    distance_data: dict[str, object],
+    clustering_payload: dict[str, object],
+    cluster_label: int,
+    limit: int = DEFAULT_CLUSTER_COMPARE_LIMIT,
+) -> dict[str, object]:
+    clustering_points = clustering_payload["points"]
+    entries = distance_data["entries"]
+    compressed_entries = distance_data["compressed_entries"]
+    group_index_by_entry = distance_data["group_index_by_entry"]
+    distance_matrix = distance_data["compressed_distance_matrix"]
+    if (
+        len(clustering_points) != len(entries)
+        or len(group_index_by_entry) != len(entries)
+        or distance_matrix.shape[0] != len(compressed_entries)
+    ):
+        raise ValueError(
+            "clustering data is out of sync with the current filtered interface rows; "
+            "please recompute clustering"
+        )
+
+    member_indices_by_group: dict[int, list[int]] = {}
+    for entry_index, point in enumerate(clustering_points):
+        if int(point["cluster_label"]) != cluster_label:
+            continue
+        group_index = int(group_index_by_entry[entry_index])
+        member_indices_by_group.setdefault(group_index, []).append(entry_index)
+    if not member_indices_by_group:
+        raise ValueError(f"cluster {cluster_label} has no entries")
+
+    def group_order_key(group_index: int) -> tuple[str, str, int]:
+        return min(
+            (
+                str(entries[entry_index]["row_key"]),
+                str(entries[entry_index]["partner_domain"]),
+                entry_index,
+            )
+            for entry_index in member_indices_by_group[group_index]
+        )
+
+    def compare_group_order(left_index: int, right_index: int) -> int:
+        left_key = group_order_key(left_index)
+        right_key = group_order_key(right_index)
+        if left_key < right_key:
+            return -1
+        if left_key > right_key:
+            return 1
+        return 0
+
+    cluster_group_indices = sorted(member_indices_by_group, key=group_order_key)
+    selection_limit = min(max(1, int(limit)), len(cluster_group_indices))
+    selected_indices = [random.choice(cluster_group_indices)]
+    selected_set = set(selected_indices)
+
+    while len(selected_indices) < selection_limit:
+        best_index: int | None = None
+        best_min_distance = -1.0
+        best_mean_distance = -1.0
+        for candidate_index in cluster_group_indices:
+            if candidate_index in selected_set:
+                continue
+            min_distance = math.inf
+            total_distance = 0.0
+            for selected_index in selected_indices:
+                distance = float(distance_matrix[candidate_index][selected_index])
+                min_distance = min(min_distance, distance)
+                total_distance += distance
+            mean_distance = total_distance / len(selected_indices)
+            if (
+                min_distance > best_min_distance
+                or (
+                    min_distance == best_min_distance
+                    and (
+                        mean_distance > best_mean_distance
+                        or (
+                            mean_distance == best_mean_distance
+                            and (best_index is None or compare_group_order(candidate_index, best_index) < 0)
+                        )
+                    )
+                )
+            ):
+                best_index = candidate_index
+                best_min_distance = min_distance
+                best_mean_distance = mean_distance
+        if best_index is None:
+            break
+        selected_indices.append(best_index)
+        selected_set.add(best_index)
+
+    group_member_counts = {
+        group_index: len(member_indices)
+        for group_index, member_indices in member_indices_by_group.items()
+    }
+    remaining_indices = [index for index in cluster_group_indices if index not in selected_set]
+    assigned_counts: dict[int, int] = {index: 0 for index in selected_indices}
+    selected_rank_by_index = {index: rank for rank, index in enumerate(selected_indices)}
+    for remaining_index in remaining_indices:
+        best_selected_index: int | None = None
+        best_distance = math.inf
+        best_rank = math.inf
+        for selected_index in selected_indices:
+            distance = float(distance_matrix[remaining_index][selected_index])
+            selected_rank = selected_rank_by_index[selected_index]
+            if (
+                distance < best_distance
+                or (
+                    distance == best_distance
+                    and selected_rank < best_rank
+                )
+            ):
+                best_selected_index = selected_index
+                best_distance = distance
+                best_rank = selected_rank
+        if best_selected_index is not None:
+            assigned_counts[best_selected_index] = (
+                assigned_counts.get(best_selected_index, 0)
+                + group_member_counts.get(remaining_index, 0)
+            )
+
+    remaining_count = sum(group_member_counts[index] for index in remaining_indices)
+    selected_entries = []
+    for selection_rank, group_index in enumerate(selected_indices):
+        entry_index = random.choice(member_indices_by_group[group_index])
+        selected_entries.append(
+            {
+                "row_key": str(entries[entry_index]["row_key"]),
+                "partner_domain": str(entries[entry_index]["partner_domain"]),
+                "selection_rank": selection_rank,
+                "coverage_count": assigned_counts.get(group_index, 0),
+                "coverage_fraction": (
+                    (assigned_counts.get(group_index, 0) / remaining_count)
+                    if remaining_count > 0
+                    else 0.0
+                ),
+                "coverage_percent": (
+                    (assigned_counts.get(group_index, 0) * 100.0 / remaining_count)
+                    if remaining_count > 0
+                    else 0.0
+                ),
+            }
+        )
+
+    return {
+        "cluster_label": cluster_label,
+        "distance": str(distance_data["distance"]),
+        "entry_count": sum(group_member_counts.values()),
         "remaining_entry_count": remaining_count,
         "selected_entries": selected_entries,
     }
