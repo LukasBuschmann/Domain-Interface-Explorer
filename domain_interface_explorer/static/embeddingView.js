@@ -1695,7 +1695,7 @@ export function createEmbeddingViewController({
           renderColumnsChart();
           renderRepresentativeClusterLegend();
           if (state.representativeStructure && representativeLens() === "cluster") {
-            renderRepresentativeStructure();
+            void renderRepresentativeStructure();
           }
         }
       }

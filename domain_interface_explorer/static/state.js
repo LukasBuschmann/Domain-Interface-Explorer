@@ -2,6 +2,7 @@ import {
   DEFAULT_CLUSTERING_SETTINGS,
   DEFAULT_EMBEDDING_SETTINGS,
   DEFAULT_SELECTION_SETTINGS,
+  DEFAULT_STRUCTURE_DISPLAY_SETTINGS,
 } from "./constants.js";
 
 export const state = {
@@ -104,6 +105,10 @@ export const state = {
   structureRequestId: 0,
   structureColumnView: false,
   structureContactsVisible: true,
+  structureDisplaySettingsOpen: false,
+  structureDisplaySettings: {
+    ...DEFAULT_STRUCTURE_DISPLAY_SETTINGS,
+  },
   visibleRows: [],
   hover: null,
   filteredRowIndexes: [],

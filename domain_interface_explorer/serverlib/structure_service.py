@@ -142,13 +142,17 @@ def model_file_is_usable(model_path: Path) -> bool:
         return False
     if model_path.suffix.lower() == ".pdb":
         try:
+            has_atom = False
+            has_end = False
             with model_path.open("r", encoding="utf-8", errors="ignore") as handle:
                 for line in handle:
                     if line.startswith("ATOM"):
-                        return True
+                        has_atom = True
+                    elif line.startswith("END"):
+                        has_end = True
         except OSError:
             return False
-        return False
+        return has_atom and has_end
     return True
 
 
@@ -453,6 +457,36 @@ def render_structure_image(
         raise RuntimeError(str(exc) or "PyMOL render failed") from exc
 
 
+def convert_model_to_pdb(model_path: Path, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "wb",
+            dir=output_path.parent,
+            prefix=f".{output_path.name}.",
+            suffix=".tmp.pdb",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+        pymol2 = load_pymol2_module()
+        with _PYMOL_API_LOCK:
+            with pymol2.PyMOL() as session:
+                cmd = session.cmd
+                cmd.reinitialize()
+                cmd.load(str(model_path), "structure_model")
+                cmd.save(str(temp_path), "structure_model")
+        os.replace(temp_path, output_path)
+    except Exception as exc:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        error_message = str(exc).strip() or "PyMOL model conversion failed"
+        raise RuntimeError(error_message) from exc
+
+
 def render_aligned_model(
     reference_model_path: Path,
     reference_fragment_key: str,
@@ -461,6 +495,7 @@ def render_aligned_model(
     output_path: Path,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
     reference_start, reference_end = fragment_bounds(reference_fragment_key)
     mobile_start, mobile_end = fragment_bounds(mobile_fragment_key)
     reference_selection = (
@@ -472,6 +507,14 @@ def render_aligned_model(
         f"and resi {mobile_start}-{mobile_end}"
     )
     try:
+        with tempfile.NamedTemporaryFile(
+            "wb",
+            dir=output_path.parent,
+            prefix=f".{output_path.name}.",
+            suffix=".tmp.pdb",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
         pymol2 = load_pymol2_module()
         with _PYMOL_API_LOCK:
             with pymol2.PyMOL() as session:
@@ -500,8 +543,14 @@ def render_aligned_model(
                     mobile_diagnostics=mobile_diagnostics,
                 )
                 cmd.cealign(reference_selection, mobile_selection)
-                cmd.save(str(output_path), "mobile_model")
+                cmd.save(str(temp_path), "mobile_model")
+        os.replace(temp_path, output_path)
     except Exception as exc:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         error_message = str(exc).strip() or "PyMOL cealign failed"
         if error_message.lower() in {"error", "error:"}:
             error_message = "PyMOL cealign failed"

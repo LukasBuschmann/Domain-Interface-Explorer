@@ -3,6 +3,7 @@ import {
   CLUSTER_COLOR_PALETTE,
   DEFAULT_CLUSTERING_SETTINGS,
   DEFAULT_EMBEDDING_SETTINGS,
+  DEFAULT_STRUCTURE_DISPLAY_SETTINGS,
   HEADER_HEIGHT,
   LABEL_WIDTH,
   PARTNER_COLOR_PALETTE,
@@ -135,6 +136,9 @@ const {
   structureMemberNext,
   structureMemberPrev,
   structureContactViewToggle,
+  structureDisplaySettingsClose,
+  structureDisplaySettingsPanel,
+  structureRecenterDomainButton,
   structureModalStatus,
   structureModalSubtitle,
   structureModalTitle,
@@ -326,7 +330,9 @@ const embeddingViewController = createEmbeddingViewController({
   interfaceSelect,
   partnerColor,
   renderRepresentativeClusterLegend,
-  renderRepresentativeStructure: () => renderRepresentativeStructure(),
+  renderRepresentativeStructure: () => {
+    void renderRepresentativeStructure();
+  },
   representativeLens,
 });
 const {
@@ -588,7 +594,7 @@ function representativeResidueStyles(row, clusterLensData = null) {
 
   const residueLookup = buildStructureResidueLookup(row);
   const mode = representativeLens();
-  const baseColor = [189, 183, 172];
+  const baseColor = [143, 138, 130];
   const interfaceColor = [188, 64, 45];
   const conservedColor = [47, 125, 90];
   const styles = [];
@@ -620,10 +626,11 @@ function representativeResidueStyles(row, clusterLensData = null) {
       color = columnColor(entry.columnIndex);
     } else if (mode === "cluster") {
       const clusterResidue = clusterByResidueId.get(entry.residueId);
-      intensity = clusterResidue?.supportFraction || 0;
-      color = clusterResidue
-        ? clusterLensColor(clusterResidue.clusterLabel, intensity)
-        : color;
+      if (!clusterResidue) {
+        continue;
+      }
+      intensity = clusterResidue.supportFraction || 0;
+      color = clusterLensColor(clusterResidue.clusterLabel, intensity);
     }
     styles.push({
       residueId: entry.residueId,
@@ -1016,7 +1023,7 @@ async function openStructureForInteractionEntry(entry, loadedStructure = {}) {
     return;
   }
   if (loadedStructure.payload && typeof loadedStructure.modelText === "string") {
-    renderLoadedStructure(row, loadedStructure.payload, loadedStructure.modelText, {
+    await renderLoadedStructure(row, loadedStructure.payload, loadedStructure.modelText, {
       previewUrl: loadedStructure.previewUrl || "",
       initialView: loadedStructure.initialView || null,
       modelKey: loadedStructure.modelKey || "",
@@ -1048,12 +1055,12 @@ const structureViewController = createStructureViewController({
   clearEmbeddingMemberSelection,
 });
 const {
-  applyStructureStyles,
   closeStructureModal,
   getStructureViewer,
   handleStructureLoadFailure,
   loadInteractiveStructure,
   openStructureModal,
+  recenterStructureDomain,
   renderLoadedStructure,
   renderInteractiveStructure,
   resetStructurePanel,
@@ -1073,7 +1080,6 @@ const representativeViewController = createRepresentativeViewController({
   partnerInteractionDistribution,
   buildStructureResidueLookup,
   representativeLens,
-  clusterHoverColor,
   getRepresentativeRow,
   clusteringMethodLabel,
   allRepresentativeClusterLabels,
@@ -1101,7 +1107,6 @@ const clusterCompareController = createClusterCompareController({
   embeddingClusterLabel,
   embeddingDistanceLabel,
   nextBrowserPaint,
-  applyStructureStyles,
   openStructureForEntry: openStructureForInteractionEntry,
 });
 const {
@@ -1109,6 +1114,167 @@ const {
   openClusterCompareForLabel,
   resizeClusterCompareViewers,
 } = clusterCompareController;
+
+const STRUCTURE_DISPLAY_PRESETS = {
+  soft: {
+    ...DEFAULT_STRUCTURE_DISPLAY_SETTINGS,
+    preset: "soft",
+  },
+  crisp: {
+    ...DEFAULT_STRUCTURE_DISPLAY_SETTINGS,
+    preset: "crisp",
+    shadows: true,
+    lightIntensity: 0.96,
+    ambientIntensity: 0.36,
+    contextAlpha: 0.2,
+    quality: "higher",
+    antialiasSampleLevel: 4,
+  },
+  illustrative: {
+    ...DEFAULT_STRUCTURE_DISPLAY_SETTINGS,
+    preset: "illustrative",
+    outline: true,
+    ambientOcclusion: true,
+    shadows: false,
+    contextAlpha: 0.3,
+    roughness: 0.88,
+    antialiasSampleLevel: 3,
+  },
+  performance: {
+    ...DEFAULT_STRUCTURE_DISPLAY_SETTINGS,
+    preset: "performance",
+    ambientOcclusion: false,
+    shadows: false,
+    outline: false,
+    depthOfField: false,
+    fog: false,
+    sharpen: false,
+    quality: "medium",
+    antialiasSampleLevel: 1,
+    contextAlpha: 0.18,
+  },
+};
+
+const STRUCTURE_REPRESENTATION_SETTINGS = new Set([
+  "contextAlpha",
+  "contactOpacity",
+  "contactRadius",
+  "roughness",
+  "metalness",
+  "bumpiness",
+  "quality",
+]);
+
+let structureDisplayRefreshFrame = 0;
+
+function structureDisplayControls() {
+  return structureDisplaySettingsPanel
+    ? [...structureDisplaySettingsPanel.querySelectorAll("[data-structure-display-setting]")]
+    : [];
+}
+
+function setStructureDisplaySettingsOpen(open) {
+  state.structureDisplaySettingsOpen = Boolean(open);
+  structureDisplaySettingsPanel?.classList.toggle("hidden", !state.structureDisplaySettingsOpen);
+  structureDisplaySettingsPanel?.setAttribute(
+    "aria-hidden",
+    state.structureDisplaySettingsOpen ? "false" : "true"
+  );
+}
+
+function syncStructureDisplaySettingsUi() {
+  const settings = state.structureDisplaySettings || {};
+  for (const control of structureDisplayControls()) {
+    const key = control.dataset.structureDisplaySetting;
+    if (!key) {
+      continue;
+    }
+    if (control.type === "checkbox") {
+      control.checked = Boolean(settings[key]);
+    } else if (settings[key] !== undefined) {
+      control.value = String(settings[key]);
+    }
+  }
+  setStructureDisplaySettingsOpen(state.structureDisplaySettingsOpen);
+}
+
+function controlValue(control) {
+  if (control.type === "checkbox") {
+    return control.checked;
+  }
+  if (control.type === "range" || control.type === "number") {
+    const value = Number(control.value);
+    return Number.isFinite(value) ? value : control.value;
+  }
+  return control.value;
+}
+
+function applyStructureDisplaySettingsToViewers() {
+  const settings = state.structureDisplaySettings;
+  state.structureViewer?.applyDisplaySettings?.(settings);
+  state.representativeViewer?.applyDisplaySettings?.(settings);
+  for (const tile of state.clusterCompareTiles || []) {
+    tile.viewer?.applyDisplaySettings?.(settings);
+  }
+  resizeClusterCompareViewers();
+}
+
+function scheduleStructureDisplayRepresentationRefresh() {
+  if (structureDisplayRefreshFrame) {
+    window.cancelAnimationFrame(structureDisplayRefreshFrame);
+  }
+  structureDisplayRefreshFrame = window.requestAnimationFrame(() => {
+    structureDisplayRefreshFrame = 0;
+    if (state.structureData && structureModal && !structureModal.classList.contains("hidden")) {
+      void renderInteractiveStructure();
+    }
+    if (state.representativeStructure) {
+      void renderRepresentativeStructure();
+    }
+  });
+}
+
+function updateStructureDisplaySetting(control) {
+  const key = control?.dataset?.structureDisplaySetting;
+  if (!key) {
+    return;
+  }
+  if (key === "preset") {
+    const preset = control.value;
+    state.structureDisplaySettings = {
+      ...DEFAULT_STRUCTURE_DISPLAY_SETTINGS,
+      ...(STRUCTURE_DISPLAY_PRESETS[preset] || {}),
+      preset,
+    };
+    syncStructureDisplaySettingsUi();
+    applyStructureDisplaySettingsToViewers();
+    scheduleStructureDisplayRepresentationRefresh();
+    return;
+  }
+  state.structureDisplaySettings = {
+    ...state.structureDisplaySettings,
+    preset: "custom",
+    [key]: controlValue(control),
+  };
+  syncStructureDisplaySettingsUi();
+  applyStructureDisplaySettingsToViewers();
+  if (
+    control.dataset.representationSetting === "true" ||
+    STRUCTURE_REPRESENTATION_SETTINGS.has(key)
+  ) {
+    scheduleStructureDisplayRepresentationRefresh();
+  }
+}
+
+function isTextEntryTarget(target) {
+  const element = target instanceof Element ? target : null;
+  if (!element) {
+    return false;
+  }
+  return Boolean(
+    element.closest("input, textarea, select, [contenteditable='true']")
+  );
+}
 
 const msaViewController = createMsaViewController({
   state,
@@ -1584,7 +1750,7 @@ representativeClusterLegend?.addEventListener("click", (event) => {
 
   renderRepresentativeClusterLegend();
   if (state.representativeStructure && representativeLens() === "cluster") {
-    renderRepresentativeStructure();
+    void renderRepresentativeStructure();
   }
 });
 
@@ -1608,7 +1774,7 @@ representativeLensGroup.addEventListener("click", (event) => {
     void ensureEmbeddingClusteringLoaded();
   }
   if (state.representativeStructure) {
-    renderRepresentativeStructure();
+    void renderRepresentativeStructure();
   }
 });
 
@@ -1616,7 +1782,7 @@ structureColumnViewToggle.addEventListener("change", () => {
   state.structureColumnView = structureColumnViewToggle.checked;
   syncColumnLegends();
   if (state.structureData) {
-    renderInteractiveStructure();
+    void renderInteractiveStructure();
   }
 });
 
@@ -1624,8 +1790,28 @@ structureContactViewToggle?.addEventListener("change", () => {
   state.structureContactsVisible = structureContactViewToggle.checked;
   syncColumnLegends();
   if (state.structureData) {
-    renderInteractiveStructure();
+    void renderInteractiveStructure();
   }
+});
+
+structureDisplaySettingsPanel?.addEventListener("input", (event) => {
+  const control = event.target.closest("[data-structure-display-setting]");
+  if (!control || !structureDisplaySettingsPanel.contains(control)) {
+    return;
+  }
+  updateStructureDisplaySetting(control);
+});
+
+structureDisplaySettingsPanel?.addEventListener("change", (event) => {
+  const control = event.target.closest("[data-structure-display-setting]");
+  if (!control || !structureDisplaySettingsPanel.contains(control)) {
+    return;
+  }
+  updateStructureDisplaySetting(control);
+});
+
+structureDisplaySettingsClose?.addEventListener("click", () => {
+  setStructureDisplaySettingsOpen(false);
 });
 
 representativePartnerFilterList.addEventListener("click", (event) => {
@@ -1657,7 +1843,7 @@ representativePartnerFilterList.addEventListener("click", (event) => {
   invalidateRepresentativePartnerCache();
   renderRepresentativePartnerFilter();
   if (state.representativeStructure && representativeLens() === "partners") {
-    renderRepresentativeStructure();
+    void renderRepresentativeStructure();
   }
 });
 
@@ -1773,6 +1959,12 @@ structureMemberNext?.addEventListener("click", async (event) => {
   await cycleEmbeddingMember(1);
 });
 
+structureRecenterDomainButton?.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  recenterStructureDomain();
+});
+
 embeddingCanvas.addEventListener(
   "wheel",
   (event) => {
@@ -1871,8 +2063,32 @@ document.addEventListener("click", (event) => {
     state.embeddingSettingsOpen = false;
     syncEmbeddingSettingsUi();
   }
+  if (
+    state.structureDisplaySettingsOpen &&
+    !event.target.closest("#structure-display-settings-panel")
+  ) {
+    setStructureDisplaySettingsOpen(false);
+  }
 });
 window.addEventListener("keydown", (event) => {
+  if (
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    event.key.toLowerCase() === "d" &&
+    structureModal &&
+    !structureModal.classList.contains("hidden") &&
+    !isTextEntryTarget(event.target)
+  ) {
+    event.preventDefault();
+    setStructureDisplaySettingsOpen(!state.structureDisplaySettingsOpen);
+    syncStructureDisplaySettingsUi();
+    return;
+  }
+  if (event.key === "Escape" && state.structureDisplaySettingsOpen) {
+    setStructureDisplaySettingsOpen(false);
+    return;
+  }
   if (event.key === "Escape" && !structureModal.classList.contains("hidden")) {
     closeStructureModal();
     return;
@@ -1915,4 +2131,5 @@ if (window.ResizeObserver) {
   layoutObserver.observe(representativeViewerRoot);
 }
 
+syncStructureDisplaySettingsUi();
 initialize().catch(handleInitializeError);

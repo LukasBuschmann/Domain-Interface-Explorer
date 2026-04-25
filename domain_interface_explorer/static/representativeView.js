@@ -1,6 +1,7 @@
 import { fetchJson, fetchText } from "./api.js";
 import { interfaceFilePfamId } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams } from "./selectionSettings.js";
+import { createDomainMolstarViewer } from "./molstarView.js";
 
 export function createRepresentativeViewController({
   state,
@@ -16,7 +17,6 @@ export function createRepresentativeViewController({
   partnerInteractionDistribution,
   buildStructureResidueLookup,
   representativeLens,
-  clusterHoverColor,
   getRepresentativeRow,
   clusteringMethodLabel,
   allRepresentativeClusterLabels,
@@ -309,12 +309,9 @@ export function createRepresentativeViewController({
   }
 
   function getRepresentativeViewer() {
-    if (!window.$3Dmol) {
-      throw new Error("3Dmol.js is not available in the browser.");
-    }
     if (!state.representativeViewer) {
-      state.representativeViewer = window.$3Dmol.createViewer(elements.representativeViewerRoot, {
-        backgroundColor: "white",
+      state.representativeViewer = createDomainMolstarViewer(elements.representativeViewerRoot, {
+        kind: "representative",
       });
     }
     return state.representativeViewer;
@@ -330,64 +327,20 @@ export function createRepresentativeViewController({
     );
   }
 
-  function applyRepresentativeStyles(viewer, structurePayload, residueStyles, clusterLensData = null) {
-    const fragmentResidues = mainFragmentResidues(structurePayload);
-    viewer.setStyle({}, { cartoon: { color: "#c7c3bc", opacity: 0.22 } });
-    viewer.setStyle({ resi: fragmentResidues }, { cartoon: { color: "#bdb7ac", opacity: 1.0 } });
-
-    const residuesByColor = new Map();
-    for (const style of residueStyles) {
-      const bucket = residuesByColor.get(style.color) || [];
-      bucket.push(style.residueId);
-      residuesByColor.set(style.color, bucket);
-    }
-
-    for (const [color, residueIds] of residuesByColor.entries()) {
-      viewer.setStyle({ resi: residueIds }, { cartoon: { color, opacity: 1.0 } });
-    }
-    if (representativeLens() === "partners") {
-      viewer.addStyle(
-        { resi: fragmentResidues, atom: "CA" },
-        { sphere: { color: "#696157", opacity: 0.62, radius: 0.56 } }
-      );
-    } else if (representativeLens() === "cluster" && clusterLensData?.clusters?.length) {
-      const hoveredClusterLabel = state.representativeHoveredClusterLabel;
-      const hoveredCluster = clusterLensData.clusters.find(
-        (cluster) => cluster.clusterLabel === hoveredClusterLabel
-      );
-      if (hoveredCluster) {
-        viewer.setStyle(
-          { resi: hoveredCluster.residueIds },
-          {
-            cartoon: {
-              color: clusterHoverColor(hoveredCluster.clusterLabel),
-              opacity: 1.0,
-            },
-            stick: {
-              color: clusterHoverColor(hoveredCluster.clusterLabel),
-              opacity: 0.94,
-              radius: 0.16,
-            },
-          }
-        );
-      }
-    }
-  }
-
   function representativeDomainSelection(structurePayload) {
     return {
       resi: mainFragmentResidues(structurePayload),
     };
   }
 
-  function formatRepresentativeHover(atom, residueLookup) {
-    const residueId = Number(atom?.resi);
+  function formatRepresentativeHover(hover, residueLookup) {
+    const residueId = Number(hover?.residueId);
     const mapped = residueLookup.get(residueId);
-    const residueName = String(atom?.resn || "").toUpperCase();
+    const residueName = String(hover?.residueName || "").toUpperCase();
     const oneLetter = mapped?.aminoAcid || THREE_TO_ONE[residueName] || "?";
 
     return {
-      residueId: Number.isFinite(residueId) ? residueId : atom?.resi ?? "-",
+      residueId: Number.isFinite(residueId) ? residueId : hover?.residueId ?? "-",
       aminoAcid: residueName ? `${oneLetter} (${residueName})` : oneLetter,
       conservedness:
         mapped?.conservedness === "-" || mapped?.conservedness === undefined
@@ -398,84 +351,74 @@ export function createRepresentativeViewController({
   }
 
   function clearRepresentativeClusterHover(rerender = true) {
-    if (state.representativeHoveredClusterLabel === null) {
-      return;
-    }
+    const hadHoveredCluster = state.representativeHoveredClusterLabel !== null;
     state.representativeHoveredClusterLabel = null;
-    if (rerender && state.representativeStructure && representativeLens() === "cluster") {
-      renderRepresentativeStructure();
+    state.representativeViewer?.clearHighlight?.();
+    if (hadHoveredCluster && rerender && state.representativeStructure && representativeLens() === "cluster") {
+      renderRepresentativeClusterLegend(
+        representativeClusterLensData(state.representativeStructure.row)
+      );
     }
   }
 
-  function attachRepresentativeHover(viewer, row, structurePayload, clusterLensData = null) {
-    const fragmentResidues = representativeDomainSelection(structurePayload).resi;
-    const residueLookup = buildStructureResidueLookup(row);
-
-    viewer.setHoverable({}, false);
-    if (representativeLens() !== "partners" && representativeLens() !== "cluster") {
-      hideRepresentativeHoverCard();
-      return;
+  function handleRepresentativeHover(hoverPayload, row, clusterLensData = null) {
+    if (hoverPayload?.pointer) {
+      state.representativePointer = hoverPayload.pointer;
     }
-
     if (representativeLens() === "cluster") {
-      const hoverResidues = [...(clusterLensData?.clusterByResidueId?.keys() || [])];
-      if (hoverResidues.length === 0) {
+      const residueId = Number(hoverPayload?.residueId);
+      const clusterResidue = clusterLensData?.clusterByResidueId?.get(residueId);
+      if (!clusterResidue) {
+        clearRepresentativeClusterHover(true);
         hideRepresentativeHoverCard();
         return;
       }
-
-      viewer.setHoverable(
-        { resi: hoverResidues },
-        true,
-        (atom) => {
-          const clusterResidue = clusterLensData?.clusterByResidueId.get(Number(atom?.resi));
-          if (!clusterResidue) {
-            return;
-          }
-          if (state.representativeHoveredClusterLabel !== clusterResidue.clusterLabel) {
-            state.representativeHoveredClusterLabel = clusterResidue.clusterLabel;
-            renderRepresentativeStructure();
-          }
-          elements.representativeHoverCard.classList.remove("hidden");
-          setRepresentativeHoverCardMode("cluster", clusterResidue.label);
-          setRepresentativeHoverDistribution(
-            clusterResidue.distribution,
-            "Percent Of Domain Rows In Cluster",
-            "Hover a representative cluster region."
-          );
-          positionRepresentativeHoverCard();
-        },
-        () => {
-          clearRepresentativeClusterHover();
-          hideRepresentativeHoverCard();
-        }
+      if (state.representativeHoveredClusterLabel !== clusterResidue.clusterLabel) {
+        state.representativeHoveredClusterLabel = clusterResidue.clusterLabel;
+        renderRepresentativeClusterLegend(clusterLensData);
+      }
+      const cluster = clusterLensData?.clusters?.find(
+        (entry) => entry.clusterLabel === clusterResidue.clusterLabel
       );
+      state.representativeViewer?.highlightResidues?.(cluster?.residueIds || [residueId]);
+      elements.representativeHoverCard.classList.remove("hidden");
+      setRepresentativeHoverCardMode("cluster", clusterResidue.label);
+      setRepresentativeHoverDistribution(
+        clusterResidue.distribution,
+        "Percent Of Domain Rows In Cluster",
+        "Hover a representative cluster region."
+      );
+      positionRepresentativeHoverCard();
       return;
     }
 
-    viewer.setHoverable(
-      { resi: fragmentResidues, atom: "CA" },
-      true,
-      (atom) => {
-        const hover = formatRepresentativeHover(atom, residueLookup);
-        elements.representativeHoverCard.classList.remove("hidden");
-        setRepresentativeHoverCardMode("partners");
-        const distribution = partnerInteractionDistribution(hover.columnIndex);
-        setRepresentativeHoverDetails({
-          ...hover,
-          dominant: distribution[0]?.partnerDomain || "None",
-        });
-        setRepresentativeHoverDistribution(distribution, "Partner Distribution");
-        positionRepresentativeHoverCard();
-      },
-      () => {
-        clearRepresentativeClusterHover(false);
-        hideRepresentativeHoverCard();
-      }
-    );
+    if (representativeLens() !== "partners") {
+      hideRepresentativeHoverCard();
+      return;
+    }
+    const residueLookup = buildStructureResidueLookup(row);
+    const hover = formatRepresentativeHover(hoverPayload, residueLookup);
+    if (hover.columnIndex === null || hover.columnIndex === undefined) {
+      hideRepresentativeHoverCard();
+      return;
+    }
+    elements.representativeHoverCard.classList.remove("hidden");
+    setRepresentativeHoverCardMode("partners");
+    const distribution = partnerInteractionDistribution(hover.columnIndex);
+    setRepresentativeHoverDetails({
+      ...hover,
+      dominant: distribution[0]?.partnerDomain || "None",
+    });
+    setRepresentativeHoverDistribution(distribution, "Partner Distribution");
+    positionRepresentativeHoverCard();
   }
 
-  function renderRepresentativeStructure() {
+  function clearRepresentativeHover() {
+    clearRepresentativeClusterHover(true);
+    hideRepresentativeHoverCard();
+  }
+
+  async function renderRepresentativeStructure() {
     const representative = state.representativeStructure;
     if (!representative) {
       return;
@@ -492,37 +435,33 @@ export function createRepresentativeViewController({
       representativeLens() === "cluster" ? representativeClusterLensData(representative.row) : null;
     const residueStyles = representativeResidueStyles(representative.row, clusterLensData);
     const shouldPreserveView =
-      (
-        state.representativeRenderedRowKey === representative.row.row_key ||
-        (
-          Boolean(state.representativeAnchorRowKey) &&
-          (
-            representativeRowKey(representative.row) === state.representativeAnchorRowKey ||
-            representative.payload.alignment_reference_row_key === state.representativeAnchorRowKey
-          )
-        )
-      ) &&
+      state.representativeRenderedRowKey === representative.row.row_key &&
       typeof viewer.getView === "function" &&
       typeof viewer.setView === "function";
     const previousView = shouldPreserveView ? viewer.getView() : null;
     const domainSelection = representativeDomainSelection(representative.payload);
-    const shouldReloadModel = state.representativeRenderedRowKey !== representative.row.row_key;
-    if (shouldReloadModel) {
-      viewer.clear();
-      viewer.addModel(representative.modelText, representative.payload.model_format || "pdb");
-    } else {
-      viewer.setStyle({}, {});
-    }
-    applyRepresentativeStyles(viewer, representative.payload, residueStyles, clusterLensData);
-    attachRepresentativeHover(viewer, representative.row, representative.payload, clusterLensData);
+    await viewer.loadStructure({
+      modelText: representative.modelText,
+      payload: representative.payload,
+      format: representative.payload.model_format || "pdb",
+      label: representativeRowLabel(representative.row) || "Representative structure",
+      mode: "representative",
+      residueStyles,
+      clusterLensData,
+      representativeLens: representativeLens(),
+      displaySettings: state.structureDisplaySettings,
+      onHover: (hover) => handleRepresentativeHover(hover, representative.row, clusterLensData),
+      onHoverEnd: clearRepresentativeHover,
+    });
     viewer.resize();
     if (previousView) {
       viewer.setView(previousView);
-    } else if (shouldReloadModel) {
-      if (typeof viewer.center === "function") {
-        viewer.center(domainSelection);
+    } else {
+      if (typeof viewer.focusResiduesStable === "function") {
+        viewer.focusResiduesStable(domainSelection.resi, 8);
+      } else {
+        viewer.focusResidues(domainSelection.resi, 8);
       }
-      viewer.zoomTo(domainSelection, 8);
     }
     viewer.render();
     state.representativeRenderedRowKey = representative.row.row_key;
@@ -544,7 +483,7 @@ export function createRepresentativeViewController({
       state.representativeStructure?.row?.row_key === row.row_key &&
       state.representativeStructure?.requestedPartner === requestedPartner
     ) {
-      renderRepresentativeStructure();
+      await renderRepresentativeStructure();
       return;
     }
 
@@ -583,7 +522,7 @@ export function createRepresentativeViewController({
     if (!state.representativeAnchorRowKey) {
       state.representativeAnchorRowKey = requestRowKey;
     }
-    renderRepresentativeStructure();
+    await renderRepresentativeStructure();
   }
 
   return {

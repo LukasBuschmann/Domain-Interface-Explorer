@@ -47,11 +47,14 @@ from domain_interface_explorer.serverlib.stats_service import (
 )
 from domain_interface_explorer.serverlib.structure_service import (
     aligned_model_cache_key,
+    cache_file_lock,
     collect_row_structure_payload,
+    convert_model_to_pdb,
     ensure_alphafold_model,
     expand_fragment_key_to_residue_ids,
     fragment_bounds,
     fragment_key_to_ranges,
+    model_file_is_usable,
     parse_row_key,
     render_aligned_model,
     structure_cache_key,
@@ -120,6 +123,9 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/api/aligned-model/"):
             self._handle_aligned_model(parsed.path.removeprefix("/api/aligned-model/"))
+            return
+        if parsed.path.startswith("/api/converted-model/"):
+            self._handle_converted_model(parsed.path.removeprefix("/api/converted-model/"))
             return
         if parsed.path.startswith("/api/rendered-image/"):
             self._handle_rendered_image(parsed.path.removeprefix("/api/rendered-image/"))
@@ -466,6 +472,25 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             image_url = f"/api/rendered-image/{image_path.name}"
         response_model_path = model_path
         response_model_format = model_path.suffix.lstrip(".").lower()
+        if response_model_format in {"cif", "mmcif"}:
+            converted_model_path = self.cache_dir / "converted" / f"{uniprot_id}_{model_path.stem}.pdb"
+            try:
+                with cache_file_lock(converted_model_path):
+                    if not model_file_is_usable(converted_model_path):
+                        convert_model_to_pdb(model_path, converted_model_path)
+                response_model_path = converted_model_path
+                response_model_format = "pdb"
+            except RuntimeError as exc:
+                self._log_structure_preview(
+                    "cif conversion fallback",
+                    reason=str(exc),
+                    interface_file=interface_filename,
+                    row_key=row_key,
+                    uniprot_id=uniprot_id,
+                    fragment_key=fragment_key_name,
+                    partner=partner,
+                    align_to_row_key=align_to_row_key,
+                )
         alignment_reference_row_key = ""
         alignment_method = ""
         alignment_error = ""
@@ -483,14 +508,15 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                     mobile_fragment_key=fragment_key_name,
                 )
                 aligned_model_path = self.cache_dir / "aligned" / f"{aligned_cache_key}.pdb"
-                if not aligned_model_path.exists():
-                    render_aligned_model(
-                        reference_model_path,
-                        reference_fragment_key,
-                        model_path,
-                        fragment_key_name,
-                        aligned_model_path,
-                    )
+                with cache_file_lock(aligned_model_path):
+                    if not model_file_is_usable(aligned_model_path):
+                        render_aligned_model(
+                            reference_model_path,
+                            reference_fragment_key,
+                            model_path,
+                            fragment_key_name,
+                            aligned_model_path,
+                        )
                 response_model_path = aligned_model_path
                 response_model_format = "pdb"
                 alignment_reference_row_key = align_to_row_key
@@ -529,6 +555,8 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 "model_url": (
                     f"/api/aligned-model/{Path(response_model_path).name}"
                     if response_model_path.parent == self.cache_dir / "aligned"
+                    else f"/api/converted-model/{Path(response_model_path).name}"
+                    if response_model_path.parent == self.cache_dir / "converted"
                     else f"/api/alphafold-model/{uniprot_id}/{Path(response_model_path).name}"
                 ),
                 "model_format": response_model_format,
@@ -563,6 +591,23 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_aligned_model(self, filename: str) -> None:
         model_path = self.cache_dir / "aligned" / Path(filename).name
+        if not model_path.exists() or not model_path.is_file():
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        mime_type, _ = mimetypes.guess_type(str(model_path))
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", mime_type or "chemical/x-pdb")
+        self.send_header("Content-Length", str(model_path.stat().st_size))
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.end_headers()
+        try:
+            with model_path.open("rb") as handle:
+                self.wfile.write(handle.read())
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
+    def _handle_converted_model(self, filename: str) -> None:
+        model_path = self.cache_dir / "converted" / Path(filename).name
         if not model_path.exists() or not model_path.is_file():
             self.send_error(HTTPStatus.NOT_FOUND)
             return

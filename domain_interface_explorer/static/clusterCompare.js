@@ -1,6 +1,7 @@
 import { fetchJson, fetchText } from "./api.js";
 import { interactionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams } from "./selectionSettings.js";
+import { createDomainMolstarViewer } from "./molstarView.js";
 
 export function createClusterCompareController({
   state,
@@ -11,7 +12,6 @@ export function createClusterCompareController({
   embeddingClusterLabel,
   embeddingDistanceLabel,
   nextBrowserPaint,
-  applyStructureStyles,
   openStructureForEntry,
 }) {
   const CLUSTER_COMPARE_CACHE_LIMIT = 8;
@@ -67,6 +67,18 @@ export function createClusterCompareController({
     return `${cacheKey}${separator}_reroll=${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
 
+  function clusterCompareRecordHasModelData(record) {
+    return (record?.results || []).every(
+      (result) =>
+        result?.error ||
+        (
+          result?.payload &&
+          typeof result.modelText === "string" &&
+          result.modelText.length > 0
+        )
+    );
+  }
+
   function readClusterCompareCache(cacheKey) {
     const cache = state.clusterCompareCache;
     if (!cache || typeof cache.get !== "function") {
@@ -74,6 +86,10 @@ export function createClusterCompareController({
     }
     const cached = cache.get(cacheKey);
     if (!cached) {
+      return null;
+    }
+    if (!clusterCompareRecordHasModelData(cached)) {
+      cache.delete(cacheKey);
       return null;
     }
     if (typeof cache.delete === "function" && typeof cache.set === "function") {
@@ -95,6 +111,19 @@ export function createClusterCompareController({
     }
   }
 
+  function renderedClusterCompareRecord(record) {
+    return {
+      ...record,
+      results: state.clusterCompareTiles.map((tile) => ({
+        entry: tile.entry,
+        payload: tile.payload,
+        modelText: tile.modelText,
+        previewUrl: tile.previewUrl,
+        error: tile.error,
+      })),
+    };
+  }
+
   function setClusterCompareGridLoading(visible) {
     if (!elements.clusterCompareGrid) {
       return;
@@ -109,7 +138,7 @@ export function createClusterCompareController({
     const resetSharedView = options.resetSharedView !== false;
     for (const tile of state.clusterCompareTiles) {
       tile.cleanupSync?.();
-      tile.viewer?.clear?.();
+      tile.viewer?.destroy?.();
     }
     state.clusterCompareTiles = [];
     if (resetSharedView) {
@@ -184,7 +213,8 @@ export function createClusterCompareController({
     if (!tile?.viewerRoot) {
       return;
     }
-    tile.viewer?.clear?.();
+    tile.viewer?.destroy?.();
+    tile.viewer = null;
     tile.viewerRoot.replaceChildren();
     tile.viewerRoot.classList.add("cluster-compare-tile-viewer-error");
     const errorBox = document.createElement("div");
@@ -374,6 +404,40 @@ export function createClusterCompareController({
     };
   }
 
+  function retryModelUrl(modelUrl) {
+    const separator = String(modelUrl || "").includes("?") ? "&" : "?";
+    return `${modelUrl}${separator}_retry=${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function shouldRetryClusterCompareModelLoad(error, tile) {
+    const message = String(error?.message || error || "");
+    return Boolean(
+      tile?.payload?.model_url &&
+      !tile.modelRetryAttempted &&
+      (
+        message.includes("Mol* could not parse") ||
+        message.includes("s is undefined") ||
+        message.includes("can't access property") ||
+        message.includes("Cannot read properties")
+      )
+    );
+  }
+
+  async function loadClusterCompareTileViewer(viewer, tile, modelText) {
+    await viewer.loadStructure({
+      modelText,
+      payload: tile.payload,
+      format: tile.payload.model_format || "pdb",
+      label: tile.entry?.rowKey || "Cluster comparison structure",
+      mode: "compare",
+      columnView: false,
+      contactsVisible: false,
+      residueLookup: new Map(),
+      residueStyles: [],
+      displaySettings: state.structureDisplaySettings,
+    });
+  }
+
   function initializeClusterCompareSharedView() {
     if (state.clusterCompareSharedView) {
       for (const tile of state.clusterCompareTiles) {
@@ -415,39 +479,46 @@ export function createClusterCompareController({
     }
   }
 
-  function renderClusterCompareTile(tileIndex) {
+  async function renderClusterCompareTile(tileIndex) {
     const tile = state.clusterCompareTiles[tileIndex];
-    if (!tile || tile.error || !tile.viewerRoot || !window.$3Dmol) {
+    if (!tile || tile.error || !tile.viewerRoot) {
       return;
     }
     tile.viewerRoot.classList.remove("cluster-compare-tile-viewer-error");
 
     if (!tile.viewer) {
-      tile.viewer = window.$3Dmol.createViewer(tile.viewerRoot, {
-        backgroundColor: "white",
+      tile.viewer = createDomainMolstarViewer(tile.viewerRoot, {
+        kind: "cluster-compare",
       });
       tile.cleanupSync = bindClusterCompareViewerSync(tileIndex, tile.viewerRoot);
     }
 
     const viewer = tile.viewer;
     const { payload, modelText } = tile;
-    viewer.clear();
-    viewer.addModel(modelText, payload.model_format || "pdb");
-    applyStructureStyles(viewer, payload, {
-      columnView: false,
-      contactsVisible: false,
-      residueLookup: new Map(),
-    });
+    if (!payload || typeof modelText !== "string" || modelText.length === 0) {
+      throw new Error("Structure preview is missing model data.");
+    }
+    try {
+      await loadClusterCompareTileViewer(viewer, tile, modelText);
+    } catch (error) {
+      if (!shouldRetryClusterCompareModelLoad(error, tile)) {
+        throw error;
+      }
+      tile.modelRetryAttempted = true;
+      const refreshedModelText = await fetchText(retryModelUrl(payload.model_url));
+      if (typeof refreshedModelText !== "string" || refreshedModelText.length === 0) {
+        throw error;
+      }
+      tile.modelText = refreshedModelText;
+      await loadClusterCompareTileViewer(viewer, tile, refreshedModelText);
+    }
     viewer.resize();
 
     const domainSelection = clusterCompareDomainSelection(payload);
     if (state.clusterCompareSharedView && typeof viewer.setView === "function") {
       viewer.setView(state.clusterCompareSharedView);
     } else {
-      if (typeof viewer.center === "function") {
-        viewer.center(domainSelection);
-      }
-      viewer.zoomTo(domainSelection, 8);
+      viewer.focusResidues(domainSelection.resi, 8);
     }
     viewer.render();
   }
@@ -474,7 +545,13 @@ export function createClusterCompareController({
     }
     const previewUrl = `/api/structure-preview?${params.toString()}`;
     const payload = await fetchJson(previewUrl);
+    if (!payload?.model_url) {
+      throw new Error("Structure preview did not include a model URL.");
+    }
     const modelText = await fetchText(payload.model_url);
+    if (typeof modelText !== "string" || modelText.length === 0) {
+      throw new Error("Structure model download was empty.");
+    }
     return {
       entry,
       payload,
@@ -567,7 +644,7 @@ export function createClusterCompareController({
     }));
   }
 
-  function renderClusterCompareResults(record) {
+  async function renderClusterCompareResults(record) {
     if (elements.clusterCompareModalTitle) {
       elements.clusterCompareModalTitle.textContent = record.title;
     }
@@ -585,7 +662,7 @@ export function createClusterCompareController({
         continue;
       }
       try {
-        renderClusterCompareTile(index);
+        await renderClusterCompareTile(index);
       } catch (error) {
         tile.error = error.message || "Unknown structure render error.";
         renderClusterCompareTileError(index);
@@ -642,7 +719,8 @@ export function createClusterCompareController({
         if (requestId !== state.clusterCompareRequestId) {
           return;
         }
-        renderClusterCompareResults(cachedRecord);
+        await renderClusterCompareResults(cachedRecord);
+        writeClusterCompareCache(cacheKey, renderedClusterCompareRecord(cachedRecord));
         return;
       }
 
@@ -727,8 +805,8 @@ export function createClusterCompareController({
         previewUrl: result.previewUrl,
         error: result.error,
       }));
-      writeClusterCompareCache(cacheKey, record);
-      renderClusterCompareResults(record);
+      await renderClusterCompareResults(record);
+      writeClusterCompareCache(cacheKey, renderedClusterCompareRecord(record));
     } catch (error) {
       if (requestId === state.clusterCompareRequestId) {
         if (elements.clusterCompareModalSubtitle) {

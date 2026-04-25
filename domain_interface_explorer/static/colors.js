@@ -1,5 +1,7 @@
 import { CLUSTER_COLOR_PALETTE, PARTNER_COLOR_PALETTE } from "./constants.js";
 
+const DOMAIN_LENS_BASE = [143, 138, 130];
+
 export function conservationColor(score) {
   const clamped = Math.max(0, Math.min(100, Number(score) || 0)) / 100;
   const start = [241, 229, 191];
@@ -102,9 +104,8 @@ export function partnerLensColor(partnerColor, partnerDomain, fraction) {
     return partnerColor(partnerDomain);
   }
   const clamped = Math.max(0, Math.min(1, fraction));
-  const lowLightColor = [247, 242, 233];
-  const boostedFraction = 0.18 + clamped * 0.82;
-  return interpolateColor(lowLightColor, base, boostedFraction);
+  const boostedFraction = 0.14 + clamped * 0.86;
+  return interpolateColor(DOMAIN_LENS_BASE, base, boostedFraction);
 }
 
 export function embeddingClusterColor(clusterLabel) {
@@ -128,8 +129,8 @@ export function clusterLensColor(clusterLabel, supportFraction = 0) {
   if (!base) {
     return embeddingClusterColor(clusterLabel);
   }
-  const boostedFraction = 0.04 + Math.max(0, Math.min(1, supportFraction)) * 0.96;
-  return interpolateColor([246, 241, 232], base, boostedFraction);
+  const boostedFraction = 0.12 + Math.max(0, Math.min(1, supportFraction)) * 0.88;
+  return interpolateColor(DOMAIN_LENS_BASE, base, boostedFraction);
 }
 
 export function clusterHoverColor(clusterLabel) {
@@ -137,5 +138,5 @@ export function clusterHoverColor(clusterLabel) {
   if (!base) {
     return embeddingClusterColor(clusterLabel);
   }
-  return interpolateColor([255, 255, 255], base, 0.94);
+  return interpolateColor(DOMAIN_LENS_BASE, base, 0.94);
 }
