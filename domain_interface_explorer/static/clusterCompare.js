@@ -12,7 +12,10 @@ export function createClusterCompareController({
   embeddingDistanceLabel,
   nextBrowserPaint,
   applyStructureStyles,
+  openStructureForEntry,
 }) {
+  const CLUSTER_COMPARE_CACHE_LIMIT = 8;
+
   function clampPercent(value) {
     return Math.max(0, Math.min(100, Number(value) || 0));
   }
@@ -32,19 +35,98 @@ export function createClusterCompareController({
     return `hsl(22 76% ${lightness}%)`;
   }
 
-  function clearClusterCompareTiles() {
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  function fullScreenIconSvg() {
+    return `
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M8 4H4v4"></path>
+        <path d="M16 4h4v4"></path>
+        <path d="M20 16v4h-4"></path>
+        <path d="M8 20H4v-4"></path>
+      </svg>
+    `;
+  }
+
+  function clusterCompareCacheKey(clusterLabel) {
+    return currentClusterCompareQuery(clusterLabel);
+  }
+
+  function clusterCompareFetchUrl(cacheKey, reroll) {
+    if (!reroll) {
+      return cacheKey;
+    }
+    const separator = cacheKey.includes("?") ? "&" : "?";
+    return `${cacheKey}${separator}_reroll=${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function readClusterCompareCache(cacheKey) {
+    const cache = state.clusterCompareCache;
+    if (!cache || typeof cache.get !== "function") {
+      return null;
+    }
+    const cached = cache.get(cacheKey);
+    if (!cached) {
+      return null;
+    }
+    if (typeof cache.delete === "function" && typeof cache.set === "function") {
+      cache.delete(cacheKey);
+      cache.set(cacheKey, cached);
+    }
+    return cached;
+  }
+
+  function writeClusterCompareCache(cacheKey, value) {
+    if (!state.clusterCompareCache || typeof state.clusterCompareCache.set !== "function") {
+      state.clusterCompareCache = new Map();
+    }
+    state.clusterCompareCache.delete(cacheKey);
+    state.clusterCompareCache.set(cacheKey, value);
+    while (state.clusterCompareCache.size > CLUSTER_COMPARE_CACHE_LIMIT) {
+      const oldestKey = state.clusterCompareCache.keys().next().value;
+      state.clusterCompareCache.delete(oldestKey);
+    }
+  }
+
+  function setClusterCompareGridLoading(visible) {
+    if (!elements.clusterCompareGrid) {
+      return;
+    }
+    elements.clusterCompareGrid.classList.toggle(
+      "is-loading",
+      Boolean(visible && elements.clusterCompareGrid.children.length > 0)
+    );
+  }
+
+  function cleanupClusterCompareTileState(options = {}) {
+    const resetSharedView = options.resetSharedView !== false;
     for (const tile of state.clusterCompareTiles) {
       tile.cleanupSync?.();
       tile.viewer?.clear?.();
     }
     state.clusterCompareTiles = [];
-    state.clusterCompareSharedView = null;
+    if (resetSharedView) {
+      state.clusterCompareSharedView = null;
+      state.clusterCompareAlignmentAnchorRowKey = null;
+    }
     state.clusterComparePendingSyncIndex = null;
     state.clusterCompareSyncing = false;
     if (state.clusterCompareSyncFrame) {
       window.cancelAnimationFrame(state.clusterCompareSyncFrame);
       state.clusterCompareSyncFrame = 0;
     }
+  }
+
+  function clearClusterCompareTiles(options = {}) {
+    cleanupClusterCompareTileState(options);
+    setClusterCompareGridLoading(false);
     if (elements.clusterCompareGrid) {
       elements.clusterCompareGrid.innerHTML = "";
     }
@@ -58,6 +140,7 @@ export function createClusterCompareController({
     if (elements.clusterCompareLoading) {
       elements.clusterCompareLoading.classList.toggle("hidden", !visible);
     }
+    setClusterCompareGridLoading(visible && state.clusterCompareTiles.length > 0);
     if (elements.clusterCompareLoadingLabel) {
       elements.clusterCompareLoadingLabel.textContent = label;
     }
@@ -122,6 +205,7 @@ export function createClusterCompareController({
   function closeClusterCompareModal() {
     state.clusterCompareRequestId += 1;
     state.clusterCompareClusterLabel = null;
+    state.clusterCompareAlignmentAnchorRowKey = null;
     clearClusterCompareTiles();
     if (elements.clusterCompareModalTitle) {
       elements.clusterCompareModalTitle.textContent = "Cluster Structure Comparison";
@@ -209,6 +293,75 @@ export function createClusterCompareController({
     };
   }
 
+  function copyView(view) {
+    if (!view) {
+      return null;
+    }
+    if (typeof structuredClone === "function") {
+      try {
+        return structuredClone(view);
+      } catch (_error) {
+        // Fall through to a plain object/array copy.
+      }
+    }
+    if (Array.isArray(view)) {
+      return view.map((item) => {
+        if (Array.isArray(item)) {
+          return item.slice();
+        }
+        if (item && typeof item === "object") {
+          return { ...item };
+        }
+        return item;
+      });
+    }
+    if (ArrayBuffer.isView(view) && typeof view.slice === "function") {
+      return view.slice();
+    }
+    if (view && typeof view === "object") {
+      return { ...view };
+    }
+    return view;
+  }
+
+  function currentClusterCompareView() {
+    if (state.clusterCompareSharedView) {
+      return copyView(state.clusterCompareSharedView);
+    }
+    const tileWithView = state.clusterCompareTiles.find(
+      (tile) => tile?.viewer && typeof tile.viewer.getView === "function"
+    );
+    return tileWithView?.viewer ? copyView(tileWithView.viewer.getView()) : null;
+  }
+
+  async function openClusterCompareTileStructure(tileIndex) {
+    const tile = state.clusterCompareTiles[Number(tileIndex)];
+    const entry = tile?.entry;
+    if (!entry || typeof openStructureForEntry !== "function") {
+      return;
+    }
+    const initialView =
+      tile.viewer && typeof tile.viewer.getView === "function"
+        ? copyView(tile.viewer.getView())
+        : currentClusterCompareView();
+    await openStructureForEntry(entry, {
+      payload: tile.payload,
+      modelText: tile.modelText,
+      previewUrl: tile.previewUrl || "",
+      initialView,
+    });
+  }
+
+  elements.clusterCompareGrid?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-cluster-compare-open]");
+    if (!button || !elements.clusterCompareGrid.contains(button)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    void openClusterCompareTileStructure(button.dataset.clusterCompareOpen);
+  });
+
   function clusterCompareDomainSelection(payload) {
     return {
       resi:
@@ -222,6 +375,16 @@ export function createClusterCompareController({
   }
 
   function initializeClusterCompareSharedView() {
+    if (state.clusterCompareSharedView) {
+      for (const tile of state.clusterCompareTiles) {
+        if (!tile?.viewer || typeof tile.viewer.setView !== "function") {
+          continue;
+        }
+        tile.viewer.setView(state.clusterCompareSharedView);
+        tile.viewer.render();
+      }
+      return;
+    }
     const anchorTile = state.clusterCompareTiles.find(
       (tile) => tile?.viewer && tile?.payload && !tile.error
     );
@@ -309,17 +472,19 @@ export function createClusterCompareController({
     if (alignToRowKey) {
       params.set("align_to_row_key", alignToRowKey);
     }
-    const payload = await fetchJson(`/api/structure-preview?${params.toString()}`);
+    const previewUrl = `/api/structure-preview?${params.toString()}`;
+    const payload = await fetchJson(previewUrl);
     const modelText = await fetchText(payload.model_url);
     return {
       entry,
       payload,
       modelText,
+      previewUrl,
     };
   }
 
-  async function fetchClusterCompareData(clusterLabel) {
-    const payload = await fetchJson(currentClusterCompareQuery(clusterLabel));
+  async function fetchClusterCompareData(clusterLabel, fetchUrl = currentClusterCompareQuery(clusterLabel)) {
+    const payload = await fetchJson(fetchUrl);
     return {
       ...payload,
       selectedEntries: (payload.selected_entries || []).map((entry, index) => ({
@@ -336,16 +501,128 @@ export function createClusterCompareController({
     };
   }
 
-  async function openClusterCompareForLabel(clusterLabel) {
+  function clusterCompareSubtitle(record) {
+    return (
+      `Showing ${record.selectedEntries.length} of ${record.clusterEntryCount} cluster entries, ` +
+      `selected by greedy max-min ${embeddingDistanceLabel(record.distanceMetric)} distance ` +
+      `from a random cluster start, ordered by nearest-neighbor coverage on the ` +
+      `${record.remainingEntryCount} remaining entries.`
+    );
+  }
+
+  function renderClusterCompareGridShell(record) {
+    const selectedEntries = record.selectedEntries || [];
+    const remainingEntryCount = Number(record.remainingEntryCount || 0);
+    cleanupClusterCompareTileState({ resetSharedView: false });
+    setClusterCompareGridLoading(false);
+    applyClusterCompareGridLayout(selectedEntries.length);
+    elements.clusterCompareGrid.innerHTML = selectedEntries
+      .map((entry, index) => {
+        const rowLabel = escapeHtml(entry.rowKey);
+        const partnerLabel = escapeHtml(entry.partnerDomain);
+        return `
+          <article class="cluster-compare-tile" data-cluster-compare-index="${index}">
+            <div class="cluster-compare-tile-viewer" data-cluster-compare-viewer="${index}"></div>
+            <div class="cluster-compare-tile-meta">
+              <div class="cluster-compare-tile-title-row">
+                <span class="cluster-compare-tile-title">${rowLabel}</span>
+                <button
+                  class="cluster-compare-open-structure"
+                  type="button"
+                  data-cluster-compare-open="${index}"
+                  title="Open in structure viewer"
+                  aria-label="Open ${rowLabel} in structure viewer"
+                >
+                  ${fullScreenIconSvg()}
+                </button>
+                <span
+                  class="cluster-compare-coverage"
+                  title="${entry.coverageCount}/${remainingEntryCount} nearest cluster members"
+                >
+                  <span class="cluster-compare-coverage-track">
+                    <span
+                      class="cluster-compare-coverage-fill"
+                      style="width: ${clampPercent(entry.coveragePercent)}%; background: ${coverageColor(entry.coveragePercent)};"
+                    ></span>
+                  </span>
+                  <span class="cluster-compare-coverage-value">${roundedPercent(entry.coveragePercent)}%</span>
+                </span>
+              </div>
+              <span class="cluster-compare-tile-subtitle">Partner ${partnerLabel}</span>
+            </div>
+          </article>
+        `;
+      })
+      .join("");
+  }
+
+  function setClusterCompareTilesFromResults(results) {
+    state.clusterCompareTiles = results.map((result, index) => ({
+      ...result,
+      viewer: null,
+      cleanupSync: null,
+      viewerRoot: elements.clusterCompareGrid.querySelector(
+        `[data-cluster-compare-viewer="${index}"]`
+      ),
+    }));
+  }
+
+  function renderClusterCompareResults(record) {
+    if (elements.clusterCompareModalTitle) {
+      elements.clusterCompareModalTitle.textContent = record.title;
+    }
+    if (elements.clusterCompareModalSubtitle) {
+      elements.clusterCompareModalSubtitle.textContent = clusterCompareSubtitle(record);
+    }
+    state.clusterCompareAlignmentAnchorRowKey = record.alignmentAnchorRowKey || "";
+    renderClusterCompareGridShell(record);
+    setClusterCompareTilesFromResults(record.results || []);
+
+    for (let index = 0; index < state.clusterCompareTiles.length; index += 1) {
+      const tile = state.clusterCompareTiles[index];
+      if (tile.error) {
+        renderClusterCompareTileError(index);
+        continue;
+      }
+      try {
+        renderClusterCompareTile(index);
+      } catch (error) {
+        tile.error = error.message || "Unknown structure render error.";
+        renderClusterCompareTileError(index);
+      }
+    }
+    initializeClusterCompareSharedView();
+  }
+
+  async function openClusterCompareForLabel(clusterLabel, options = {}) {
     if (!interfaceSelect.value || !state.embeddingClustering?.points?.length) {
       return;
     }
+    const reroll = Boolean(options.reroll);
+    const targetClusterLabel = Number(clusterLabel);
+    const previousClusterLabel = state.clusterCompareClusterLabel;
     const requestId = state.clusterCompareRequestId + 1;
     state.clusterCompareRequestId = requestId;
-    state.clusterCompareClusterLabel = Number(clusterLabel);
-    state.clusterCompareSharedView = null;
-    clearClusterCompareTiles();
+    state.clusterCompareClusterLabel = targetClusterLabel;
+    const preservedView = currentClusterCompareView();
+    const keepExistingTilesDuringLoad = Boolean(
+      state.clusterCompareTiles.length > 0 &&
+      elements.clusterCompareGrid?.children.length
+    );
+    const previousAlignmentAnchorRowKey =
+      keepExistingTilesDuringLoad && previousClusterLabel === targetClusterLabel
+        ? state.clusterCompareAlignmentAnchorRowKey || ""
+        : "";
+    if (preservedView) {
+      state.clusterCompareSharedView = preservedView;
+    } else if (!keepExistingTilesDuringLoad) {
+      state.clusterCompareSharedView = null;
+    }
+    if (!keepExistingTilesDuringLoad) {
+      clearClusterCompareTiles({ resetSharedView: !preservedView });
+    }
     const clusterTitle = `${embeddingClusterLabel(clusterLabel)} Structure Comparison`;
+    const cacheKey = clusterCompareCacheKey(clusterLabel);
     if (elements.clusterCompareModalTitle) {
       elements.clusterCompareModalTitle.textContent = clusterTitle;
     }
@@ -353,10 +630,26 @@ export function createClusterCompareController({
       elements.clusterCompareModalSubtitle.textContent = `Loading ${embeddingClusterLabel(clusterLabel)}...`;
     }
     openClusterCompareModal();
-    setClusterCompareLoading(true, "Selecting diverse interfaces...", 12);
+    const cachedRecord = reroll ? null : readClusterCompareCache(cacheKey);
+    setClusterCompareLoading(
+      true,
+      cachedRecord ? "Restoring cached comparison..." : "Selecting diverse interfaces...",
+      cachedRecord ? 80 : 12
+    );
     try {
       await nextBrowserPaint();
-      const clusterCompareData = await fetchClusterCompareData(clusterLabel);
+      if (cachedRecord) {
+        if (requestId !== state.clusterCompareRequestId) {
+          return;
+        }
+        renderClusterCompareResults(cachedRecord);
+        return;
+      }
+
+      const clusterCompareData = await fetchClusterCompareData(
+        clusterLabel,
+        clusterCompareFetchUrl(cacheKey, reroll)
+      );
       if (requestId !== state.clusterCompareRequestId) {
         return;
       }
@@ -372,53 +665,39 @@ export function createClusterCompareController({
       const distanceMetric =
         clusterCompareData.distance || state.embeddingClusteringSettings.distance || "overlap";
       if (selectedEntries.length === 0) {
-        return;
+        throw new Error(`${embeddingClusterLabel(clusterLabel)} has no entries to compare.`);
       }
+      const record = {
+        title: clusterTitle,
+        clusterLabel: targetClusterLabel,
+        clusterEntryCount,
+        remainingEntryCount,
+        selectedEntries,
+        distanceMetric,
+        alignmentAnchorRowKey: previousAlignmentAnchorRowKey || selectedEntries[0]?.rowKey || "",
+        results: [],
+      };
       if (elements.clusterCompareModalSubtitle) {
-        elements.clusterCompareModalSubtitle.textContent =
-          `Showing ${selectedEntries.length} of ${clusterEntryCount} cluster entries, selected by greedy max-min ${embeddingDistanceLabel(distanceMetric)} distance from a random cluster start, ordered by nearest-neighbor coverage on the ${remainingEntryCount} remaining entries.`;
+        elements.clusterCompareModalSubtitle.textContent = clusterCompareSubtitle(record);
       }
-      const anchorRowKey = selectedEntries[0]?.rowKey || "";
+      const anchorRowKey = record.alignmentAnchorRowKey || selectedEntries[0]?.rowKey || "";
       setClusterCompareLoading(
         true,
         `Loading aligned structures (0/${selectedEntries.length})...`,
         1
       );
-      applyClusterCompareGridLayout(selectedEntries.length);
-
-      elements.clusterCompareGrid.innerHTML = selectedEntries
-        .map(
-          (entry, index) => `
-            <article class="cluster-compare-tile" data-cluster-compare-index="${index}">
-              <div class="cluster-compare-tile-viewer" data-cluster-compare-viewer="${index}"></div>
-              <div class="cluster-compare-tile-meta">
-                <div class="cluster-compare-tile-title-row">
-                  <span class="cluster-compare-tile-title">${entry.rowKey}</span>
-                  <span
-                    class="cluster-compare-coverage"
-                    title="${entry.coverageCount}/${remainingEntryCount} nearest cluster members"
-                  >
-                    <span class="cluster-compare-coverage-track">
-                      <span
-                        class="cluster-compare-coverage-fill"
-                        style="width: ${clampPercent(entry.coveragePercent)}%; background: ${coverageColor(entry.coveragePercent)};"
-                      ></span>
-                    </span>
-                    <span class="cluster-compare-coverage-value">${roundedPercent(entry.coveragePercent)}%</span>
-                  </span>
-                </div>
-                <span class="cluster-compare-tile-subtitle">Partner ${entry.partnerDomain}</span>
-              </div>
-            </article>
-          `
-        )
-        .join("");
+      if (!keepExistingTilesDuringLoad) {
+        renderClusterCompareGridShell(record);
+      }
 
       let completedStructures = 0;
       const results = await Promise.all(
-        selectedEntries.map(async (entry, index) => {
+        selectedEntries.map(async (entry) => {
           try {
-            return await fetchClusterCompareStructure(entry, index === 0 ? "" : anchorRowKey);
+            return await fetchClusterCompareStructure(
+              entry,
+              entry.rowKey === anchorRowKey ? "" : anchorRowKey
+            );
           } catch (error) {
             return {
               entry,
@@ -441,36 +720,26 @@ export function createClusterCompareController({
         return;
       }
 
-      state.clusterCompareTiles = results.map((result, index) => ({
-        ...result,
-        viewer: null,
-        cleanupSync: null,
-        viewerRoot: elements.clusterCompareGrid.querySelector(
-          `[data-cluster-compare-viewer="${index}"]`
-        ),
+      record.results = results.map((result) => ({
+        entry: result.entry,
+        payload: result.payload,
+        modelText: result.modelText,
+        previewUrl: result.previewUrl,
+        error: result.error,
       }));
-
-      for (let index = 0; index < state.clusterCompareTiles.length; index += 1) {
-        const tile = state.clusterCompareTiles[index];
-        if (tile.error) {
-          renderClusterCompareTileError(index);
-          continue;
-        }
-        try {
-          renderClusterCompareTile(index);
-        } catch (error) {
-          tile.error = error.message || "Unknown structure render error.";
-          renderClusterCompareTileError(index);
-        }
-      }
-      initializeClusterCompareSharedView();
+      writeClusterCompareCache(cacheKey, record);
+      renderClusterCompareResults(record);
     } catch (error) {
       if (requestId === state.clusterCompareRequestId) {
-        clearClusterCompareTiles();
         if (elements.clusterCompareModalSubtitle) {
           elements.clusterCompareModalSubtitle.textContent = error.message || "Unable to load cluster structure comparison.";
         }
-        renderClusterCompareFatalError(error.message || "Unable to load cluster structure comparison.");
+        if (keepExistingTilesDuringLoad) {
+          setClusterCompareGridLoading(false);
+        } else {
+          clearClusterCompareTiles({ resetSharedView: !preservedView });
+          renderClusterCompareFatalError(error.message || "Unable to load cluster structure comparison.");
+        }
       }
       throw error;
     } finally {

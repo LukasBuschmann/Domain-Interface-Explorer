@@ -140,6 +140,7 @@ const {
   structureModalTitle,
   structureStatus,
   structureViewerRoot,
+  clusterCompareRerollButton,
   viewerRoot,
 } = elements;
 
@@ -1004,6 +1005,31 @@ function getStructurePreloadRows() {
   return rows;
 }
 
+async function openStructureForInteractionEntry(entry, loadedStructure = {}) {
+  const rowKey = interactionRowKey(
+    entry?.rowKey || entry?.row_key || "",
+    entry?.partnerDomain || entry?.partner_domain || ""
+  );
+  clearEmbeddingMemberSelection();
+  const row = selectRowByKey(rowKey);
+  if (!row) {
+    return;
+  }
+  if (loadedStructure.payload && typeof loadedStructure.modelText === "string") {
+    renderLoadedStructure(row, loadedStructure.payload, loadedStructure.modelText, {
+      previewUrl: loadedStructure.previewUrl || "",
+      initialView: loadedStructure.initialView || null,
+      modelKey: loadedStructure.modelKey || "",
+    });
+    return;
+  }
+  try {
+    await loadInteractiveStructure();
+  } catch (error) {
+    handleStructureLoadFailure(error);
+  }
+}
+
 const structureViewController = createStructureViewController({
   state,
   elements,
@@ -1028,6 +1054,7 @@ const {
   handleStructureLoadFailure,
   loadInteractiveStructure,
   openStructureModal,
+  renderLoadedStructure,
   renderInteractiveStructure,
   resetStructurePanel,
 } = structureViewController;
@@ -1075,6 +1102,7 @@ const clusterCompareController = createClusterCompareController({
   embeddingDistanceLabel,
   nextBrowserPaint,
   applyStructureStyles,
+  openStructureForEntry: openStructureForInteractionEntry,
 });
 const {
   closeClusterCompareModal,
@@ -1803,6 +1831,16 @@ labelsCanvas.addEventListener("click", async (event) => {
 });
 closeStructureModalButton.addEventListener("click", closeStructureModal);
 closeClusterCompareModalButton?.addEventListener("click", closeClusterCompareModal);
+clusterCompareRerollButton?.addEventListener("click", async () => {
+  if (state.clusterCompareClusterLabel === null || state.clusterCompareClusterLabel === undefined) {
+    return;
+  }
+  try {
+    await openClusterCompareForLabel(state.clusterCompareClusterLabel, { reroll: true });
+  } catch (error) {
+    console.error(error);
+  }
+});
 structureModal.addEventListener("click", (event) => {
   if (event.target.classList.contains("structure-modal-backdrop")) {
     closeStructureModal();
@@ -1835,12 +1873,12 @@ document.addEventListener("click", (event) => {
   }
 });
 window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && clusterCompareModal && !clusterCompareModal.classList.contains("hidden")) {
-    closeClusterCompareModal();
-    return;
-  }
   if (event.key === "Escape" && !structureModal.classList.contains("hidden")) {
     closeStructureModal();
+    return;
+  }
+  if (event.key === "Escape" && clusterCompareModal && !clusterCompareModal.classList.contains("hidden")) {
+    closeClusterCompareModal();
     return;
   }
   if (event.key === "Escape" && !msaPickerMenu.classList.contains("hidden")) {

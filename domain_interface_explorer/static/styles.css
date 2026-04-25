@@ -2138,6 +2138,14 @@ select,
   place-items: center;
 }
 
+#structure-modal {
+  z-index: 60;
+}
+
+#cluster-compare-modal {
+  z-index: 50;
+}
+
 .structure-modal.hidden {
   display: none;
 }
@@ -2184,6 +2192,60 @@ select,
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+}
+
+.cluster-compare-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.cluster-compare-icon-button,
+.cluster-compare-open-structure {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(141, 91, 44, 0.24);
+  background: rgba(255, 252, 245, 0.88);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.cluster-compare-icon-button {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+}
+
+.cluster-compare-open-structure {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  flex: 0 0 auto;
+  pointer-events: auto;
+}
+
+.cluster-compare-icon-button:hover,
+.cluster-compare-open-structure:hover {
+  background: rgba(141, 91, 44, 0.12);
+  border-color: rgba(141, 91, 44, 0.44);
+}
+
+.cluster-compare-icon-button svg,
+.cluster-compare-open-structure svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.cluster-compare-icon-button svg circle {
+  fill: currentColor;
+  stroke: none;
 }
 
 .structure-modal-title-block {
@@ -2376,9 +2438,19 @@ select,
   align-content: stretch;
 }
 
+.cluster-compare-grid.is-loading .cluster-compare-tile {
+  filter: blur(1.2px);
+  opacity: 0.72;
+  transform: scale(0.996);
+}
+
 .cluster-compare-tile {
   position: relative;
   min-height: 0;
+  transition:
+    filter 140ms ease,
+    opacity 140ms ease,
+    transform 140ms ease;
 }
 
 .cluster-compare-tile-viewer {

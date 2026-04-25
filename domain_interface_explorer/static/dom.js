@@ -112,6 +112,7 @@ export const elements = {
   clusterCompareLoading: document.getElementById("cluster-compare-loading"),
   clusterCompareLoadingLabel: document.getElementById("cluster-compare-loading-label"),
   clusterCompareLoadingBar: document.getElementById("cluster-compare-loading-bar"),
+  clusterCompareRerollButton: document.getElementById("cluster-compare-reroll"),
   clusterCompareGrid: document.getElementById("cluster-compare-grid"),
   representativeViewerRoot: document.getElementById("representative-viewer"),
   structureHoverCard: document.getElementById("structure-hover-card"),

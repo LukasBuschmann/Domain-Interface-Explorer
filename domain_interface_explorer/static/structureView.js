@@ -189,6 +189,46 @@ export function createStructureViewController({
     return `/api/structure-preview?${params.toString()}`;
   }
 
+  function structureModelKey(row, payload) {
+    return [
+      row?.row_key || structureRowKey(row),
+      payload?.model_url || "",
+      payload?.alignment_reference_row_key || "",
+      payload?.alignment_method || "",
+    ].join("|");
+  }
+
+  function copyStructureView(view) {
+    if (!view) {
+      return null;
+    }
+    if (typeof structuredClone === "function") {
+      try {
+        return structuredClone(view);
+      } catch (_error) {
+        // Fall through to a plain object/array copy.
+      }
+    }
+    if (Array.isArray(view)) {
+      return view.map((item) => {
+        if (Array.isArray(item)) {
+          return item.slice();
+        }
+        if (item && typeof item === "object") {
+          return { ...item };
+        }
+        return item;
+      });
+    }
+    if (ArrayBuffer.isView(view) && typeof view.slice === "function") {
+      return view.slice();
+    }
+    if (view && typeof view === "object") {
+      return { ...view };
+    }
+    return view;
+  }
+
   async function loadStructurePreviewPayload(previewUrl, options = {}) {
     const cachedStructure = readCacheValue(state.structurePreviewCache, previewUrl);
     if (cachedStructure?.payload) {
@@ -239,6 +279,25 @@ export function createStructureViewController({
       });
     structureModelTextInFlight.set(modelUrl, request);
     return request;
+  }
+
+  function cacheLoadedStructure(previewUrl, payload, modelText) {
+    if (previewUrl && payload) {
+      writeCacheValue(
+        state.structurePreviewCache,
+        previewUrl,
+        { payload },
+        STRUCTURE_PREVIEW_CACHE_LIMIT
+      );
+    }
+    if (payload?.model_url && typeof modelText === "string") {
+      writeCacheValue(
+        state.structureModelTextCache,
+        payload.model_url,
+        modelText,
+        STRUCTURE_MODEL_TEXT_CACHE_LIMIT
+      );
+    }
   }
 
   function modelFileLabel(payload, row) {
@@ -382,6 +441,7 @@ export function createStructureViewController({
       "Whole protein: gray transparent. Main domain: gray. Main surface/interface: orange and red. Partner domain: muted blue with stronger blue interaction layers.";
     state.structureResidueLookup = null;
     state.structureData = null;
+    state.structureRenderedModelKey = null;
     elements.structureHoverCard.classList.add("hidden");
     setStructureHoverDetails(null);
     setStructureHoverHistogram(null);
@@ -844,11 +904,13 @@ export function createStructureViewController({
 
     const { row, payload, modelText } = structure;
     const viewer = getStructureViewer();
+    const currentModelKey = structure.modelKey || structureModelKey(row, payload);
     const shouldPreserveView =
-      Boolean(state.structureRenderedRowKey) &&
+      Boolean(state.structureRenderedModelKey || state.structureRenderedRowKey) &&
       typeof viewer.getView === "function" &&
       typeof viewer.setView === "function" &&
       (
+        currentModelKey === state.structureRenderedModelKey ||
         row.row_key === state.structureRenderedRowKey ||
         (
           Boolean(state.structureAnchorRowKey) &&
@@ -858,8 +920,9 @@ export function createStructureViewController({
           )
         )
       );
-    const previousView = shouldPreserveView ? viewer.getView() : null;
-    const shouldReloadModel = state.structureRenderedRowKey !== row.row_key;
+    const initialView = copyStructureView(structure.initialView);
+    const previousView = initialView || (shouldPreserveView ? copyStructureView(viewer.getView()) : null);
+    const shouldReloadModel = state.structureRenderedModelKey !== currentModelKey;
     if (shouldReloadModel) {
       viewer.clear();
       viewer.addModel(modelText, payload.model_format || "pdb");
@@ -872,7 +935,7 @@ export function createStructureViewController({
     viewer.resize();
     const domainSelection = { resi: mainFragmentResidues(payload) };
     if (previousView) {
-      viewer.setView(previousView);
+      viewer.setView(copyStructureView(previousView));
     } else {
       if (typeof viewer.center === "function") {
         viewer.center(domainSelection);
@@ -880,9 +943,28 @@ export function createStructureViewController({
       viewer.zoomTo(domainSelection, 8);
     }
     viewer.render();
+    if (initialView && typeof viewer.setView === "function") {
+      const applyInitialView = () => {
+        if (state.structureData?.modelKey !== currentModelKey) {
+          return;
+        }
+        viewer.resize();
+        viewer.setView(copyStructureView(initialView));
+        viewer.render();
+      };
+      window.requestAnimationFrame(() => {
+        applyInitialView();
+        window.requestAnimationFrame(applyInitialView);
+      });
+    }
     state.structureRenderedRowKey = row.row_key;
+    state.structureRenderedModelKey = currentModelKey;
+    if (state.structureData === structure) {
+      state.structureData.initialView = null;
+      state.structureData.modelKey = currentModelKey;
+    }
     if (!state.structureAnchorRowKey) {
-      state.structureAnchorRowKey = structureRowKey(row);
+      state.structureAnchorRowKey = payload.alignment_reference_row_key || structureRowKey(row);
     }
 
     const alignmentNote = payload.alignment_reference_row_key
@@ -911,6 +993,28 @@ export function createStructureViewController({
         `Contacts: ${residueContactPairs(payload).length} | ` +
         `AlphaFold: ${payload.model_source || "unknown"}`;
     syncColumnLegends();
+  }
+
+  function renderLoadedStructure(row, payload, modelText, options = {}) {
+    if (!row || !payload || typeof modelText !== "string") {
+      return;
+    }
+    stopForegroundStructureLoad();
+    stopStructurePreloading();
+    cacheLoadedStructure(options.previewUrl || "", payload, modelText);
+    state.structureData = {
+      row,
+      payload,
+      modelText,
+      initialView: options.initialView || null,
+      modelKey: options.modelKey || structureModelKey(row, payload),
+    };
+    openStructureModal();
+    setStructureLoadingUi(false);
+    renderInteractiveStructure();
+    startStructurePreloading(row);
+    setLoading(100, "Structure ready", structureRowLabel(row));
+    window.setTimeout(hideLoading, 250);
   }
 
   async function loadInteractiveStructure() {
@@ -961,6 +1065,7 @@ export function createStructureViewController({
       row,
       payload,
       modelText,
+      modelKey: structureModelKey(row, payload),
     };
     renderInteractiveStructure();
     setStructureLoadingUi(false);
@@ -976,6 +1081,7 @@ export function createStructureViewController({
     handleStructureLoadFailure,
     loadInteractiveStructure,
     openStructureModal,
+    renderLoadedStructure,
     renderInteractiveStructure,
     resetStructurePanel,
   };

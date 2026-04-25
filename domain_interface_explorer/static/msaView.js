@@ -1861,6 +1861,7 @@ export function createMsaViewController({
     state.representativeRequestId += 1;
     state.structureAnchorRowKey = null;
     state.structureRenderedRowKey = null;
+    state.structureRenderedModelKey = null;
     state.structureRequestId += 1;
     await loadInterface(interfaceSelect.value);
     updatePartnerOptions();
@@ -2042,6 +2043,7 @@ export function createMsaViewController({
     state.structureData = null;
     state.structureAnchorRowKey = null;
     state.structureRenderedRowKey = null;
+    state.structureRenderedModelKey = null;
     state.structureRequestId = 0;
     state.structureColumnView = false;
     state.hover = null;

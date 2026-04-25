@@ -812,7 +812,25 @@
             <h2 id="cluster-compare-modal-title">Cluster Structure Comparison</h2>
             <p id="cluster-compare-modal-subtitle">No cluster selected.</p>
           </div>
-          <button id="close-cluster-compare-modal" class="structure-close-button" type="button">Close</button>
+          <div class="cluster-compare-header-actions">
+            <button
+              id="cluster-compare-reroll"
+              class="cluster-compare-icon-button"
+              type="button"
+              title="Choose another random starting point"
+              aria-label="Choose another random starting point"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <rect x="4" y="4" width="16" height="16" rx="3"></rect>
+                <circle cx="9" cy="9" r="1.2"></circle>
+                <circle cx="15" cy="9" r="1.2"></circle>
+                <circle cx="12" cy="12" r="1.2"></circle>
+                <circle cx="9" cy="15" r="1.2"></circle>
+                <circle cx="15" cy="15" r="1.2"></circle>
+              </svg>
+            </button>
+            <button id="close-cluster-compare-modal" class="structure-close-button" type="button">Close</button>
+          </div>
         </div>
         <div id="cluster-compare-loading" class="embedding-loading cluster-compare-loading hidden">
           <strong id="cluster-compare-loading-label">Loading aligned structures…</strong>
