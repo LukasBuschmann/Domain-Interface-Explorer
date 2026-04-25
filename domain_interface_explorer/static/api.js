@@ -1,5 +1,5 @@
-export async function fetchJson(url) {
-  const response = await fetch(url);
+export async function fetchJson(url, options = {}) {
+  const response = await fetch(url, options);
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.error || `Request failed: ${response.status}`);
@@ -7,8 +7,8 @@ export async function fetchJson(url) {
   return response.json();
 }
 
-export async function fetchText(url) {
-  const response = await fetch(url);
+export async function fetchText(url, options = {}) {
+  const response = await fetch(url, options);
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`);
   }

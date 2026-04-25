@@ -26,6 +26,7 @@ export function createMsaViewController({
   syncColumnLegends,
   syncRepresentativeLensControls,
   syncEmbeddingLoadingUi,
+  syncEmbeddingMemberControls,
   syncEmbeddingSettingsUi,
   resizeEmbeddingCanvas,
   resizeDistanceCanvas,
@@ -1798,6 +1799,7 @@ export function createMsaViewController({
     state.columnsChartKey = null;
     closeClusterCompareModal();
     state.embeddingHoverRowKey = null;
+    state.embeddingMemberSelection = null;
     state.embeddingProjectedPoints = [];
     state.embeddingRequestId += 1;
     state.embeddingLoading = false;
@@ -1987,6 +1989,7 @@ export function createMsaViewController({
     state.columnsChartKey = null;
     state.embeddingClustering = null;
     state.embeddingHoverRowKey = null;
+    state.embeddingMemberSelection = null;
     state.embeddingProjectedPoints = [];
     state.embeddingDrag = null;
     state.embeddingRequestId += 1;
@@ -2094,6 +2097,18 @@ export function createMsaViewController({
     return state.msa.rows.find((row) => row.row_key === rowKey) || null;
   }
 
+  function clearEmbeddingMemberSelectionUnlessSelected(rowKey) {
+    const members = state.embeddingMemberSelection?.members || [];
+    if (
+      members.length > 1 &&
+      members.some((member) => interactionRowKey(member.row_key, member.partner_domain) === rowKey)
+    ) {
+      return;
+    }
+    state.embeddingMemberSelection = null;
+    syncEmbeddingMemberControls?.();
+  }
+
   function selectFilteredRow(filteredRowIndex) {
     if (!state.msa) {
       return null;
@@ -2104,6 +2119,7 @@ export function createMsaViewController({
     const rowIndex = state.filteredRowIndexes[filteredRowIndex];
     const row = state.msa.rows[rowIndex];
     state.selectedRowKey = row.row_key;
+    clearEmbeddingMemberSelectionUnlessSelected(row.row_key);
     updateSelectedRowUi();
     resetStructurePanel("Click a row name or use the button to open the structure.");
     drawGrid();
@@ -2119,6 +2135,7 @@ export function createMsaViewController({
       return null;
     }
     state.selectedRowKey = row.row_key;
+    clearEmbeddingMemberSelectionUnlessSelected(row.row_key);
     updateSelectedRowUi();
     resetStructurePanel("Click a row name or use the button to open the structure.");
     if (activeMsaPanelView() === "msa") {

@@ -535,6 +535,25 @@
               <div id="embedding-info" class="embedding-info">
                 3D t-SNE on Dice interface distance. Drag to rotate.
               </div>
+              <div id="embedding-member-controls" class="embedding-member-controls hidden" aria-hidden="true">
+                <button
+                  id="embedding-member-prev"
+                  class="embedding-member-arrow"
+                  type="button"
+                  title="Previous member"
+                >
+                  &#8249;
+                </button>
+                <span id="embedding-member-count" class="embedding-member-count">1 / 1</span>
+                <button
+                  id="embedding-member-next"
+                  class="embedding-member-arrow"
+                  type="button"
+                  title="Next member"
+                >
+                  &#8250;
+                </button>
+              </div>
             </div>
             <div id="distance-root" class="distance-root panel-view-hidden">
               <canvas id="distance-canvas" class="distance-canvas"></canvas>
@@ -655,14 +674,47 @@
       <div class="structure-modal-backdrop"></div>
       <div class="structure-modal-card">
         <div class="structure-modal-header">
-          <div>
-            <h2 id="structure-modal-title">Interactive Structure</h2>
+          <div class="structure-modal-title-block">
+            <div class="structure-modal-title-row">
+              <h2 id="structure-modal-title">Interactive Structure</h2>
+              <div id="structure-loading-badge" class="structure-loading-badge hidden" aria-hidden="true">
+                <span class="structure-loading-spinner" aria-hidden="true"></span>
+                <span id="structure-loading-badge-label">Loading structure</span>
+              </div>
+            </div>
             <p id="structure-modal-subtitle">No structure loaded.</p>
           </div>
-          <button id="close-structure-modal" class="structure-close-button" type="button">Close</button>
+          <div class="structure-modal-actions">
+            <div id="structure-member-controls" class="structure-member-controls hidden" aria-hidden="true">
+              <button
+                id="structure-member-prev"
+                class="embedding-member-arrow"
+                type="button"
+                title="Previous member"
+              >
+                &#8249;
+              </button>
+              <span id="structure-member-count" class="embedding-member-count">1 / 1</span>
+              <button
+                id="structure-member-next"
+                class="embedding-member-arrow"
+                type="button"
+                title="Next member"
+              >
+                &#8250;
+              </button>
+            </div>
+            <button id="close-structure-modal" class="structure-close-button" type="button">Close</button>
+          </div>
         </div>
         <div class="structure-viewer-shell">
           <div id="structure-viewer" class="structure-viewer"></div>
+          <div id="structure-loading-overlay" class="structure-loading-overlay hidden" aria-hidden="true">
+            <div class="structure-loading-overlay-copy">
+              <span class="structure-loading-spinner" aria-hidden="true"></span>
+              <span id="structure-loading-overlay-label">Loading structure</span>
+            </div>
+          </div>
           <div class="structure-column-overlay">
             <label class="structure-column-toggle" for="structure-column-view-toggle">
               <input id="structure-column-view-toggle" type="checkbox">

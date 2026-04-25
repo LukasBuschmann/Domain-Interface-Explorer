@@ -16,7 +16,15 @@ export function createStructureViewController({
   columnStateDistribution,
   syncColumnLegends,
   getSelectedRow,
+  getStructurePreloadRows,
+  clearEmbeddingMemberSelection,
 }) {
+  const STRUCTURE_PREVIEW_CACHE_LIMIT = 40;
+  const STRUCTURE_MODEL_TEXT_CACHE_LIMIT = 24;
+  const STRUCTURE_PRELOAD_CONCURRENCY = 1;
+  const structurePreviewInFlight = new Map();
+  const structureModelTextInFlight = new Map();
+
   function uniprotEntryUrl(accession) {
     return `https://www.uniprot.org/uniprotkb/${encodeURIComponent(String(accession || "").trim())}`;
   }
@@ -118,7 +126,245 @@ export function createStructureViewController({
     return row?.display_row_key || row?.row_key || "";
   }
 
+  function structureModalIsOpen() {
+    return !elements.structureModal.classList.contains("hidden");
+  }
+
+  function readCacheValue(cache, key) {
+    if (!cache || !key || typeof cache.get !== "function") {
+      return null;
+    }
+    const value = cache.get(key);
+    if (value !== undefined && typeof cache.delete === "function" && typeof cache.set === "function") {
+      cache.delete(key);
+      cache.set(key, value);
+    }
+    return value ?? null;
+  }
+
+  function writeCacheValue(cache, key, value, limit) {
+    if (!cache || !key || typeof cache.set !== "function") {
+      return;
+    }
+    if (typeof cache.delete === "function") {
+      cache.delete(key);
+    }
+    cache.set(key, value);
+    while (Number.isFinite(limit) && cache.size > limit) {
+      const oldestKey = cache.keys().next().value;
+      cache.delete(oldestKey);
+    }
+  }
+
+  function alignmentReferenceRowKeyFor(row) {
+    const requestRowKey = structureRowKey(row);
+    return state.structureAnchorRowKey && state.structureAnchorRowKey !== requestRowKey
+      ? state.structureAnchorRowKey
+      : "";
+  }
+
+  function structurePreviewUrlForRow(row) {
+    const params = new URLSearchParams({
+      interface_file: interfaceSelect.value,
+      row_key: structureRowKey(row),
+      uniprot_id: String(row.protein_id || ""),
+      fragment_key: String(row.fragment_key || ""),
+      partner: String(structurePartnerForRow(row)),
+    });
+    appendSelectionSettingsToParams(params, state.selectionSettings);
+    const alignmentReferenceRowKey = alignmentReferenceRowKeyFor(row);
+    if (alignmentReferenceRowKey) {
+      params.set("align_to_row_key", alignmentReferenceRowKey);
+    }
+    return `/api/structure-preview?${params.toString()}`;
+  }
+
+  async function loadStructurePreviewPayload(previewUrl, options = {}) {
+    const cachedStructure = readCacheValue(state.structurePreviewCache, previewUrl);
+    if (cachedStructure?.payload) {
+      return cachedStructure.payload;
+    }
+    const inFlight = structurePreviewInFlight.get(previewUrl);
+    if (inFlight) {
+      return inFlight;
+    }
+    const request = fetchJson(previewUrl, options)
+      .then((payload) => {
+        writeCacheValue(
+          state.structurePreviewCache,
+          previewUrl,
+          { payload },
+          STRUCTURE_PREVIEW_CACHE_LIMIT
+        );
+        return payload;
+      })
+      .finally(() => {
+        structurePreviewInFlight.delete(previewUrl);
+      });
+    structurePreviewInFlight.set(previewUrl, request);
+    return request;
+  }
+
+  async function loadStructureModelText(modelUrl, options = {}) {
+    const cachedModelText = readCacheValue(state.structureModelTextCache, modelUrl);
+    if (typeof cachedModelText === "string") {
+      return cachedModelText;
+    }
+    const inFlight = structureModelTextInFlight.get(modelUrl);
+    if (inFlight) {
+      return inFlight;
+    }
+    const request = fetchText(modelUrl, options)
+      .then((modelText) => {
+        writeCacheValue(
+          state.structureModelTextCache,
+          modelUrl,
+          modelText,
+          STRUCTURE_MODEL_TEXT_CACHE_LIMIT
+        );
+        return modelText;
+      })
+      .finally(() => {
+        structureModelTextInFlight.delete(modelUrl);
+      });
+    structureModelTextInFlight.set(modelUrl, request);
+    return request;
+  }
+
+  function modelFileLabel(payload, row) {
+    const modelUrl = String(payload?.model_url || "").trim();
+    if (modelUrl) {
+      const filename = modelUrl.split("/").pop();
+      if (filename) {
+        return decodeURIComponent(filename);
+      }
+    }
+    const modelSource = String(payload?.model_source || "").trim();
+    if (modelSource) {
+      return modelSource;
+    }
+    const proteinId = String(row?.protein_id || "").trim();
+    const fragmentKey = String(row?.fragment_key || "").trim();
+    return [proteinId, fragmentKey].filter(Boolean).join(" ") || structureRowLabel(row) || "structure";
+  }
+
+  function setStructureLoadingUi(isLoading, label = "", detail = "") {
+    const displayLabel = detail ? `${label}: ${detail}` : label;
+    elements.structureLoadingBadge?.classList.toggle("hidden", !isLoading);
+    elements.structureLoadingBadge?.setAttribute("aria-hidden", isLoading ? "false" : "true");
+    elements.structureLoadingOverlay?.classList.toggle("hidden", !isLoading);
+    elements.structureLoadingOverlay?.setAttribute("aria-hidden", isLoading ? "false" : "true");
+    if (isLoading) {
+      if (elements.structureLoadingBadgeLabel) {
+        elements.structureLoadingBadgeLabel.textContent = label || "Loading structure";
+      }
+      if (elements.structureLoadingOverlayLabel) {
+        elements.structureLoadingOverlayLabel.textContent = displayLabel || "Loading structure";
+      }
+    }
+  }
+
+  function renderStructureLoadingState(row, label, detail = "") {
+    renderStructureHeader(row, {
+      uniprot_id: row?.protein_id || "",
+      partner: structurePartnerForRow(row),
+      matched_partners: structurePartnerForRow(row) === "__all__" ? [] : [structurePartnerForRow(row)],
+    });
+    const rowLabel = structureRowLabel(row);
+    elements.structureModalSubtitle.textContent = detail
+      ? `Loading ${detail}`
+      : `Loading ${rowLabel || "structure"}`;
+    elements.structureStatus.textContent = detail ? `${label}: ${detail}` : label;
+    elements.structureModalStatus.textContent = label;
+    setStructureLoadingUi(true, label, detail || rowLabel);
+  }
+
+  function stopStructurePreloading() {
+    state.structurePreloadGeneration += 1;
+  }
+
+  function stopForegroundStructureLoad() {
+    state.structureRequestId += 1;
+  }
+
+  function structurePreloadRowsAfter(activeRow) {
+    const preloadRows = getStructurePreloadRows?.();
+    const rows = Array.isArray(preloadRows) ? preloadRows : [];
+    if (rows.length <= 1) {
+      return [];
+    }
+    const activeKey = String(activeRow?.row_key || "");
+    const activeIndex = rows.findIndex((row) => String(row?.row_key || "") === activeKey);
+    const ordered =
+      activeIndex >= 0
+        ? rows.slice(activeIndex + 1).concat(rows.slice(0, activeIndex))
+        : rows;
+    const seen = new Set();
+    return ordered.filter((row) => {
+      const rowKey = String(row?.row_key || "");
+      if (!rowKey || rowKey === activeKey || seen.has(rowKey)) {
+        return false;
+      }
+      seen.add(rowKey);
+      return true;
+    });
+  }
+
+  async function preloadStructureRow(row, generation) {
+    const previewUrl = structurePreviewUrlForRow(row);
+    const payload = await loadStructurePreviewPayload(previewUrl);
+    if (generation !== state.structurePreloadGeneration || !structureModalIsOpen()) {
+      return;
+    }
+    await loadStructureModelText(payload.model_url);
+  }
+
+  async function preloadStructureRows(rows, generation) {
+    let nextIndex = 0;
+    const worker = async () => {
+      while (generation === state.structurePreloadGeneration && structureModalIsOpen()) {
+        const row = rows[nextIndex];
+        nextIndex += 1;
+        if (!row) {
+          return;
+        }
+        try {
+          await preloadStructureRow(row, generation);
+        } catch (error) {
+          if (generation !== state.structurePreloadGeneration || !structureModalIsOpen()) {
+            return;
+          }
+        }
+      }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(STRUCTURE_PRELOAD_CONCURRENCY, rows.length) },
+        () => worker()
+      )
+    );
+  }
+
+  function startStructurePreloading(activeRow) {
+    stopStructurePreloading();
+    if (!structureModalIsOpen()) {
+      return;
+    }
+    const rows = structurePreloadRowsAfter(activeRow);
+    if (rows.length === 0) {
+      return;
+    }
+    const generation = state.structurePreloadGeneration;
+    void preloadStructureRows(rows, generation)
+      .catch((error) => {
+        if (generation === state.structurePreloadGeneration && structureModalIsOpen()) {
+          console.debug("[structure-preload] stopped", error);
+        }
+      });
+  }
+
   function resetStructurePanel(message = "Click a row name or use the button to open the structure.") {
+    setStructureLoadingUi(false);
     elements.structureModalTitle.textContent = "Structure";
     elements.structureStatus.textContent = message;
     elements.structureModalSubtitle.textContent = message;
@@ -134,6 +380,7 @@ export function createStructureViewController({
   }
 
   function handleStructureLoadFailure(error) {
+    setStructureLoadingUi(false);
     elements.loadingPanel.classList.remove("hidden");
     elements.loadingLabel.textContent = "Structure load failed";
     elements.loadingDetail.textContent = error.message;
@@ -226,8 +473,13 @@ export function createStructureViewController({
   }
 
   function closeStructureModal() {
+    stopStructurePreloading();
+    stopStructurePreloading();
+    stopForegroundStructureLoad();
     elements.structureModal.classList.add("hidden");
     elements.structureModal.setAttribute("aria-hidden", "true");
+    setStructureLoadingUi(false);
+    clearEmbeddingMemberSelection?.();
   }
 
   function getStructureViewer() {
@@ -451,38 +703,43 @@ export function createStructureViewController({
       return;
     }
 
-    setLoading(10, "Loading structure", `Preparing ${structureRowLabel(row)}`);
-    elements.structureStatus.textContent = "Loading structure...";
+    stopForegroundStructureLoad();
+    const requestId = state.structureRequestId + 1;
+    state.structureRequestId = requestId;
+    const previewUrl = structurePreviewUrlForRow(row);
+    const preliminaryLabel = modelFileLabel(null, row);
+    setLoading(10, "Loading structure", `Preparing ${preliminaryLabel}`);
+    renderStructureLoadingState(row, "Fetching structure from AlphaFold", preliminaryLabel);
     openStructureModal();
     await new Promise((resolve) => window.requestAnimationFrame(resolve));
 
-    const requestId = state.structureRequestId + 1;
-    state.structureRequestId = requestId;
-    const requestRowKey = structureRowKey(row);
-    const alignmentReferenceRowKey =
-      state.structureAnchorRowKey && state.structureAnchorRowKey !== requestRowKey
-        ? state.structureAnchorRowKey
-        : "";
-
-    const params = new URLSearchParams({
-      interface_file: interfaceSelect.value,
-      row_key: requestRowKey,
-      uniprot_id: String(row.protein_id || ""),
-      fragment_key: String(row.fragment_key || ""),
-      partner: String(structurePartnerForRow(row)),
-    });
-    appendSelectionSettingsToParams(params, state.selectionSettings);
-    if (alignmentReferenceRowKey) {
-      params.set("align_to_row_key", alignmentReferenceRowKey);
-    }
-    const payload = await fetchJson(`/api/structure-preview?${params.toString()}`);
-
-    setLoading(50, "Loading structure", `Fetching model for ${payload.uniprot_id}`);
-    const modelText = await fetchText(payload.model_url);
-    if (requestId !== state.structureRequestId) {
+    const payload = await loadStructurePreviewPayload(previewUrl);
+    if (requestId !== state.structureRequestId || !structureModalIsOpen()) {
       return;
     }
 
+    const modelLabel = modelFileLabel(payload, row);
+    renderStructureHeader(row, payload);
+    elements.structureModalSubtitle.textContent = `Loading ${modelLabel}`;
+    const hasCachedModelText = typeof readCacheValue(state.structureModelTextCache, payload.model_url) === "string";
+    let modelText = "";
+    if (hasCachedModelText) {
+      elements.structureModalStatus.textContent = "Using cached structure model";
+      setStructureLoadingUi(true, "Using cached structure model", modelLabel);
+      setLoading(72, "Loading structure", `Using cached model for ${modelLabel}`);
+    } else {
+      elements.structureModalStatus.textContent = "Downloading structure model";
+      setStructureLoadingUi(true, "Downloading structure model", modelLabel);
+      setLoading(50, "Loading structure", `Fetching model for ${modelLabel}`);
+    }
+    modelText = await loadStructureModelText(payload.model_url);
+    if (requestId !== state.structureRequestId || !structureModalIsOpen()) {
+      return;
+    }
+
+    const renderLabel = modelFileLabel(payload, row);
+    elements.structureModalStatus.textContent = "Rendering structure";
+    setStructureLoadingUi(true, "Rendering structure", renderLabel);
     setLoading(80, "Rendering structure", `Applying cartoon styles for ${structureRowLabel(row)}`);
     state.structureData = {
       row,
@@ -490,6 +747,8 @@ export function createStructureViewController({
       modelText,
     };
     renderInteractiveStructure();
+    setStructureLoadingUi(false);
+    startStructurePreloading(row);
     setLoading(100, "Structure ready", structureRowLabel(row));
     window.setTimeout(hideLoading, 250);
   }

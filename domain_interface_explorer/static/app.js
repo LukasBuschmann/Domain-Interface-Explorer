@@ -38,7 +38,7 @@ import {
   interactiveRowIndexes as getInteractiveRowIndexes,
   topResiduesForColumn as getTopResiduesForColumn,
 } from "./msaModel.js";
-import { buildOverlayMaps, buildPairs, parseInteractionRowKey } from "./interfaceModel.js";
+import { buildOverlayMaps, buildPairs, interactionRowKey, parseInteractionRowKey } from "./interfaceModel.js";
 import { parseSelectionSettingsDraft } from "./selectionSettings.js";
 
 const {
@@ -66,6 +66,8 @@ const {
   embeddingLearningRateInput,
   embeddingLoading,
   embeddingLoadingLabel,
+  embeddingMemberNext,
+  embeddingMemberPrev,
   embeddingMaxIterInput,
   embeddingPartnerLegend,
   embeddingPerplexityInput,
@@ -130,6 +132,8 @@ const {
   structureHoverDistributionLegend,
   structureHoverHistogram,
   structureModal,
+  structureMemberNext,
+  structureMemberPrev,
   structureModalStatus,
   structureModalSubtitle,
   structureModalTitle,
@@ -173,6 +177,79 @@ function nearestEmbeddingPoint(clientX, clientY, maxDistance = 14) {
   return bestPoint;
 }
 
+function normalizedEmbeddingPointMembers(point) {
+  const members = Array.isArray(point?.members) ? point.members : [];
+  if (members.length > 0) {
+    return members
+      .map((member) => ({
+        row_key: String(member?.row_key || ""),
+        partner_domain: String(member?.partner_domain || ""),
+      }))
+      .filter((member) => member.row_key && member.partner_domain);
+  }
+  const rowKey = String(point?.row_key || "");
+  const partnerDomain = String(point?.partner_domain || "");
+  return rowKey && partnerDomain
+    ? [{ row_key: rowKey, partner_domain: partnerDomain }]
+    : [];
+}
+
+function embeddingMemberKey(member) {
+  return interactionRowKey(member?.row_key || "", member?.partner_domain || "");
+}
+
+function activeEmbeddingMemberKey() {
+  const selection = state.embeddingMemberSelection;
+  const member = selection?.members?.[selection.index];
+  return member ? embeddingMemberKey(member) : "";
+}
+
+function setEmbeddingMemberSelectionFromPoint(point) {
+  const members = normalizedEmbeddingPointMembers(point);
+  if (members.length <= 1) {
+    state.embeddingMemberSelection = null;
+    syncEmbeddingMemberControls();
+    return point?.interactionRowKey || "";
+  }
+
+  state.embeddingMemberSelection = {
+    pointKey: String(point.group_id || point.interactionRowKey || ""),
+    members,
+    index: 0,
+  };
+  syncEmbeddingMemberControls();
+  return activeEmbeddingMemberKey();
+}
+
+async function selectActiveEmbeddingMember() {
+  const targetRowKey = activeEmbeddingMemberKey();
+  if (!targetRowKey) {
+    return;
+  }
+  const row = selectRowByKey(targetRowKey);
+  if (!row) {
+    return;
+  }
+  renderEmbeddingPlot();
+  try {
+    await loadInteractiveStructure();
+  } catch (error) {
+    handleStructureLoadFailure(error);
+  }
+}
+
+async function cycleEmbeddingMember(delta) {
+  const selection = state.embeddingMemberSelection;
+  const members = Array.isArray(selection?.members) ? selection.members : [];
+  if (members.length <= 1) {
+    return;
+  }
+  const currentIndex = Number.isInteger(selection.index) ? selection.index : 0;
+  selection.index = (currentIndex + delta + members.length) % members.length;
+  syncEmbeddingMemberControls();
+  await selectActiveEmbeddingMember();
+}
+
 async function activateEmbeddingPoint(event, source = "unknown") {
   if (activeMsaPanelView() !== "embeddings" || !interfaceSelect.value) {
     console.debug("[embedding-click] ignored", {
@@ -186,7 +263,9 @@ async function activateEmbeddingPoint(event, source = "unknown") {
   const point =
     embeddingPointAt(event.clientX, event.clientY) ||
     nearestEmbeddingPoint(event.clientX, event.clientY);
-  const targetRowKey = point?.interactionRowKey || state.embeddingHoverRowKey;
+  const targetRowKey = point
+    ? setEmbeddingMemberSelectionFromPoint(point)
+    : state.embeddingHoverRowKey;
   if (!targetRowKey) {
     console.debug("[embedding-click] no point hit", {
       source,
@@ -291,6 +370,7 @@ const {
   setColumnsInfo,
   setDistanceInfo,
   syncEmbeddingLoadingUi,
+  syncEmbeddingMemberControls,
   syncEmbeddingSettingsUi,
   syncHierarchicalTargetMemoryFromDraft,
   syncHierarchicalTargetUi,
@@ -892,6 +972,34 @@ function nextBrowserPaint() {
   });
 }
 
+function clearEmbeddingMemberSelection() {
+  state.embeddingMemberSelection = null;
+  syncEmbeddingMemberControls([]);
+}
+
+function getStructurePreloadRows() {
+  const members = Array.isArray(state.embeddingMemberSelection?.members)
+    ? state.embeddingMemberSelection.members
+    : [];
+  if (members.length <= 1) {
+    return [];
+  }
+  const rows = [];
+  const seen = new Set();
+  for (const member of members) {
+    const rowKey = embeddingMemberKey(member);
+    if (!rowKey || seen.has(rowKey)) {
+      continue;
+    }
+    const row = getRowByKey(rowKey);
+    if (row) {
+      seen.add(rowKey);
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
 const structureViewController = createStructureViewController({
   state,
   elements,
@@ -906,6 +1014,8 @@ const structureViewController = createStructureViewController({
   columnStateDistribution,
   syncColumnLegends,
   getSelectedRow,
+  getStructurePreloadRows,
+  clearEmbeddingMemberSelection,
 });
 const {
   applyStructureStyles,
@@ -980,6 +1090,7 @@ const msaViewController = createMsaViewController({
   syncColumnLegends,
   syncRepresentativeLensControls,
   syncEmbeddingLoadingUi,
+  syncEmbeddingMemberControls,
   syncEmbeddingSettingsUi,
   resizeEmbeddingCanvas,
   resizeDistanceCanvas,
@@ -1596,6 +1707,30 @@ embeddingRoot.addEventListener("click", async (event) => {
 
 embeddingRoot.addEventListener("dblclick", async (event) => {
   await activateEmbeddingPoint(event, "dblclick");
+});
+
+embeddingMemberPrev?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  await cycleEmbeddingMember(-1);
+});
+
+embeddingMemberNext?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  await cycleEmbeddingMember(1);
+});
+
+structureMemberPrev?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  await cycleEmbeddingMember(-1);
+});
+
+structureMemberNext?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  await cycleEmbeddingMember(1);
 });
 
 embeddingCanvas.addEventListener(

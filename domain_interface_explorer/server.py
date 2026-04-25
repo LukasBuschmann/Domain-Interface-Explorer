@@ -252,6 +252,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 interface_payload,
                 str(settings["distance"]),
                 interface_filter_settings,
+                distance_scope="compressed",
             )
             embedding_payload = compute_tsne_embedding_payload(distance_data, settings)
         except (RuntimeError, ValueError) as exc:
@@ -549,9 +550,13 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", mime_type or "chemical/x-pdb")
         self.send_header("Content-Length", str(model_path.stat().st_size))
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
         self.end_headers()
-        with model_path.open("rb") as handle:
-            self.wfile.write(handle.read())
+        try:
+            with model_path.open("rb") as handle:
+                self.wfile.write(handle.read())
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def _handle_aligned_model(self, filename: str) -> None:
         model_path = self.cache_dir / "aligned" / Path(filename).name
@@ -562,9 +567,13 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", mime_type or "chemical/x-pdb")
         self.send_header("Content-Length", str(model_path.stat().st_size))
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
         self.end_headers()
-        with model_path.open("rb") as handle:
-            self.wfile.write(handle.read())
+        try:
+            with model_path.open("rb") as handle:
+                self.wfile.write(handle.read())
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def _handle_rendered_image(self, image_name: str) -> None:
         image_path = self.cache_dir / "renders" / Path(image_name).name
@@ -575,8 +584,11 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "image/png")
         self.send_header("Content-Length", str(image_path.stat().st_size))
         self.end_headers()
-        with image_path.open("rb") as handle:
-            self.wfile.write(handle.read())
+        try:
+            with image_path.open("rb") as handle:
+                self.wfile.write(handle.read())
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def _serve_static(self, relative_path: str) -> None:
         path = (STATIC_DIR / relative_path).resolve()
@@ -587,16 +599,22 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", mime_type or "application/octet-stream")
         self.end_headers()
-        with path.open("rb") as handle:
-            self.wfile.write(handle.read())
+        try:
+            with path.open("rb") as handle:
+                self.wfile.write(handle.read())
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def _send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
 
 def build_handler(

@@ -44,6 +44,7 @@ DISTANCE_DATA_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
 DISTANCE_DATA_CACHE_LOCK = threading.Lock()
 DISTANCE_DATA_IN_FLIGHT: dict[str, Future] = {}
 MAX_DISTANCE_MATRIX_ROWS = 900
+INTERFACE_COMPRESSION_MODE = "partner_domain+interface_columns"
 
 
 def remap_non_negative_cluster_labels(labels: list[int]) -> list[int]:
@@ -206,6 +207,90 @@ def build_indicator_matrix(entries: list[dict[str, object]]) -> tuple[object, li
         for column in entry["columns"]:
             indicator_matrix[row_index, column_index[int(column)]] = True
     return indicator_matrix, msa_columns
+
+
+def compress_interface_entries(entries: list[dict[str, object]]) -> dict[str, object]:
+    groups_by_key: dict[tuple[str, tuple[int, ...]], list[int]] = {}
+    for index, entry in enumerate(entries):
+        partner_domain = str(entry["partner_domain"])
+        columns = tuple(int(column) for column in entry["columns"])
+        groups_by_key.setdefault((partner_domain, columns), []).append(index)
+
+    sorted_items = sorted(
+        groups_by_key.items(),
+        key=lambda item: (
+            item[0][0],
+            item[0][1],
+            min(str(entries[index]["row_key"]) for index in item[1]),
+        ),
+    )
+    compressed_entries: list[dict[str, object]] = []
+    group_index_by_entry = [-1] * len(entries)
+    for group_index, ((partner_domain, columns), member_indices) in enumerate(sorted_items):
+        sorted_member_indices = tuple(
+            sorted(
+                member_indices,
+                key=lambda index: (
+                    str(entries[index]["partner_domain"]),
+                    str(entries[index]["row_key"]),
+                    index,
+                ),
+            )
+        )
+        representative_index = sorted_member_indices[0]
+        representative = entries[representative_index]
+        members = [
+            {
+                "row_key": str(entries[index]["row_key"]),
+                "partner_domain": str(entries[index]["partner_domain"]),
+            }
+            for index in sorted_member_indices
+        ]
+        for member_index in sorted_member_indices:
+            group_index_by_entry[member_index] = group_index
+        compressed_entries.append(
+            {
+                "group_id": f"g{group_index}",
+                "partner_domain": partner_domain,
+                "row_key": str(representative["row_key"]),
+                "columns": columns,
+                "member_indices": sorted_member_indices,
+                "member_count": len(sorted_member_indices),
+                "members": members,
+                "representative_index": representative_index,
+            }
+        )
+    return {
+        "compression_mode": INTERFACE_COMPRESSION_MODE,
+        "entries": compressed_entries,
+        "group_index_by_entry": group_index_by_entry,
+    }
+
+
+def compute_distance_matrix_from_entries(
+    entries: list[dict[str, object]],
+    distance_metric: str,
+) -> tuple[object, list[int], object]:
+    import numpy as np
+    from sklearn.metrics import pairwise_distances
+
+    indicator_matrix, msa_columns = build_indicator_matrix(entries)
+    if len(entries) <= 1:
+        return indicator_matrix, msa_columns, np.zeros((len(entries), len(entries)), dtype=np.float64)
+    if distance_metric == "overlap":
+        distance_matrix = np.zeros((len(entries), len(entries)), dtype=np.float64)
+        column_sets = [set(int(column) for column in entry["columns"]) for entry in entries]
+        for left_index in range(len(entries) - 1):
+            left = column_sets[left_index]
+            for right_index in range(left_index + 1, len(entries)):
+                distance = overlap_distance_for_sets(left, column_sets[right_index])
+                distance_matrix[left_index][right_index] = distance
+                distance_matrix[right_index][left_index] = distance
+        return indicator_matrix, msa_columns, distance_matrix
+    distance_matrix = pairwise_distances(indicator_matrix, metric=distance_metric).astype(
+        np.float64, copy=False
+    )
+    return indicator_matrix, msa_columns, distance_matrix
 
 
 def overlap_distance_for_sets(left: set[int], right: set[int]) -> float:
@@ -407,6 +492,7 @@ def distance_data_cache_key(
     interface_path: Path,
     distance_metric: str,
     interface_filter_settings: dict[str, object] | None = None,
+    distance_scope: str = "expanded",
 ) -> str:
     stat = interface_path.stat()
     return "|".join(
@@ -415,6 +501,7 @@ def distance_data_cache_key(
             str(stat.st_size),
             str(stat.st_mtime_ns),
             distance_metric,
+            distance_scope,
             interface_filter_settings_key(interface_filter_settings),
         )
     )
@@ -465,9 +552,31 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
     cache_dir = interface_payload.get("cache_dir")
     raw_interface_payload = interface_payload["payload"]
     interface_filter_settings = interface_payload.get("interface_filter_settings")
+    distance_scope = str(interface_payload.get("distance_scope") or "expanded")
     entries = load_interface_entries(raw_interface_payload)
     if len(entries) < 2:
         raise ValueError("need at least two interfaces with non-empty interface sets")
+    compression = compress_interface_entries(entries)
+    compressed_entries = compression["entries"]
+    compressed_indicator_matrix, compressed_msa_columns, compressed_distance_matrix = compute_distance_matrix_from_entries(
+        compressed_entries,
+        distance_metric,
+    )
+    response: dict[str, object] = {
+        "entries": entries,
+        "distance": distance_metric,
+        "compression_mode": compression["compression_mode"],
+        "group_index_by_entry": compression["group_index_by_entry"],
+        "compressed_entries": compressed_entries,
+        "compressed_indicator_matrix": compressed_indicator_matrix,
+        "compressed_msa_columns": compressed_msa_columns,
+        "compressed_distance_matrix": compressed_distance_matrix,
+        "original_sample_count": len(entries),
+        "compressed_sample_count": len(compressed_entries),
+    }
+    if distance_scope == "compressed":
+        return response
+
     indicator_matrix, msa_columns = build_indicator_matrix(entries)
     if distance_metric == "overlap":
         distance_matrix = compute_interface_distance_matrix_for_payload(
@@ -485,13 +594,14 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
         distance_matrix = pairwise_distances(indicator_matrix, metric=distance_metric).astype(
             np.float64, copy=False
         )
-    return {
-        "entries": entries,
-        "indicator_matrix": indicator_matrix,
-        "msa_columns": msa_columns,
-        "distance_matrix": distance_matrix,
-        "distance": distance_metric,
-    }
+    response.update(
+        {
+            "indicator_matrix": indicator_matrix,
+            "msa_columns": msa_columns,
+            "distance_matrix": distance_matrix,
+        }
+    )
+    return response
 
 
 def compute_interface_distance_matrix_for_payload(
@@ -548,8 +658,14 @@ def load_interface_distance_data(
     interface_payload: dict[str, dict[str, dict]],
     distance_metric: str,
     interface_filter_settings: dict[str, object] | None = None,
+    distance_scope: str = "expanded",
 ) -> dict[str, object]:
-    cache_key = distance_data_cache_key(interface_path, distance_metric, interface_filter_settings)
+    cache_key = distance_data_cache_key(
+        interface_path,
+        distance_metric,
+        interface_filter_settings,
+        distance_scope,
+    )
     owner = False
     with DISTANCE_DATA_CACHE_LOCK:
         cached = DISTANCE_DATA_CACHE.get(cache_key)
@@ -571,6 +687,7 @@ def load_interface_distance_data(
                 "interface_path": interface_path,
                 "cache_dir": cache_dir,
                 "interface_filter_settings": interface_filter_settings,
+                "distance_scope": distance_scope,
             }
         )
     except Exception as exc:
@@ -596,38 +713,45 @@ def compute_tsne_embedding_payload(distance_data: dict[str, object], settings: d
         raise RuntimeError(
             "Embedding view requires scikit-learn in the Python environment running the server."
         ) from exc
-    entries = distance_data["entries"]
-    indicator_matrix = distance_data["indicator_matrix"]
-    msa_columns = distance_data["msa_columns"]
-    distance_matrix = distance_data["distance_matrix"]
+    entries = distance_data["compressed_entries"]
+    msa_columns = distance_data["compressed_msa_columns"]
+    distance_matrix = distance_data["compressed_distance_matrix"]
     distance_metric = str(distance_data["distance"])
-    sample_count = indicator_matrix.shape[0]
+    sample_count = len(entries)
     perplexity = settings["perplexity"]
-    if perplexity == "auto":
-        perplexity = min(30.0, max(1.0, (sample_count - 1) / 3.0))
-    if float(perplexity) >= sample_count:
-        raise ValueError(f"perplexity must be smaller than the number of samples ({sample_count})")
-    coordinates = TSNE(
-        n_components=3,
-        metric="precomputed",
-        init="random",
-        random_state=int(settings["random_state"]),
-        perplexity=float(perplexity),
-        learning_rate=settings["learning_rate"],
-        max_iter=int(settings["max_iter"]),
-        early_exaggeration=float(settings["early_exaggeration"]),
-    ).fit_transform(distance_matrix)
-    coordinates -= coordinates.mean(axis=0, keepdims=True)
-    max_radius = float(np.linalg.norm(coordinates, axis=1).max())
-    if max_radius > 0.0:
-        coordinates /= max_radius
+    if sample_count == 1:
+        coordinates = np.zeros((1, 3), dtype=np.float64)
+        resolved_perplexity = 0.0
+    else:
+        if perplexity == "auto":
+            perplexity = min(30.0, max(1.0, (sample_count - 1) / 3.0))
+        if float(perplexity) >= sample_count:
+            raise ValueError(f"perplexity must be smaller than the number of samples ({sample_count})")
+        resolved_perplexity = float(perplexity)
+        coordinates = TSNE(
+            n_components=3,
+            metric="precomputed",
+            init="random",
+            random_state=int(settings["random_state"]),
+            perplexity=resolved_perplexity,
+            learning_rate=settings["learning_rate"],
+            max_iter=int(settings["max_iter"]),
+            early_exaggeration=float(settings["early_exaggeration"]),
+        ).fit_transform(distance_matrix)
+        coordinates -= coordinates.mean(axis=0, keepdims=True)
+        max_radius = float(np.linalg.norm(coordinates, axis=1).max())
+        if max_radius > 0.0:
+            coordinates /= max_radius
     points = []
     for entry, coords in zip(entries, coordinates.tolist(), strict=True):
         points.append(
             {
+                "group_id": str(entry["group_id"]),
                 "row_key": str(entry["row_key"]),
                 "partner_domain": str(entry["partner_domain"]),
                 "interface_size": len(entry["columns"]),
+                "member_count": int(entry["member_count"]),
+                "members": entry["members"],
                 "x": float(coords[0]),
                 "y": float(coords[1]),
                 "z": float(coords[2]),
@@ -637,9 +761,12 @@ def compute_tsne_embedding_payload(distance_data: dict[str, object], settings: d
         "embedding": "tsne",
         "distance": distance_metric,
         "dimensions": 3,
+        "compression_mode": distance_data["compression_mode"],
         "sample_count": len(points),
+        "original_sample_count": int(distance_data["original_sample_count"]),
+        "compressed_sample_count": int(distance_data["compressed_sample_count"]),
         "column_count": len(msa_columns),
-        "perplexity": perplexity,
+        "perplexity": resolved_perplexity,
         "settings": {
             "distance": settings["distance"],
             "perplexity": settings["perplexity"],
@@ -712,7 +839,8 @@ def compute_hierarchical_clustering_payload(distance_data: dict[str, object], se
             "Hierarchical clustering requires scikit-learn in the Python environment running the server."
         ) from exc
     entries = distance_data["entries"]
-    distance_matrix = distance_data["distance_matrix"]
+    compressed_entries = distance_data["compressed_entries"]
+    distance_matrix = distance_data["compressed_distance_matrix"]
     distance_metric = str(distance_data["distance"])
     linkage = str(settings["linkage"])
     n_clusters = settings["n_clusters"]
@@ -720,33 +848,42 @@ def compute_hierarchical_clustering_payload(distance_data: dict[str, object], se
     hierarchical_min_cluster_size = int(
         settings.get("hierarchical_min_cluster_size", DEFAULT_HIERARCHICAL_MIN_CLUSTER_SIZE)
     )
-    clusterer = AgglomerativeClustering(
-        metric="precomputed",
-        linkage=linkage,
-        n_clusters=n_clusters,
-        distance_threshold=distance_threshold,
-        compute_distances=False,
-    )
-    try:
-        labels = clusterer.fit_predict(distance_matrix)
-    except Exception as exc:
-        raise RuntimeError(f"Hierarchical clustering failed unexpectedly: {exc}") from exc
-    labels_list = [int(label) for label in labels.tolist()]
+    compressed_count = len(compressed_entries)
+    if compressed_count == 1:
+        compressed_labels = [0]
+    else:
+        resolved_n_clusters = n_clusters
+        if resolved_n_clusters is not None:
+            resolved_n_clusters = min(int(resolved_n_clusters), compressed_count)
+        clusterer = AgglomerativeClustering(
+            metric="precomputed",
+            linkage=linkage,
+            n_clusters=resolved_n_clusters,
+            distance_threshold=distance_threshold,
+            compute_distances=False,
+        )
+        try:
+            labels = clusterer.fit_predict(distance_matrix)
+        except Exception as exc:
+            raise RuntimeError(f"Hierarchical clustering failed unexpectedly: {exc}") from exc
+        compressed_labels = [int(label) for label in labels.tolist()]
     if distance_threshold is not None:
         label_counts: dict[int, int] = {}
-        for label in labels_list:
+        for label, compressed_entry in zip(compressed_labels, compressed_entries, strict=True):
             if label < 0:
                 continue
-            label_counts[label] = label_counts.get(label, 0) + 1
+            label_counts[label] = label_counts.get(label, 0) + int(compressed_entry["member_count"])
         too_small_labels = {
             label for label, count in label_counts.items() if count < hierarchical_min_cluster_size
         }
         if too_small_labels:
-            labels_list = [
+            compressed_labels = [
                 -1 if label in too_small_labels else label
-                for label in labels_list
+                for label in compressed_labels
             ]
-    labels_list = remap_non_negative_cluster_labels(labels_list)
+    compressed_labels = remap_non_negative_cluster_labels(compressed_labels)
+    group_index_by_entry = distance_data["group_index_by_entry"]
+    labels_list = [compressed_labels[int(group_index)] for group_index in group_index_by_entry]
     unique_cluster_labels = sorted({label for label in labels_list if label >= 0})
     cluster_count = len(unique_cluster_labels)
     noise_count = int(sum(1 for label in labels_list if label < 0))
@@ -761,7 +898,9 @@ def compute_hierarchical_clustering_payload(distance_data: dict[str, object], se
     return {
         "clustering": "hierarchical",
         "distance": distance_metric,
+        "compression_mode": distance_data["compression_mode"],
         "sample_count": len(points),
+        "compressed_sample_count": compressed_count,
         "cluster_count": cluster_count,
         "noise_count": noise_count,
         "settings": {
@@ -833,12 +972,14 @@ def load_or_compute_clustering_payload(
     clustering_settings: dict[str, object],
     interface_filter_settings: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    distance_scope = "expanded" if clustering_settings["method"] == "hdbscan" else "compressed"
     distance_data = load_interface_distance_data(
         cache_dir,
         interface_path,
         interface_payload,
         str(clustering_settings["distance"]),
         interface_filter_settings,
+        distance_scope=distance_scope,
     )
     cache_path = clustering_cache_path(
         cache_dir,

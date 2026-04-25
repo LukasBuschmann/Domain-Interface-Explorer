@@ -1193,6 +1193,126 @@ export function createEmbeddingViewController({
     );
   }
 
+  function embeddingPointMembers(point) {
+    const members = Array.isArray(point?.members) ? point.members : [];
+    if (members.length > 0) {
+      return members
+        .map((member) => ({
+          row_key: String(member?.row_key || ""),
+          partner_domain: String(member?.partner_domain || ""),
+        }))
+        .filter((member) => member.row_key && member.partner_domain);
+    }
+    const rowKey = String(point?.row_key || "");
+    const partnerDomain = String(point?.partner_domain || "");
+    return rowKey && partnerDomain
+      ? [{ row_key: rowKey, partner_domain: partnerDomain }]
+      : [];
+  }
+
+  function embeddingPointMemberCount(point, members = null) {
+    const explicitCount = Number(point?.member_count);
+    if (Number.isFinite(explicitCount) && explicitCount > 0) {
+      return explicitCount;
+    }
+    return Math.max(1, (members || embeddingPointMembers(point)).length);
+  }
+
+  function clusterLabelForEmbeddingPoint(memberKeys, clusterByRowKey) {
+    const counts = new Map();
+    for (const key of memberKeys) {
+      if (!clusterByRowKey.has(key)) {
+        continue;
+      }
+      const clusterLabel = Number(clusterByRowKey.get(key));
+      counts.set(clusterLabel, (counts.get(clusterLabel) || 0) + 1);
+    }
+    if (counts.size === 0) {
+      return null;
+    }
+    return [...counts.entries()]
+      .sort((left, right) => right[1] - left[1] || Number(left[0]) - Number(right[0]))[0][0];
+  }
+
+  function applyEmbeddingPointJitter(projectedPoints) {
+    const buckets = new Map();
+    for (const point of projectedPoints) {
+      const bucketKey = `${point.screenX.toFixed(3)}|${point.screenY.toFixed(3)}`;
+      if (!buckets.has(bucketKey)) {
+        buckets.set(bucketKey, []);
+      }
+      buckets.get(bucketKey).push(point);
+    }
+    for (const bucket of buckets.values()) {
+      if (bucket.length < 2) {
+        continue;
+      }
+      const sortedBucket = [...bucket].sort((left, right) =>
+        String(left.group_id || left.interactionRowKey).localeCompare(
+          String(right.group_id || right.interactionRowKey)
+        )
+      );
+      const jitterRadius = Math.min(10, 2.8 + Math.log1p(sortedBucket.length) * 1.8);
+      for (let index = 0; index < sortedBucket.length; index += 1) {
+        const angle = (-Math.PI / 2) + (index * Math.PI * 2) / sortedBucket.length;
+        sortedBucket[index].screenX += Math.cos(angle) * jitterRadius;
+        sortedBucket[index].screenY += Math.sin(angle) * jitterRadius;
+      }
+    }
+  }
+
+  function selectedEmbeddingMemberKey() {
+    const selection = state.embeddingMemberSelection;
+    const member = selection?.members?.[selection.index];
+    if (!member) {
+      return "";
+    }
+    return interactionRowKey(member.row_key, member.partner_domain);
+  }
+
+  function syncMemberControl(element, countElement, label, visible) {
+    if (!element) {
+      return;
+    }
+    element.classList.toggle("hidden", !visible);
+    element.setAttribute("aria-hidden", visible ? "false" : "true");
+    if (visible && countElement) {
+      countElement.textContent = label;
+    }
+  }
+
+  function syncEmbeddingMemberControls(projectedPoints = state.embeddingProjectedPoints || []) {
+    const selection = state.embeddingMemberSelection;
+    const members = Array.isArray(selection?.members) ? selection.members : [];
+    const visible = members.length > 1 && Number.isInteger(selection?.index);
+    if (!visible) {
+      syncMemberControl(elements.embeddingMemberControls, elements.embeddingMemberCount, "", false);
+      syncMemberControl(elements.structureMemberControls, elements.structureMemberCount, "", false);
+      return;
+    }
+
+    const normalizedIndex = Math.max(0, Math.min(members.length - 1, Number(selection.index)));
+    const label = `${normalizedIndex + 1} / ${members.length}`;
+    const selectedKey = selectedEmbeddingMemberKey();
+    const point = projectedPoints.find(
+      (candidate) =>
+        String(candidate.group_id || candidate.interactionRowKey) === String(selection.pointKey || "") ||
+        (Array.isArray(candidate.memberKeys) && candidate.memberKeys.includes(selectedKey))
+    );
+    if (point && elements.embeddingMemberControls && elements.embeddingRoot) {
+      const width = elements.embeddingRoot.clientWidth;
+      const height = elements.embeddingRoot.clientHeight;
+      const left = Math.max(58, Math.min(width - 58, point.screenX));
+      const top = Math.max(48, Math.min(height - 18, point.screenY - point.radius - 12));
+      elements.embeddingMemberControls.style.left = `${left}px`;
+      elements.embeddingMemberControls.style.top = `${top}px`;
+      syncMemberControl(elements.embeddingMemberControls, elements.embeddingMemberCount, label, true);
+    } else {
+      syncMemberControl(elements.embeddingMemberControls, elements.embeddingMemberCount, label, false);
+    }
+    syncMemberControl(elements.structureMemberControls, elements.structureMemberCount, label, true);
+  }
+
   function renderEmbeddingPlot() {
     const ctx = elements.embeddingCanvas.getContext("2d");
     const dpr = window.devicePixelRatio || 1;
@@ -1213,6 +1333,7 @@ export function createEmbeddingViewController({
     const clusterByRowKey = embeddingClusterByRowKey();
     if (state.embedding?.error) {
       state.embeddingProjectedPoints = [];
+      syncEmbeddingMemberControls([]);
       ctx.fillStyle = "#6f6658";
       ctx.font = '13px "IBM Plex Sans", sans-serif';
       ctx.textAlign = "center";
@@ -1222,6 +1343,7 @@ export function createEmbeddingViewController({
     }
     if (embeddingPoints.length === 0) {
       state.embeddingProjectedPoints = [];
+      syncEmbeddingMemberControls([]);
       ctx.fillStyle = "#6f6658";
       ctx.font = '13px "IBM Plex Sans", sans-serif';
       ctx.textAlign = "center";
@@ -1240,6 +1362,7 @@ export function createEmbeddingViewController({
     }
     if (colorMode === "cluster" && state.embeddingClustering?.error) {
       state.embeddingProjectedPoints = [];
+      syncEmbeddingMemberControls([]);
       ctx.fillStyle = "#6f6658";
       ctx.font = '13px "IBM Plex Sans", sans-serif';
       ctx.textAlign = "center";
@@ -1249,6 +1372,7 @@ export function createEmbeddingViewController({
     }
     if (colorMode === "cluster" && (state.embeddingClustering?.points || []).length === 0) {
       state.embeddingProjectedPoints = [];
+      syncEmbeddingMemberControls([]);
       ctx.fillStyle = "#6f6658";
       ctx.font = '13px "IBM Plex Sans", sans-serif';
       ctx.textAlign = "center";
@@ -1266,11 +1390,22 @@ export function createEmbeddingViewController({
       );
       return;
     }
-    const annotatedPoints = embeddingPoints.map((point) => ({
-      ...point,
-      interactionRowKey: interactionRowKey(point.row_key, point.partner_domain),
-      clusterLabel: clusterByRowKey.get(interactionRowKey(point.row_key, point.partner_domain)) ?? null,
-    }));
+    const annotatedPoints = embeddingPoints.map((point) => {
+      const members = embeddingPointMembers(point);
+      const memberKeys = members.map((member) => interactionRowKey(member.row_key, member.partner_domain));
+      const representativeKey = interactionRowKey(point.row_key, point.partner_domain);
+      const normalizedMemberKeys = memberKeys.includes(representativeKey)
+        ? memberKeys
+        : [representativeKey].concat(memberKeys);
+      return {
+        ...point,
+        members,
+        memberCount: embeddingPointMemberCount(point, members),
+        memberKeys: normalizedMemberKeys,
+        interactionRowKey: representativeKey,
+        clusterLabel: clusterLabelForEmbeddingPoint(normalizedMemberKeys, clusterByRowKey),
+      };
+    });
     const visibleClusters = visibleEmbeddingClusters();
     const visiblePartners = visibleEmbeddingPartners();
     const filteredPoints =
@@ -1279,6 +1414,7 @@ export function createEmbeddingViewController({
         : annotatedPoints.filter((point) => visiblePartners.includes(point.partner_domain));
     if (filteredPoints.length === 0) {
       state.embeddingProjectedPoints = [];
+      syncEmbeddingMemberControls([]);
       if (state.embeddingHoverRowKey !== null) {
         state.embeddingHoverRowKey = null;
       }
@@ -1303,26 +1439,32 @@ export function createEmbeddingViewController({
       .map((point) => {
         const rotated = rotateEmbeddingPoint(point);
         const depthRatio = (rotated.z + 1) / 2;
+        const memberRadius = Math.min(
+          8,
+          Math.log1p(Math.max(0, Number(point.memberCount || 1) - 1)) * 1.6
+        );
         return {
           ...point,
           screenX: centerX + rotated.x * scale,
           screenY: centerY - rotated.y * scale,
           depth: rotated.z,
-          radius: 4.2 + depthRatio * 2.2,
+          radius: 4.2 + depthRatio * 2.2 + memberRadius,
           alpha: 0.58 + depthRatio * 0.34,
         };
-      })
-      .sort((left, right) => left.depth - right.depth);
+      });
+    applyEmbeddingPointJitter(projectedPoints);
+    projectedPoints.sort((left, right) => left.depth - right.depth);
     state.embeddingProjectedPoints = projectedPoints;
+    syncEmbeddingMemberControls(projectedPoints);
     ctx.textAlign = "center";
     for (const point of projectedPoints) {
       const color =
         colorMode === "cluster"
           ? embeddingClusterColor(point.clusterLabel)
           : partnerColor(point.partner_domain);
-      const isSelected = point.interactionRowKey === state.selectedRowKey;
-      const isRepresentative = point.interactionRowKey === state.representativeRowKey;
-      const isHovered = point.interactionRowKey === state.embeddingHoverRowKey;
+      const isSelected = point.memberKeys.includes(state.selectedRowKey);
+      const isRepresentative = point.memberKeys.includes(state.representativeRowKey);
+      const isHovered = point.memberKeys.includes(state.embeddingHoverRowKey);
       ctx.beginPath();
       ctx.fillStyle = color;
       ctx.globalAlpha = isHovered ? 1.0 : point.alpha;
@@ -1338,12 +1480,16 @@ export function createEmbeddingViewController({
       }
     }
     const hoveredPoint =
-      projectedPoints.find((point) => point.interactionRowKey === state.embeddingHoverRowKey) || null;
+      projectedPoints.find((point) => point.memberKeys.includes(state.embeddingHoverRowKey)) || null;
     if (hoveredPoint) {
+      const compressionText =
+        Number(hoveredPoint.memberCount || 1) > 1
+          ? ` | compressed interfaces: ${hoveredPoint.memberCount}`
+          : "";
       setEmbeddingInfo(
         `${hoveredPoint.row_key} | ${hoveredPoint.partner_domain} | ${embeddingClusterLabel(
           hoveredPoint.clusterLabel
-        )} | interface columns: ${hoveredPoint.interface_size}`
+        )} | interface columns: ${hoveredPoint.interface_size}${compressionText}`
       );
     } else {
       const distanceLabel = embeddingDistanceLabel(
@@ -1359,8 +1505,12 @@ export function createEmbeddingViewController({
         colorMode === "cluster" && state.embeddingClustering
           ? ` ${clusteringMethod} on ${clusteringDistanceLabel} distance: ${state.embeddingClustering.cluster_count} clusters, ${state.embeddingClustering.noise_count} noise points.`
           : "";
+      const representedCount = filteredPoints.reduce(
+        (total, point) => total + Number(point.memberCount || 1),
+        0
+      );
       setEmbeddingInfo(
-        `3D t-SNE on ${distanceLabel} interface distance. ${filteredPoints.length} visible interface rows. Drag to rotate.${clusteringSummary}`
+        `3D t-SNE on ${distanceLabel} interface distance. ${filteredPoints.length} visible points representing ${representedCount} interface rows. Drag to rotate.${clusteringSummary}`
       );
     }
   }
@@ -1682,5 +1832,6 @@ export function createEmbeddingViewController({
     setEmbeddingInfo,
     setColumnsInfo,
     setDistanceInfo,
+    syncEmbeddingMemberControls,
   };
 }
