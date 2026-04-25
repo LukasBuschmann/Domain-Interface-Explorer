@@ -1,4 +1,5 @@
 import { fetchJson, fetchText } from "./api.js";
+import { interfaceFilePfamId } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams } from "./selectionSettings.js";
 
 export function createRepresentativeViewController({
@@ -45,7 +46,7 @@ export function createRepresentativeViewController({
     if (fromState) {
       return fromState;
     }
-    return String(interfaceSelect.value || "").split("_", 1)[0] || "";
+    return interfaceFilePfamId(interfaceSelect.value);
   }
 
   function partnerPfamId(row, payload) {

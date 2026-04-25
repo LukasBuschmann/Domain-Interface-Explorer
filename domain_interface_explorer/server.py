@@ -18,6 +18,12 @@ from domain_interface_explorer.serverlib.config import (
     DEFAULT_INTERFACE_DIR,
     STATIC_DIR,
 )
+from domain_interface_explorer.serverlib.interface_files import (
+    directory_interface_json_paths,
+    interface_file_pfam_id,
+    is_interface_json_path,
+    load_interface_json,
+)
 from domain_interface_explorer.serverlib.interface_embedding import (
     build_interface_alignment_rows,
     compute_row_distance_matrix_payload,
@@ -63,16 +69,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def list_json_files(directory: Path) -> list[str]:
-    if not directory.exists():
-        return []
-    return sorted(path.name for path in directory.iterdir() if path.is_file() and path.suffix == ".json")
+    return [path.name for path in directory_interface_json_paths(directory)]
 
 
 def safe_file_path(directory: Path, filename: str) -> Path | None:
     candidate = directory / Path(filename).name
     if candidate.parent != directory:
         return None
-    if not candidate.exists() or not candidate.is_file():
+    if not candidate.exists() or not candidate.is_file() or not is_interface_json_path(candidate):
         return None
     return candidate
 
@@ -165,8 +169,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return None
-        with path.open("r", encoding="utf-8") as handle:
-            interface_payload = json.load(handle)
+        interface_payload = load_interface_json(path)
         filtered_payload = filter_interface_payload(interface_payload, interface_filter_settings)
         return path, interface_payload, filtered_payload, interface_filter_settings
 
@@ -183,7 +186,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         path, raw_payload, filtered_payload, interface_filter_settings = resolved
         rows, alignment_length = build_interface_alignment_rows(filtered_payload)
-        pfam_id = path.name.split("_", maxsplit=1)[0]
+        pfam_id = interface_file_pfam_id(path)
         self._send_json(
             {
                 "file": path.name,
@@ -256,7 +259,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         response_payload = {
             "file": path.name,
-            "pfam_id": path.name.split("_", maxsplit=1)[0],
+            "pfam_id": interface_file_pfam_id(path),
             "filter_settings": interface_filter_settings,
             **embedding_payload,
         }
@@ -316,7 +319,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         try:
             response_payload = {
                 "file": path.name,
-                "pfam_id": path.name.split("_", maxsplit=1)[0],
+                "pfam_id": interface_file_pfam_id(path),
                 "filter_settings": interface_filter_settings,
                 **compute_row_distance_matrix_payload(interface_payload, distance_metric),
             }
@@ -358,7 +361,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             )
             response_payload = {
                 "file": path.name,
-                "pfam_id": path.name.split("_", maxsplit=1)[0],
+                "pfam_id": interface_file_pfam_id(path),
                 "filter_settings": interface_filter_settings,
                 **compute_cluster_compare_payload(distance_data, clustering_payload, cluster_label),
             }
@@ -427,8 +430,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 return
         if not row_key:
             row_key = f"{uniprot_id}_{fragment_key_name}"
-        with interface_path.open("r", encoding="utf-8") as handle:
-            interface_data = filter_interface_payload(json.load(handle), interface_filter_settings)
+        interface_data = filter_interface_payload(load_interface_json(interface_path), interface_filter_settings)
         row_structure = collect_row_structure_payload(interface_data, row_key, partner)
         fragment_start, fragment_end = fragment_bounds(fragment_key_name)
         fragment_residue_ids = sorted(expand_fragment_key_to_residue_ids(fragment_key_name))

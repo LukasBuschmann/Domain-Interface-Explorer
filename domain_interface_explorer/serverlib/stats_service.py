@@ -27,6 +27,11 @@ from .config import (
     SELECTOR_STATS_CACHE_VERSION,
 )
 from .interface_embedding import build_interface_alignment_rows
+from .interface_files import (
+    directory_interface_json_paths,
+    interface_file_pfam_id,
+    load_interface_json,
+)
 
 try:
     from tqdm import tqdm
@@ -117,9 +122,7 @@ def source_signature(paths: list[Path]) -> str:
 
 
 def directory_json_paths(directory: Path) -> list[Path]:
-    if not directory.exists():
-        return []
-    return sorted(path for path in directory.iterdir() if path.is_file() and path.suffix == ".json")
+    return directory_interface_json_paths(directory)
 
 
 def selector_stats_signature(interface_dir: Path) -> str:
@@ -187,8 +190,7 @@ def compute_pfam_option_stat(task: tuple[str, list[str]]) -> tuple[str, dict[str
     dataset_interfaces = 0
     for path_string in path_strings:
         path = Path(path_string)
-        with path.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
+        payload = load_interface_json(path)
         _rows, file_alignment_length = build_interface_alignment_rows(payload)
         alignment_length = max(alignment_length, file_alignment_length)
         interaction_partners.update(partner for partner in payload.keys() if isinstance(partner, str))
@@ -582,7 +584,7 @@ def merge_pfam_metadata(
 def build_pfam_option_stats(interface_dir: Path) -> dict[str, dict[str, object]]:
     grouped_interface_files: dict[str, list[Path]] = {}
     for path in directory_json_paths(interface_dir):
-        pfam_id = path.stem.split("_", maxsplit=1)[0]
+        pfam_id = interface_file_pfam_id(path)
         grouped_interface_files.setdefault(pfam_id, []).append(path)
     pfam_items = sorted(grouped_interface_files.items())
     tasks = [

@@ -1,7 +1,17 @@
+export function interfaceFileStem(interfaceFile) {
+  return String(interfaceFile || "")
+    .replace(/\.json\.gz$/i, "")
+    .replace(/\.json$/i, "");
+}
+
+export function interfaceFilePfamId(interfaceFile) {
+  return interfaceFileStem(interfaceFile).split("_", 1)[0] || "";
+}
+
 export function buildPairs(files) {
   return (files.interface_files || [])
     .map((interfaceFile) => {
-      const pfamId = interfaceFile.split("_", 1)[0];
+      const pfamId = interfaceFilePfamId(interfaceFile);
       return {
         pfamId,
         msaFile: `${pfamId}.json`,

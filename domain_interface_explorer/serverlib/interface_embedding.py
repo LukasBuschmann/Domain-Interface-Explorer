@@ -38,6 +38,7 @@ from .config import (
     EMBEDDING_CACHE_VERSION,
     INTERFACE_DISTANCE_CACHE_VERSION,
 )
+from .interface_files import interface_file_pfam_id, interface_file_stem
 
 DISTANCE_DATA_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
 DISTANCE_DATA_CACHE_LOCK = threading.Lock()
@@ -519,7 +520,11 @@ def compute_interface_distance_matrix_for_payload(
             except (OSError, ValueError):
                 pass
 
-    temp_name = interface_path.name if interface_path is not None else "interface_payload.json"
+    temp_name = (
+        f"{interface_file_stem(interface_path)}.json"
+        if interface_path is not None
+        else "interface_payload.json"
+    )
     temp_root = None
     if cache_dir is not None:
         temp_root = cache_dir / "interface_distance" / "payloads"
@@ -852,7 +857,7 @@ def load_or_compute_clustering_payload(
         clustering_payload = compute_hdbscan_clustering_payload(distance_data, clustering_settings)
     response_payload = {
         "file": interface_path.name,
-        "pfam_id": interface_path.name.split("_", maxsplit=1)[0],
+        "pfam_id": interface_file_pfam_id(interface_path),
         "filter_settings": interface_filter_settings or {"min_interface_size": DEFAULT_MIN_INTERFACE_SIZE},
         **clustering_payload,
     }

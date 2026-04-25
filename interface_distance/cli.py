@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import json
 import math
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,6 +22,7 @@ TOOL_DIR = Path(__file__).resolve().parent
 DEFAULT_BINARY_NAME = "interface_distance"
 RUNTIME_BINARY_DIR = TOOL_DIR / "bin"
 UINT16_SCALE = 65535.0
+GZIP_MAGIC = b"\x1f\x8b"
 
 
 @dataclass(frozen=True)
@@ -126,6 +129,18 @@ def compute_interface_distance_matrix(
     output_file: Path | None = None,
     metadata_out: Path | None = None,
 ) -> np.ndarray:
+    if is_gzip_file(input_file):
+        with tempfile.TemporaryDirectory(prefix="interface_distance_input_") as tmp_dir:
+            temp_input_name = input_file.name[:-3]
+            temp_input_file = Path(tmp_dir) / temp_input_name
+            with gzip.open(input_file, "rt", encoding="utf-8") as source:
+                with temp_input_file.open("w", encoding="utf-8") as target:
+                    shutil.copyfileobj(source, target)
+            return compute_interface_distance_matrix(
+                input_file=temp_input_file,
+                output_file=output_file,
+                metadata_out=metadata_out,
+            )
     runtime_binary = validate_runtime_binary()
     if output_file is not None:
         resolved_metadata_out = metadata_out or default_metadata_path(output_file)
@@ -284,8 +299,23 @@ def compute_to_file_python(
     write_metadata(entries, metadata_out)
 
 
+def is_gzip_file(input_file: Path) -> bool:
+    if not input_file.name.lower().endswith(".gz"):
+        return False
+    try:
+        return input_file.read_bytes()[:2] == GZIP_MAGIC
+    except OSError:
+        return False
+
+
+def open_input_text_file(input_file: Path):
+    if is_gzip_file(input_file):
+        return gzip.open(input_file, "rt", encoding="utf-8")
+    return input_file.open("r", encoding="utf-8")
+
+
 def load_interface_entries(input_file: Path) -> list[InterfaceEntry]:
-    with input_file.open("r", encoding="utf-8") as handle:
+    with open_input_text_file(input_file) as handle:
         parsed = json.load(handle)
     if not isinstance(parsed, dict):
         raise ValueError(f"expected top-level object in {input_file}")

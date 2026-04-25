@@ -52,7 +52,7 @@ http://127.0.0.1:8000
 
 By default, DIE uses:
 
-- `./data` for interface JSON input
+- `./data` for interface JSON input (`.json` or `.json.gz`)
 - `./cache` for generated caches
 
 The bundled sample dataset contains 5 interface files totaling about 10 MB, so the default startup command works out of the box.
@@ -73,7 +73,7 @@ Current options:
 
 - `--interface-dir INTERFACE_DIR`
   Default: `./data`
-  Directory containing interface JSON files.
+  Directory containing interface JSON files (`.json` or `.json.gz`).
 
 - `--cache-dir CACHE_DIR`
   Default: `./cache`
@@ -91,7 +91,7 @@ python -m domain_interface_explorer.server \
 
 ## Adding Data
 
-To add new interface datasets, place the JSON files into the default data directory:
+To add new interface datasets, place `.json` or `.json.gz` files into the default data directory:
 
 ```text
 ./data

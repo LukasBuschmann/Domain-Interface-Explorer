@@ -8,7 +8,7 @@ import {
   TEXT_FONT,
 } from "./constants.js";
 import { fetchJson } from "./api.js";
-import { interactionRowKey } from "./interfaceModel.js";
+import { interactionRowKey, interfaceFileStem } from "./interfaceModel.js";
 import {
   appendSelectionSettingsToParams,
   normalizeSelectionSettings,
@@ -1050,13 +1050,15 @@ export function createMsaViewController({
   function buildMsaOptionsFromFiles(files) {
     return [...new Set((files?.pairs || []).map((pair) => pair.msaFile))]
       .sort()
-      .map((name) => ({
-        value: name,
-        pfamId: name.replace(/\.json$/i, ""),
-        stats: files?.pfam_option_stats?.[name.replace(/\.json$/i, "")] || null,
-        displayName:
-          files?.pfam_option_stats?.[name.replace(/\.json$/i, "")]?.display_name || "",
-      }));
+      .map((name) => {
+        const pfamId = interfaceFileStem(name);
+        return {
+          value: name,
+          pfamId,
+          stats: files?.pfam_option_stats?.[pfamId] || null,
+          displayName: files?.pfam_option_stats?.[pfamId]?.display_name || "",
+        };
+      });
   }
 
   function applyFilesPayload(files, { preserveSelection = true } = {}) {
@@ -1308,7 +1310,7 @@ export function createMsaViewController({
   }
 
   function msaUrlValue(msaFile) {
-    return String(msaFile || "").replace(/\.json$/i, "");
+    return interfaceFileStem(msaFile);
   }
 
   function syncMsaSelectionInUrl(msaFile) {
@@ -1328,9 +1330,10 @@ export function createMsaViewController({
     if (!requested) {
       return "";
     }
-    const normalizedRequested = requested.replace(/\.json$/i, "");
+    const normalizedRequested = interfaceFileStem(requested);
     const match = (state.msaOptions || []).find(
-      (option) => option.pfamId === normalizedRequested || option.value === `${normalizedRequested}.json`
+      (option) =>
+        option.pfamId === normalizedRequested || interfaceFileStem(option.value) === normalizedRequested
     );
     return match?.value || "";
   }
