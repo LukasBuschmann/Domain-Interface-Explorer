@@ -1,3 +1,4 @@
+// @ts-nocheck
 import {
   Color,
   MS,
@@ -6,7 +7,7 @@ import {
   StructureElement,
   StructureProperties,
   Viewer,
-} from "./vendor/molstar-bridge.js";
+} from "../vendor/molstar-bridge.js";
 
 const WHOLE_PROTEIN_COLOR = "#c7c3bc";
 const MAIN_DOMAIN_COLOR = "#8f8a82";

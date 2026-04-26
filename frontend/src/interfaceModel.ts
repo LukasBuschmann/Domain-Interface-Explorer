@@ -1,14 +1,25 @@
-export function interfaceFileStem(interfaceFile) {
+type InterfaceFilesPayload = {
+  interface_files?: string[];
+};
+
+type InterfaceResiduePayload = {
+  interface_msa_columns_a?: Iterable<number>;
+  surface_msa_columns_a?: Iterable<number>;
+};
+
+type InterfacePayload = Record<string, Record<string, InterfaceResiduePayload>>;
+
+export function interfaceFileStem(interfaceFile: unknown) {
   return String(interfaceFile || "")
     .replace(/\.json\.gz$/i, "")
     .replace(/\.json$/i, "");
 }
 
-export function interfaceFilePfamId(interfaceFile) {
+export function interfaceFilePfamId(interfaceFile: unknown) {
   return interfaceFileStem(interfaceFile).split("_", 1)[0] || "";
 }
 
-export function buildPairs(files) {
+export function buildPairs(files: InterfaceFilesPayload = {}) {
   return (files.interface_files || [])
     .map((interfaceFile) => {
       const pfamId = interfaceFilePfamId(interfaceFile);
@@ -22,13 +33,13 @@ export function buildPairs(files) {
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
-export function interactionRowKey(rowKey, partnerDomain) {
+export function interactionRowKey(rowKey: unknown, partnerDomain: unknown) {
   const baseRowKey = String(rowKey || "");
   const domain = String(partnerDomain || "");
   return domain ? `${baseRowKey}@@${domain}` : baseRowKey;
 }
 
-export function parseInterfaceRowKey(rowKey) {
+export function parseInterfaceRowKey(rowKey: unknown) {
   const parts = String(rowKey || "").split("_", 3);
   const proteinId = parts[0] || "";
   const fragmentKey = parts[1] || "";
@@ -41,7 +52,7 @@ export function parseInterfaceRowKey(rowKey) {
   };
 }
 
-export function parseInteractionRowKey(rowKey) {
+export function parseInteractionRowKey(rowKey: unknown) {
   const [interfaceRowKey = "", partnerDomain = ""] = String(rowKey || "").split("@@", 2);
   return {
     interfaceRowKey,
@@ -50,14 +61,14 @@ export function parseInteractionRowKey(rowKey) {
   };
 }
 
-export function buildOverlayMaps(interfacePayload) {
+export function buildOverlayMaps(interfacePayload: InterfacePayload = {}) {
   const overlayByRow = new Map();
   const overlayByInteractionRow = new Map();
   const partnerDomains = Object.keys(interfacePayload || {}).sort();
   const partnerColumnStats = new Map();
   const partnerInterfaceCounts = new Map();
   for (const partnerDomain of partnerDomains) {
-    const entries = interfacePayload[partnerDomain];
+    const entries = interfacePayload[partnerDomain] || {};
     partnerInterfaceCounts.set(partnerDomain, Object.keys(entries || {}).length);
     const columnCounts = new Map();
     let denominator = 0;

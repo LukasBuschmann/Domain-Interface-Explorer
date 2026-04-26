@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { fetchJson, fetchText } from "./api.js";
 import { interactionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams } from "./selectionSettings.js";

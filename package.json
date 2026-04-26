@@ -1,0 +1,29 @@
+{
+  "name": "domain_interface_explorer",
+  "version": "1.0.0",
+  "description": "Domain Interface Explorer (DIE) is a browser-based tool for inspecting protein domain-domain interfaces in aligned sequence context. It lets you compare partner-specific interaction patterns, view conservation across aligned columns, cluster similar interfaces, and open linked structure previews for selected interfaces.",
+  "main": "index.js",
+  "scripts": {
+    "build:frontend": "node frontend/build-frontend.mjs",
+    "build:molstar": "node frontend/build-molstar.mjs",
+    "build": "npm run build:frontend && npm run build:molstar",
+    "check:frontend": "npm run build:frontend && esbuild domain_interface_explorer/static/dist/app.js --bundle --format=esm --platform=browser --external:../vendor/molstar-bridge.js --outfile=/tmp/domain-interface-explorer-app-check.js",
+    "check:js": "npm run check:frontend"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LukasBuschmann/Domain-Interface-Explorer.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/LukasBuschmann/Domain-Interface-Explorer/issues"
+  },
+  "homepage": "https://github.com/LukasBuschmann/Domain-Interface-Explorer#readme",
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "molstar": "^5.8.0",
+    "typescript": "^6.0.3"
+  }
+}

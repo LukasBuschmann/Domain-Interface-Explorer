@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { CLUSTER_COLOR_PALETTE, DEFAULT_CLUSTERING_SETTINGS } from "./constants.js";
 import { fetchJson } from "./api.js";
 import { interactionRowKey } from "./interfaceModel.js";

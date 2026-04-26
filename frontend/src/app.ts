@@ -1,3 +1,4 @@
+// @ts-nocheck
 import {
   CELL_WIDTH,
   CLUSTER_COLOR_PALETTE,

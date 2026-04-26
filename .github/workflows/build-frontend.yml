@@ -1,0 +1,61 @@
+name: Build frontend
+
+on:
+  push:
+    paths:
+      - ".github/workflows/build-frontend.yml"
+      - "frontend/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+  pull_request:
+    paths:
+      - ".github/workflows/build-frontend.yml"
+      - "frontend/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend assets
+        run: npm run build
+
+      - name: Check browser bundle
+        run: npm run check:frontend
+
+      - name: Commit updated frontend assets
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add domain_interface_explorer/static/dist domain_interface_explorer/static/vendor/molstar-bridge.js domain_interface_explorer/static/vendor/molstar.css
+          if git diff --cached --quiet; then
+            echo "No bundled frontend asset changes to commit."
+            exit 0
+          fi
+          git commit -m "Update bundled frontend assets [skip ci]"
+          git push origin "HEAD:${{ github.ref_name }}"

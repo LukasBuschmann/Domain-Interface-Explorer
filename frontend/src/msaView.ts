@@ -1,3 +1,4 @@
+// @ts-nocheck
 import {
   CELL_WIDTH,
   DEFAULT_CLUSTERING_SETTINGS,

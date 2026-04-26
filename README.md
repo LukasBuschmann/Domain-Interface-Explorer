@@ -57,6 +57,21 @@ By default, DIE uses:
 
 The bundled sample dataset contains 5 interface files totaling about 10 MB, so the default startup command works out of the box.
 
+## Frontend Development
+
+The editable frontend source lives in `frontend/src`. Generated browser modules are bundled in
+`domain_interface_explorer/static/dist` so normal installs do not require Node.js.
+
+If you edit the frontend, install Node.js and npm, then rebuild:
+
+```bash
+npm install
+npm run build
+```
+
+GitHub Actions rebuilds the frontend on pushes that touch frontend sources or build config, then
+commits updated bundled assets back to the branch.
+
 ## CLI Options
 
 Run `python -m domain_interface_explorer.server --help` to see the live help text.
