@@ -10,10 +10,9 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
 
-from interface_distance import validate_runtime_binary
-
 from domain_interface_explorer.serverlib.config import (
     DEFAULT_CACHE_DIR,
+    DEFAULT_CACHE_WORKERS,
     DEFAULT_HOST,
     DEFAULT_INTERFACE_DIR,
     STATIC_DIR,
@@ -26,13 +25,13 @@ from domain_interface_explorer.serverlib.interface_files import (
 )
 from domain_interface_explorer.serverlib.interface_embedding import (
     build_interface_alignment_rows,
-    compute_row_distance_matrix_payload,
     compute_cluster_compare_payload,
     compute_tsne_embedding_payload,
     clustering_cache_path,
     embedding_cache_path,
     filter_interface_payload,
     load_interface_distance_data,
+    load_or_compute_row_distance_matrix_payload,
     load_or_compute_clustering_payload,
     parse_clustering_settings,
     parse_distance_metric,
@@ -62,12 +61,23 @@ from domain_interface_explorer.serverlib.structure_service import (
 )
 
 
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--interface-dir", type=Path, default=DEFAULT_INTERFACE_DIR)
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
+    parser.add_argument("--cache-workers", type=positive_int, default=DEFAULT_CACHE_WORKERS)
     return parser.parse_args()
 
 
@@ -87,6 +97,7 @@ def safe_file_path(directory: Path, filename: str) -> Path | None:
 class ViewerRequestHandler(BaseHTTPRequestHandler):
     interface_dir: Path
     cache_dir: Path
+    cache_workers: int
     pfam_option_stats: dict[str, dict[str, object]]
 
     def do_GET(self) -> None:
@@ -259,6 +270,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 str(settings["distance"]),
                 interface_filter_settings,
                 distance_scope="compressed",
+                cache_workers=self.cache_workers,
             )
             embedding_payload = compute_tsne_embedding_payload(distance_data, settings)
         except (RuntimeError, ValueError) as exc:
@@ -303,6 +315,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 interface_payload,
                 clustering_settings,
                 interface_filter_settings,
+                cache_workers=self.cache_workers,
             )
         except (RuntimeError, ValueError) as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
@@ -328,7 +341,13 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 "file": path.name,
                 "pfam_id": interface_file_pfam_id(path),
                 "filter_settings": interface_filter_settings,
-                **compute_row_distance_matrix_payload(interface_payload, distance_metric),
+                **load_or_compute_row_distance_matrix_payload(
+                    self.cache_dir,
+                    path,
+                    interface_payload,
+                    distance_metric,
+                    interface_filter_settings,
+                ),
             }
         except (RuntimeError, ValueError) as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
@@ -360,6 +379,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 str(clustering_settings["distance"]),
                 interface_filter_settings,
                 distance_scope=distance_scope,
+                cache_workers=self.cache_workers,
             )
             clustering_payload = load_or_compute_clustering_payload(
                 self.cache_dir,
@@ -367,6 +387,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 interface_payload,
                 clustering_settings,
                 interface_filter_settings,
+                cache_workers=self.cache_workers,
             )
             response_payload = {
                 "file": path.name,
@@ -668,6 +689,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
 def build_handler(
     interface_dir: Path,
     cache_dir: Path,
+    cache_workers: int,
     pfam_option_stats: dict[str, dict[str, object]],
 ):
     class ConfiguredHandler(ViewerRequestHandler):
@@ -675,20 +697,14 @@ def build_handler(
 
     ConfiguredHandler.interface_dir = interface_dir
     ConfiguredHandler.cache_dir = cache_dir
+    ConfiguredHandler.cache_workers = max(1, int(cache_workers))
     ConfiguredHandler.pfam_option_stats = pfam_option_stats
     return ConfiguredHandler
 
 
 def main() -> None:
     args = parse_args()
-    binary_status = validate_runtime_binary()
-    if not binary_status.available:
-        print(
-            "WARNING: "
-            f"{binary_status.reason}. Falling back to the Python overlap-distance implementation.",
-            file=sys.stderr,
-            flush=True,
-        )
+    cache_workers = max(1, int(args.cache_workers))
     pymol_status = validate_pymol_api()
     if not pymol_status.available:
         print(
@@ -700,10 +716,12 @@ def main() -> None:
     pfam_option_stats = load_cached_pfam_option_stats(
         args.cache_dir.resolve(),
         args.interface_dir.resolve(),
+        cache_workers,
     )
     handler = build_handler(
         args.interface_dir.resolve(),
         args.cache_dir.resolve(),
+        cache_workers,
         pfam_option_stats,
     )
     server = ThreadingHTTPServer((args.host, args.port), handler)

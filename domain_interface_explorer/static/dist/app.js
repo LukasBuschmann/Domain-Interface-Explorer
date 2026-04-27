@@ -1225,9 +1225,6 @@ embeddingTsneApply.addEventListener("click", async () => {
         if (activeMsaPanelView() === "embeddings") {
             await ensureEmbeddingDataLoaded();
         }
-        else {
-            void ensureEmbeddingDataLoaded();
-        }
     }
     catch (error) {
         setEmbeddingInfo(error.message);
@@ -1242,13 +1239,8 @@ embeddingClusteringApply.addEventListener("click", async () => {
         };
         state.embeddingSettingsOpen = false;
         syncEmbeddingSettingsUi();
-        if (activeMsaPanelView() === "embeddings") {
+        if (activeMsaPanelView() === "embeddings" || activeMsaPanelView() === "columns") {
             await ensureEmbeddingClusteringLoaded();
-        }
-        else {
-            void ensureEmbeddingClusteringLoaded().then(() => {
-                render();
-            });
         }
         render();
     }

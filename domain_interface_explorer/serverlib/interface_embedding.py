@@ -19,6 +19,7 @@ from interface_distance import (
 
 from .config import (
     CLUSTERING_CACHE_VERSION,
+    DEFAULT_CACHE_WORKERS,
     DEFAULT_CLUSTER_COMPARE_LIMIT,
     DEFAULT_CLUSTER_MIN_SIZE,
     DEFAULT_CLUSTER_SELECTION_EPSILON,
@@ -37,6 +38,7 @@ from .config import (
     DISTANCE_DATA_CACHE_LIMIT,
     EMBEDDING_CACHE_VERSION,
     INTERFACE_DISTANCE_CACHE_VERSION,
+    ROW_DISTANCE_MATRIX_CACHE_VERSION,
 )
 from .interface_files import interface_file_pfam_id, interface_file_stem
 
@@ -552,6 +554,7 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
     cache_dir = interface_payload.get("cache_dir")
     raw_interface_payload = interface_payload["payload"]
     interface_filter_settings = interface_payload.get("interface_filter_settings")
+    cache_workers = int(interface_payload.get("cache_workers") or DEFAULT_CACHE_WORKERS)
     distance_scope = str(interface_payload.get("distance_scope") or "expanded")
     entries = load_interface_entries(raw_interface_payload)
     if len(entries) < 2:
@@ -589,6 +592,7 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
                 if isinstance(interface_filter_settings, dict) or interface_filter_settings is None
                 else None
             ),
+            cache_workers=cache_workers,
         )
     else:
         distance_matrix = pairwise_distances(indicator_matrix, metric=distance_metric).astype(
@@ -611,6 +615,7 @@ def compute_interface_distance_matrix_for_payload(
     interface_path: Path | None = None,
     cache_dir: Path | None = None,
     interface_filter_settings: dict[str, object] | None = None,
+    cache_workers: int = DEFAULT_CACHE_WORKERS,
 ) -> object:
     cache_output_file: Path | None = None
     cache_metadata_file: Path | None = None
@@ -648,8 +653,9 @@ def compute_interface_distance_matrix_for_payload(
                 input_file=temp_input_file,
                 output_file=cache_output_file,
                 metadata_out=cache_metadata_file,
+                workers=cache_workers,
             )
-        return compute_interface_distance_matrix(input_file=temp_input_file)
+        return compute_interface_distance_matrix(input_file=temp_input_file, workers=cache_workers)
 
 
 def load_interface_distance_data(
@@ -659,6 +665,7 @@ def load_interface_distance_data(
     distance_metric: str,
     interface_filter_settings: dict[str, object] | None = None,
     distance_scope: str = "expanded",
+    cache_workers: int = DEFAULT_CACHE_WORKERS,
 ) -> dict[str, object]:
     cache_key = distance_data_cache_key(
         interface_path,
@@ -688,6 +695,7 @@ def load_interface_distance_data(
                 "cache_dir": cache_dir,
                 "interface_filter_settings": interface_filter_settings,
                 "distance_scope": distance_scope,
+                "cache_workers": cache_workers,
             }
         )
     except Exception as exc:
@@ -965,12 +973,38 @@ def clustering_cache_path(
     return cache_dir / "clusterings" / f"{key}.json"
 
 
+def row_distance_matrix_cache_path(
+    cache_dir: Path,
+    interface_path: Path,
+    distance_metric: str,
+    interface_filter_settings: dict[str, object] | None = None,
+) -> Path:
+    stat = interface_path.stat()
+    key = hashlib.sha1(
+        (
+            ROW_DISTANCE_MATRIX_CACHE_VERSION
+            + "|"
+            + str(interface_path.resolve())
+            + "|"
+            + str(stat.st_size)
+            + "|"
+            + str(stat.st_mtime_ns)
+            + "|"
+            + str(distance_metric)
+            + "|"
+            + interface_filter_settings_key(interface_filter_settings)
+        ).encode("utf-8")
+    ).hexdigest()
+    return cache_dir / "distance_matrices" / f"{key}.json"
+
+
 def load_or_compute_clustering_payload(
     cache_dir: Path,
     interface_path: Path,
     interface_payload: dict[str, dict[str, dict]],
     clustering_settings: dict[str, object],
     interface_filter_settings: dict[str, object] | None = None,
+    cache_workers: int = DEFAULT_CACHE_WORKERS,
 ) -> dict[str, object]:
     distance_scope = "expanded" if clustering_settings["method"] == "hdbscan" else "compressed"
     distance_data = load_interface_distance_data(
@@ -980,6 +1014,7 @@ def load_or_compute_clustering_payload(
         str(clustering_settings["distance"]),
         interface_filter_settings,
         distance_scope=distance_scope,
+        cache_workers=cache_workers,
     )
     cache_path = clustering_cache_path(
         cache_dir,
@@ -1311,10 +1346,9 @@ def compute_row_distance_matrix_payload(
 ) -> dict[str, object]:
     try:
         import numpy as np
-        from sklearn.metrics import pairwise_distances
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "Distance matrix view requires scikit-learn in the Python environment running the server."
+            "Distance matrix view requires numpy in the Python environment running the server."
         ) from exc
 
     columns_by_row: dict[str, set[int]] = {}
@@ -1381,6 +1415,12 @@ def compute_row_distance_matrix_payload(
                 distance_matrix[left_index, right_index] = distance
                 distance_matrix[right_index, left_index] = distance
     else:
+        try:
+            from sklearn.metrics import pairwise_distances
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError(
+                "Jaccard and dice distance matrix views require scikit-learn in the Python environment running the server."
+            ) from exc
         distance_matrix = pairwise_distances(indicator_matrix, metric=distance_metric).astype(
             np.float64, copy=False
         )
@@ -1395,3 +1435,29 @@ def compute_row_distance_matrix_payload(
         "row_partners": [dominant_partner_by_row.get(row_key, "") for row_key in row_keys],
         "matrix": distance_matrix.tolist(),
     }
+
+
+def load_or_compute_row_distance_matrix_payload(
+    cache_dir: Path,
+    interface_path: Path,
+    interface_payload: dict[str, dict[str, dict]],
+    distance_metric: str,
+    interface_filter_settings: dict[str, object] | None = None,
+) -> dict[str, object]:
+    cache_path = row_distance_matrix_cache_path(
+        cache_dir,
+        interface_path,
+        distance_metric,
+        interface_filter_settings,
+    )
+    if cache_path.exists():
+        try:
+            with cache_path.open("r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            pass
+    payload = compute_row_distance_matrix_payload(interface_payload, distance_metric)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with cache_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    return payload

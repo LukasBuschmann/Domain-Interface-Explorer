@@ -4,7 +4,6 @@ import hashlib
 import re
 import json
 import math
-import os
 import sys
 import tempfile
 import threading
@@ -17,6 +16,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .config import (
+    DEFAULT_CACHE_WORKERS,
     INTERPRO_PFAM_ENTRY_API,
     INTERPRO_PFAM_ENTRY_PAGE,
     INTERPRO_PFAM_LIST_API,
@@ -581,7 +581,10 @@ def merge_pfam_metadata(
     return merged
 
 
-def build_pfam_option_stats(interface_dir: Path) -> dict[str, dict[str, object]]:
+def build_pfam_option_stats(
+    interface_dir: Path,
+    cache_workers: int = DEFAULT_CACHE_WORKERS,
+) -> dict[str, dict[str, object]]:
     grouped_interface_files: dict[str, list[Path]] = {}
     for path in directory_json_paths(interface_dir):
         pfam_id = interface_file_pfam_id(path)
@@ -595,7 +598,7 @@ def build_pfam_option_stats(interface_dir: Path) -> dict[str, dict[str, object]]
         for pfam_id, paths in pfam_items
     ]
     pfam_option_stats: dict[str, dict[str, object]] = {}
-    worker_count = min(len(tasks), max(1, min(16, os.cpu_count() or 1)))
+    worker_count = min(len(tasks), max(1, int(cache_workers)))
     if worker_count <= 1:
         results_iter = map(compute_pfam_option_stat, tasks)
     else:
@@ -636,6 +639,7 @@ def build_pfam_option_stats(interface_dir: Path) -> dict[str, dict[str, object]]
 def load_cached_pfam_option_stats(
     cache_dir: Path,
     interface_dir: Path,
+    cache_workers: int = DEFAULT_CACHE_WORKERS,
 ) -> dict[str, dict[str, object]]:
     cache_path = selector_stats_cache_path(cache_dir, interface_dir)
     signature = selector_stats_signature(interface_dir)
@@ -648,8 +652,8 @@ def load_cached_pfam_option_stats(
                 pfam_option_stats = {}
             pfam_metadata = load_cached_pfam_metadata(cache_dir, sorted(pfam_option_stats))
             return merge_pfam_metadata(pfam_option_stats, pfam_metadata)
-    print("Building PFAM selector stats cache...")
-    pfam_option_stats = build_pfam_option_stats(interface_dir)
+    print(f"Building PFAM selector stats cache ({max(1, int(cache_workers))} workers max)...")
+    pfam_option_stats = build_pfam_option_stats(interface_dir, cache_workers)
     pfam_metadata = load_cached_pfam_metadata(cache_dir, sorted(pfam_option_stats))
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     with cache_path.open("w", encoding="utf-8") as handle:

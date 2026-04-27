@@ -18,6 +18,8 @@
 #include <unistd.h>
 #endif
 
+#define DEFAULT_WORKER_COUNT 4
+
 typedef struct {
     char *partner_domain;
     char *row_key;
@@ -35,6 +37,7 @@ typedef struct {
     const char *input_file;
     const char *output_file;
     const char *metadata_out;
+    size_t worker_count;
 } Args;
 
 typedef struct {
@@ -92,7 +95,7 @@ static void free_entries(EntryArray *entries) {
 static void usage(FILE *stream) {
     fprintf(
         stream,
-        "Usage: interface_distance --input-file PATH --output-file PATH [--metadata-out PATH]\n"
+        "Usage: interface_distance --input-file PATH --output-file PATH [--metadata-out PATH] [--workers N]\n"
     );
 }
 
@@ -118,8 +121,30 @@ static int create_directory(const char *path) {
 #endif
 }
 
+static bool parse_worker_count_value(const char *value, size_t *out) {
+    if (value == NULL || *value == '\0') {
+        return false;
+    }
+    char *end = NULL;
+    errno = 0;
+    unsigned long long parsed = strtoull(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0' || parsed == 0) {
+        return false;
+    }
+    *out = (size_t) parsed;
+    return true;
+}
+
 static int parse_args(int argc, char **argv, Args *args) {
     memset(args, 0, sizeof(*args));
+    args->worker_count = DEFAULT_WORKER_COUNT;
+    const char *env_workers = getenv("INTERFACE_DISTANCE_WORKERS");
+    if (env_workers != NULL && *env_workers != '\0') {
+        if (!parse_worker_count_value(env_workers, &args->worker_count)) {
+            fprintf(stderr, "invalid INTERFACE_DISTANCE_WORKERS value: %s\n", env_workers);
+            return 1;
+        }
+    }
     for (int index = 1; index < argc; index += 1) {
         const char *arg = argv[index];
         if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
@@ -138,6 +163,11 @@ static int parse_args(int argc, char **argv, Args *args) {
             args->output_file = value;
         } else if (strcmp(arg, "--metadata-out") == 0) {
             args->metadata_out = value;
+        } else if (strcmp(arg, "--workers") == 0) {
+            if (!parse_worker_count_value(value, &args->worker_count)) {
+                fprintf(stderr, "invalid worker count: %s\n", value);
+                return 1;
+            }
         } else {
             fprintf(stderr, "unknown argument: %s\n", arg);
             usage(stderr);
@@ -1114,7 +1144,7 @@ static bool write_batches_parallel(const EntryArray *entries, RowBatch *batches,
     return ok;
 }
 
-static bool write_condensed_overlap(const EntryArray *entries, const char *output_file) {
+static bool write_condensed_overlap(const EntryArray *entries, const char *output_file, size_t requested_worker_count) {
     if (!ensure_parent_dirs(output_file)) {
         fprintf(stderr, "failed to create output parent directories for %s: %s\n", output_file, strerror(errno));
         return false;
@@ -1125,7 +1155,11 @@ static bool write_condensed_overlap(const EntryArray *entries, const char *outpu
         return false;
     }
 
-    size_t worker_count = available_worker_count();
+    size_t worker_count = requested_worker_count;
+    size_t available_workers = available_worker_count();
+    if (worker_count > available_workers) {
+        worker_count = available_workers;
+    }
     if (entries->count > 1 && worker_count > entries->count - 1) {
         worker_count = entries->count - 1;
     }
@@ -1209,7 +1243,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (!write_condensed_overlap(&entries, args.output_file)) {
+    if (!write_condensed_overlap(&entries, args.output_file, args.worker_count)) {
         free_entries(&entries);
         return 1;
     }

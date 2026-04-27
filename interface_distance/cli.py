@@ -5,6 +5,7 @@ import csv
 import gzip
 import json
 import math
+import os
 import platform
 import shutil
 import subprocess
@@ -23,6 +24,8 @@ DEFAULT_BINARY_NAME = "interface_distance"
 RUNTIME_BINARY_DIR = TOOL_DIR / "bin"
 UINT16_SCALE = 65535.0
 GZIP_MAGIC = b"\x1f\x8b"
+DEFAULT_WORKERS = 4
+WORKERS_ENV_VAR = "INTERFACE_DISTANCE_WORKERS"
 
 
 @dataclass(frozen=True)
@@ -55,6 +58,16 @@ class InterfaceEntry:
     columns: tuple[int, ...]
 
 
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compute and decode interface distance matrices."
@@ -68,6 +81,7 @@ def parse_args() -> argparse.Namespace:
     compute_parser.add_argument("--input-file", type=Path, required=True)
     compute_parser.add_argument("--output-file", type=Path, required=True)
     compute_parser.add_argument("--metadata-out", type=Path, default=None)
+    compute_parser.add_argument("--workers", type=positive_int, default=DEFAULT_WORKERS)
 
     decode_parser = subparsers.add_parser(
         "decode",
@@ -99,6 +113,7 @@ def main() -> int:
             input_file=args.input_file,
             output_file=args.output_file,
             metadata_out=metadata_out,
+            workers=args.workers,
         )
         print(f"wrote {args.output_file}")
         print(f"wrote {metadata_out}")
@@ -128,7 +143,9 @@ def compute_interface_distance_matrix(
     input_file: Path,
     output_file: Path | None = None,
     metadata_out: Path | None = None,
+    workers: int = DEFAULT_WORKERS,
 ) -> np.ndarray:
+    workers = max(1, int(workers))
     if is_gzip_file(input_file):
         with tempfile.TemporaryDirectory(prefix="interface_distance_input_") as tmp_dir:
             temp_input_name = input_file.name[:-3]
@@ -140,6 +157,7 @@ def compute_interface_distance_matrix(
                 input_file=temp_input_file,
                 output_file=output_file,
                 metadata_out=metadata_out,
+                workers=workers,
             )
     runtime_binary = validate_runtime_binary()
     if output_file is not None:
@@ -150,6 +168,7 @@ def compute_interface_distance_matrix(
                 input_file=input_file,
                 output_file=output_file,
                 metadata_out=resolved_metadata_out,
+                workers=workers,
             )
         else:
             compute_to_file_python(
@@ -169,6 +188,7 @@ def compute_interface_distance_matrix(
                 input_file=input_file,
                 output_file=temp_output_file,
                 metadata_out=resolved_metadata_out,
+                workers=workers,
             )
         else:
             compute_to_file_python(
@@ -265,6 +285,7 @@ def compute_to_file(
     input_file: Path,
     output_file: Path,
     metadata_out: Path,
+    workers: int = DEFAULT_WORKERS,
 ) -> None:
     run_command = [
         str(binary_path),
@@ -275,7 +296,9 @@ def compute_to_file(
         "--metadata-out",
         str(metadata_out),
     ]
-    subprocess.run(run_command, check=True)
+    env = os.environ.copy()
+    env[WORKERS_ENV_VAR] = str(max(1, int(workers)))
+    subprocess.run(run_command, check=True, env=env)
 
 
 def compute_to_file_python(

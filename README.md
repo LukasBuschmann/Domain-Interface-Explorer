@@ -92,7 +92,11 @@ Current options:
 
 - `--cache-dir CACHE_DIR`
   Default: `./cache`
-  Directory where DIE stores selector stats, embeddings, clustering results, AlphaFold downloads, aligned models, and rendered images.
+  Directory where DIE stores selector stats, distance matrices, embeddings, clustering results, AlphaFold downloads, aligned models, and rendered images.
+
+- `--cache-workers CACHE_WORKERS`
+  Default: `4`
+  Maximum worker count for cache-building jobs, including selector stats and lazy overlap-distance caches.
 
 Example with custom paths:
 
@@ -101,7 +105,8 @@ python -m domain_interface_explorer.server \
   --host 0.0.0.0 \
   --port 8080 \
   --interface-dir /path/to/interface-json-dir \
-  --cache-dir /path/to/cache
+  --cache-dir /path/to/cache \
+  --cache-workers 4
 ```
 
 ## Adding Data

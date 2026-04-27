@@ -1869,16 +1869,18 @@ export function createMsaViewController({
     setLoading(85, "Loading selection", "Finding representative row");
     state.hover = null;
     updateFilteredRows();
-    void ensureEmbeddingDataLoaded();
-    void ensureEmbeddingClusteringLoaded().then(() => {
-      if (
-        state.msa &&
-        (activeMsaPanelView() === "msa" || activeMsaPanelView() === "columns")
-      ) {
-        render();
-      }
-    });
-    void ensureDistanceMatrixLoaded();
+    if (activeMsaPanelView() === "embeddings") {
+      void ensureEmbeddingDataLoaded();
+      void ensureEmbeddingClusteringLoaded();
+    } else if (activeMsaPanelView() === "distances") {
+      void ensureDistanceMatrixLoaded();
+    } else if (activeMsaPanelView() === "columns") {
+      void ensureEmbeddingClusteringLoaded().then(() => {
+        if (state.msa && activeMsaPanelView() === "columns") {
+          render();
+        }
+      });
+    }
     render();
     await new Promise((resolve) =>
       window.requestAnimationFrame(() => window.requestAnimationFrame(resolve))
