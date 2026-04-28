@@ -1,10 +1,19 @@
-import { CLUSTER_COLOR_PALETTE, DEFAULT_CLUSTERING_SETTINGS } from "./constants.js";
+import { CLUSTER_COLOR_PALETTE, DEFAULT_CLUSTERING_SETTINGS, DEFAULT_EMBEDDING_SETTINGS, } from "./constants.js";
 import { fetchJson } from "./api.js";
 import { interactionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams, selectionSettingsKey, } from "./selectionSettings.js";
 export function createEmbeddingViewController({ state, elements, interfaceSelect, partnerColor, renderRepresentativeClusterLegend, renderRepresentativeStructure, representativeLens, }) {
-    let distanceRenderFrameId = 0;
     let columnsRenderFrameId = 0;
+    let embeddingRenderFrameId = 0;
+    const emptyEmbeddingPoints = [];
+    const emptyClusteringPoints = [];
+    const embeddingAnnotationCache = {
+        embeddingPoints: null,
+        clusteringPoints: null,
+        clusterByRowKey: null,
+        annotatedPoints: [],
+    };
+    const embeddingPointSpriteCache = new Map();
     function embeddingSettingsKey(settings = state.embeddingSettings) {
         return JSON.stringify(settings);
     }
@@ -25,10 +34,14 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
     function currentEmbeddingQuery() {
         const params = new URLSearchParams({
             file: interfaceSelect.value,
+            embedding_method: String(state.embeddingSettings.method),
             distance: String(state.embeddingSettings.distance),
             learning_rate: String(state.embeddingSettings.learningRate),
             max_iter: String(state.embeddingSettings.maxIter),
+            early_exaggeration_iter: String(state.embeddingSettings.earlyExaggerationIter),
             early_exaggeration: String(state.embeddingSettings.earlyExaggeration),
+            neighbors: String(state.embeddingSettings.neighbors),
+            theta: String(state.embeddingSettings.theta),
         });
         appendSelectionSettingsToParams(params, state.selectionSettings);
         if (state.embeddingSettings.perplexity !== "auto") {
@@ -38,17 +51,6 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
     }
     function currentEmbeddingRequestKey() {
         return `${interfaceSelect.value}|${selectionSettingsKey(state.selectionSettings)}|${embeddingSettingsKey()}`;
-    }
-    function currentDistanceMatrixQuery() {
-        const params = new URLSearchParams({
-            file: interfaceSelect.value,
-            distance: String(state.embeddingSettings.distance),
-        });
-        appendSelectionSettingsToParams(params, state.selectionSettings);
-        return `/api/distance-matrix?${params.toString()}`;
-    }
-    function currentDistanceMatrixRequestKey() {
-        return `${interfaceSelect.value}|${selectionSettingsKey(state.selectionSettings)}|${state.embeddingSettings.distance}`;
     }
     function currentEmbeddingClusteringQuery() {
         const params = new URLSearchParams({
@@ -112,6 +114,42 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
     function currentEmbeddingClusteringRequestKey() {
         return `${interfaceSelect.value}|${selectionSettingsKey(state.selectionSettings)}|${embeddingClusteringSettingsKey()}`;
     }
+    function currentHierarchyStatusQuery() {
+        const settings = normalizeHierarchicalDraft(readEmbeddingClusteringDraftInputs());
+        const params = new URLSearchParams({
+            file: interfaceSelect.value,
+            method: String(settings.method),
+            distance: String(settings.distance),
+        });
+        appendSelectionSettingsToParams(params, state.selectionSettings);
+        if (settings.method === "hierarchical") {
+            const hierarchicalTarget = currentHierarchicalTarget(settings);
+            params.set("linkage", String(settings.linkage));
+            if (hierarchicalTarget === "n_clusters" && String(settings.nClusters).trim() !== "") {
+                params.set("n_clusters", String(settings.nClusters));
+            }
+            if (hierarchicalTarget === "distance_threshold" &&
+                String(settings.distanceThreshold).trim() !== "") {
+                params.set("distance_threshold", String(settings.distanceThreshold));
+                params.set("hierarchical_min_cluster_size", String(settings.hierarchicalMinClusterSize));
+            }
+        }
+        return `/api/hierarchy-status?${params.toString()}`;
+    }
+    function currentHierarchyStatusRequestKey() {
+        const settings = readEmbeddingClusteringDraftInputs();
+        return [
+            interfaceSelect.value,
+            selectionSettingsKey(state.selectionSettings),
+            settings.method,
+            settings.distance,
+            settings.linkage,
+            currentHierarchicalTarget(settings),
+            settings.nClusters,
+            settings.distanceThreshold,
+            settings.hierarchicalMinClusterSize,
+        ].join("|");
+    }
     function syncEmbeddingLoadingUi() {
         const showEmbeddingLoading = state.embeddingLoading;
         const showClusteringLoading = state.embeddingClusteringLoading;
@@ -122,6 +160,66 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             : "Loading embeddings...";
         elements.embeddingTsneApply.disabled = state.embeddingLoading;
         elements.embeddingClusteringApply.disabled = state.embeddingClusteringLoading;
+    }
+    function formatDuration(seconds) {
+        if (!Number.isFinite(seconds) || seconds <= 0) {
+            return "unknown time";
+        }
+        if (seconds < 60) {
+            return `${Math.max(1, Math.round(seconds))} s`;
+        }
+        if (seconds < 3600) {
+            return `${Math.max(1, Math.round(seconds / 60))} min`;
+        }
+        return `${(seconds / 3600).toFixed(seconds < 36000 ? 1 : 0)} h`;
+    }
+    function formatBytes(bytes) {
+        if (!Number.isFinite(bytes) || bytes <= 0) {
+            return "unknown RAM";
+        }
+        const gib = bytes / (1024 ** 3);
+        if (gib >= 1) {
+            return `${gib.toFixed(gib >= 10 ? 0 : 1)} GiB RAM`;
+        }
+        const mib = bytes / (1024 ** 2);
+        return `${Math.max(1, Math.round(mib))} MiB RAM`;
+    }
+    function hierarchyWarningMessage(status = state.hierarchyStatus) {
+        if (!status?.local_calculation_required) {
+            return "";
+        }
+        const estimate = status.estimate || {};
+        const seconds = Number(estimate.estimated_total_seconds);
+        const bytes = Number(estimate.estimated_peak_rss_delta_bytes);
+        if (Number.isFinite(seconds) || Number.isFinite(bytes)) {
+            return `Local hierarchy build estimated at ${formatDuration(seconds)} and ${formatBytes(bytes)}.`;
+        }
+        return "Local hierarchy build required; this may be expensive.";
+    }
+    function syncHierarchyWarningUi() {
+        if (!elements.embeddingClusteringApplyWarning || !elements.embeddingHierarchyWarning) {
+            return;
+        }
+        const currentRequestKey = state.embeddingClusteringSettingsDraft.method === "hierarchical"
+            ? currentHierarchyStatusRequestKey()
+            : "";
+        const showWarning = state.embeddingClusteringSettingsDraft.method === "hierarchical" &&
+            state.hierarchyStatus?.requestKey === currentRequestKey &&
+            Boolean(state.hierarchyStatus?.local_calculation_required);
+        const message = showWarning ? hierarchyWarningMessage() : "";
+        elements.embeddingClusteringApplyWarning.classList.toggle("hidden", !showWarning);
+        elements.embeddingClusteringApplyWarning.title = message;
+        elements.embeddingHierarchyWarning.classList.toggle("hidden", !showWarning);
+        elements.embeddingHierarchyWarning.textContent = message;
+    }
+    function syncDistanceThresholdValueUi() {
+        if (!elements.embeddingClusterDistanceThresholdValue) {
+            return;
+        }
+        const value = Number.parseFloat(elements.embeddingClusterDistanceThresholdInput.value);
+        elements.embeddingClusterDistanceThresholdValue.textContent = Number.isFinite(value)
+            ? value.toFixed(2)
+            : "";
     }
     function readEmbeddingClusteringDraftInputs() {
         return {
@@ -198,7 +296,18 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         elements.embeddingPerplexityInput.value = String(state.embeddingSettingsDraft.perplexity);
         elements.embeddingLearningRateInput.value = String(state.embeddingSettingsDraft.learningRate);
         elements.embeddingMaxIterInput.value = String(state.embeddingSettingsDraft.maxIter);
+        elements.embeddingEarlyExaggerationIterInput.value = String(state.embeddingSettingsDraft.earlyExaggerationIter);
         elements.embeddingEarlyExaggerationInput.value = String(state.embeddingSettingsDraft.earlyExaggeration);
+        elements.embeddingNeighborsInput.value = String(state.embeddingSettingsDraft.neighbors);
+        elements.embeddingThetaInput.value = String(state.embeddingSettingsDraft.theta);
+        [...elements.embeddingSettingsPanel.querySelectorAll("[data-points-method]")].forEach((button) => {
+            const isActive = button.dataset.pointsMethod === state.embeddingSettingsDraft.method;
+            button.classList.toggle("active", isActive);
+            button.setAttribute("aria-pressed", String(isActive));
+        });
+        [...elements.embeddingSettingsPanel.querySelectorAll("[data-points-method-panel]")].forEach((element) => {
+            element.classList.toggle("embedding-settings-section-hidden", element.dataset.pointsMethodPanel !== state.embeddingSettingsDraft.method);
+        });
         elements.embeddingClusterDistanceInput.value = String(state.embeddingClusteringSettingsDraft.distance);
         elements.embeddingClusterMinSizeInput.value = String(state.embeddingClusteringSettingsDraft.minClusterSize);
         elements.embeddingClusterMinSamplesInput.value = String(state.embeddingClusteringSettingsDraft.minSamples);
@@ -206,6 +315,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         elements.embeddingClusterLinkageInput.value = String(state.embeddingClusteringSettingsDraft.linkage);
         elements.embeddingClusterNClustersInput.value = String(state.embeddingClusteringSettingsDraft.nClusters);
         elements.embeddingClusterDistanceThresholdInput.value = String(state.embeddingClusteringSettingsDraft.distanceThreshold);
+        syncDistanceThresholdValueUi();
         elements.embeddingClusterHierarchicalMinSizeInput.value = String(state.embeddingClusteringSettingsDraft.hierarchicalMinClusterSize);
         [...elements.embeddingSettingsPanel.querySelectorAll("[data-clustering-method]")].forEach((button) => {
             const isActive = button.dataset.clusteringMethod === state.embeddingClusteringSettingsDraft.method;
@@ -216,15 +326,23 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             element.classList.toggle("embedding-settings-section-hidden", element.dataset.clusteringPanel !== state.embeddingClusteringSettingsDraft.method);
         });
         syncHierarchicalTargetUi();
+        syncHierarchyWarningUi();
     }
     function parseEmbeddingSettingsDraft() {
+        const method = state.embeddingSettingsDraft.method || DEFAULT_EMBEDDING_SETTINGS.method;
         const distance = elements.embeddingDistanceInput.value.trim().toLowerCase();
         const perplexityRaw = elements.embeddingPerplexityInput.value.trim();
         const learningRateRaw = elements.embeddingLearningRateInput.value.trim().toLowerCase();
         const maxIterRaw = elements.embeddingMaxIterInput.value.trim();
+        const earlyExaggerationIterRaw = elements.embeddingEarlyExaggerationIterInput.value.trim();
         const earlyExaggerationRaw = elements.embeddingEarlyExaggerationInput.value.trim();
-        if (!["jaccard", "dice", "overlap"].includes(distance)) {
-            throw new Error("Distance must be Jaccard, Dice, or Overlap.");
+        const neighbors = elements.embeddingNeighborsInput.value.trim().toLowerCase();
+        const thetaRaw = elements.embeddingThetaInput.value.trim();
+        if (!["tsne", "pca"].includes(method)) {
+            throw new Error("Point method must be openTSNE or PCA.");
+        }
+        if (!["binary", "jaccard", "dice", "overlap"].includes(distance)) {
+            throw new Error("Point distance must be Binary Columns, Jaccard, Dice, or Overlap.");
         }
         const perplexity = perplexityRaw === "" ? "auto" : Number.parseFloat(perplexityRaw);
         if (perplexity !== "auto" && (!Number.isFinite(perplexity) || perplexity <= 0)) {
@@ -240,19 +358,34 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         if (!Number.isFinite(maxIter) || maxIter <= 0) {
             throw new Error("Iterations must be a positive integer.");
         }
+        const earlyExaggerationIter = Number.parseInt(earlyExaggerationIterRaw, 10);
+        if (!Number.isFinite(earlyExaggerationIter) || earlyExaggerationIter <= 0) {
+            throw new Error("Early exaggeration iterations must be a positive integer.");
+        }
         const earlyExaggeration = Number.parseFloat(earlyExaggerationRaw);
         if (!Number.isFinite(earlyExaggeration) || earlyExaggeration <= 0) {
             throw new Error("Early exaggeration must be positive.");
         }
+        if (!["approx", "auto", "exact"].includes(neighbors)) {
+            throw new Error("Neighbors must be approx, auto, or exact.");
+        }
+        const theta = Number.parseFloat(thetaRaw);
+        if (!Number.isFinite(theta) || theta < 0 || theta > 1) {
+            throw new Error("Theta must be between 0 and 1.");
+        }
         return {
+            method,
             distance,
             perplexity,
             learningRate,
             maxIter,
+            earlyExaggerationIter,
             earlyExaggeration,
+            neighbors,
+            theta,
         };
     }
-    function parseEmbeddingClusteringSettingsDraft() {
+    function parseEmbeddingClusteringSettingsDraft(options = {}) {
         const method = state.embeddingClusteringSettingsDraft.method;
         const hierarchicalTarget = currentHierarchicalTarget();
         const distance = elements.embeddingClusterDistanceInput.value.trim().toLowerCase();
@@ -307,7 +440,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 nClusters = "";
             }
         }
-        return {
+        const parsedSettings = {
             method,
             distance,
             minClusterSize,
@@ -319,8 +452,19 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             distanceThreshold: hierarchicalTarget === "distance_threshold" ? distanceThreshold : "",
             hierarchicalMinClusterSize,
         };
+        if (options.preserveAppliedHierarchy &&
+            state.embeddingClusteringSettings.method === "hierarchical" &&
+            parsedSettings.method === "hierarchical") {
+            parsedSettings.method = state.embeddingClusteringSettings.method;
+            parsedSettings.distance = state.embeddingClusteringSettings.distance;
+            parsedSettings.linkage = state.embeddingClusteringSettings.linkage;
+        }
+        return parsedSettings;
     }
     function embeddingDistanceLabel(distance = state.embeddingSettings.distance) {
+        if (distance === "binary") {
+            return "Binary columns";
+        }
         if (distance === "dice") {
             return "Dice";
         }
@@ -328,6 +472,9 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             return "Overlap";
         }
         return "Jaccard";
+    }
+    function pointMethodLabel(method = state.embeddingSettings.method) {
+        return method === "pca" ? "PCA" : "openTSNE";
     }
     function clusteringMethodLabel(method) {
         return method === "hierarchical" ? "Hierarchical" : "HDBSCAN";
@@ -337,9 +484,6 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
     }
     function setEmbeddingInfo(message) {
         elements.embeddingInfo.textContent = message;
-    }
-    function setDistanceInfo(message) {
-        elements.distanceInfo.textContent = message;
     }
     function setColumnsInfo(message) {
         elements.columnsInfo.textContent = message;
@@ -480,165 +624,16 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         elements.embeddingCanvas.style.width = `${width}px`;
         elements.embeddingCanvas.style.height = `${height}px`;
     }
-    function resizeDistanceCanvas() {
-        const width = Math.max(1, Math.round(elements.distanceRoot.clientWidth));
-        const height = Math.max(1, Math.round(elements.distanceRoot.clientHeight));
-        const dpr = window.devicePixelRatio || 1;
-        elements.distanceCanvas.width = Math.round(width * dpr);
-        elements.distanceCanvas.height = Math.round(height * dpr);
-        elements.distanceCanvas.style.width = `${width}px`;
-        elements.distanceCanvas.style.height = `${height}px`;
-    }
-    function requestDistanceRenderNextFrame() {
-        if (distanceRenderFrameId) {
+    function requestEmbeddingRender() {
+        if (embeddingRenderFrameId) {
             return;
         }
-        distanceRenderFrameId = window.requestAnimationFrame(() => {
-            distanceRenderFrameId = 0;
-            if (state.msaPanelView !== "distances") {
-                return;
+        embeddingRenderFrameId = window.requestAnimationFrame(() => {
+            embeddingRenderFrameId = 0;
+            if (state.msaPanelView === "embeddings") {
+                renderEmbeddingPlot();
             }
-            resizeDistanceCanvas();
-            renderDistanceMatrixPlot();
         });
-    }
-    function renderDistanceMatrixPlot() {
-        const ctx = elements.distanceCanvas.getContext("2d");
-        const dpr = window.devicePixelRatio || 1;
-        const width = Math.max(1, Math.round(elements.distanceRoot.clientWidth));
-        const height = Math.max(1, Math.round(elements.distanceRoot.clientHeight));
-        if (!ctx || width <= 0 || height <= 0) {
-            return;
-        }
-        const expectedCanvasWidth = Math.round(width * dpr);
-        const expectedCanvasHeight = Math.round(height * dpr);
-        if (elements.distanceCanvas.width !== expectedCanvasWidth ||
-            elements.distanceCanvas.height !== expectedCanvasHeight) {
-            resizeDistanceCanvas();
-            requestDistanceRenderNextFrame();
-            return;
-        }
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.clearRect(0, 0, width, height);
-        ctx.fillStyle = "#fffdf8";
-        ctx.fillRect(0, 0, width, height);
-        elements.distanceLoading.classList.toggle("hidden", !state.distanceMatrixLoading);
-        elements.distanceLoadingLabel.textContent = "Loading distance matrix...";
-        if (state.distanceMatrix?.error) {
-            ctx.fillStyle = "#6f6658";
-            ctx.font = '13px "IBM Plex Sans", sans-serif';
-            ctx.textAlign = "center";
-            ctx.fillText(state.distanceMatrix.error, width / 2, height / 2);
-            setDistanceInfo(state.distanceMatrix.error);
-            return;
-        }
-        const payload = state.distanceMatrix;
-        if (!payload?.matrix?.length) {
-            ctx.fillStyle = "#6f6658";
-            ctx.font = '13px "IBM Plex Sans", sans-serif';
-            ctx.textAlign = "center";
-            ctx.fillText(state.distanceMatrixLoading
-                ? "Preparing distance matrix..."
-                : "Open this tab after selecting an interface file.", width / 2, height / 2);
-            setDistanceInfo(`Distance matrix uses ${embeddingDistanceLabel()} interface distance on row-level interface sets.`);
-            return;
-        }
-        const matrix = payload.matrix;
-        const n = matrix.length;
-        let minValue = 1;
-        let maxValue = 0;
-        for (let rowIndex = 0; rowIndex < n; rowIndex += 1) {
-            const row = matrix[rowIndex] || [];
-            for (let columnIndex = 0; columnIndex < n; columnIndex += 1) {
-                const value = Math.max(0, Math.min(1, Number(row[columnIndex]) || 0));
-                if (value < minValue) {
-                    minValue = value;
-                }
-                if (value > maxValue) {
-                    maxValue = value;
-                }
-            }
-        }
-        const valueRange = Math.max(1e-9, maxValue - minValue);
-        const padding = 14;
-        const legendBarWidth = 12;
-        const legendGap = 10;
-        const legendLabelSpace = 34;
-        const matrixRegionWidth = Math.max(0, width - padding * 2 - legendGap - legendBarWidth - legendLabelSpace);
-        const matrixRegionHeight = Math.max(0, height - padding * 2);
-        const size = Math.floor(Math.min(matrixRegionWidth, matrixRegionHeight));
-        if (size < 8) {
-            ctx.fillStyle = "#6f6658";
-            ctx.font = '13px "IBM Plex Sans", sans-serif';
-            ctx.textAlign = "center";
-            ctx.fillText("Distance view is too small.", width / 2, height / 2);
-            setDistanceInfo("Expand the panel to render the distance matrix.");
-            return;
-        }
-        const originX = padding + Math.floor((matrixRegionWidth - size) / 2);
-        const originY = padding + Math.floor((matrixRegionHeight - size) / 2);
-        const rasterSize = Math.max(1, Math.min(n, Math.max(64, Math.min(640, size))));
-        const rasterCanvas = document.createElement("canvas");
-        rasterCanvas.width = rasterSize;
-        rasterCanvas.height = rasterSize;
-        const rasterCtx = rasterCanvas.getContext("2d");
-        if (!rasterCtx) {
-            return;
-        }
-        const imageData = rasterCtx.createImageData(rasterSize, rasterSize);
-        for (let y = 0; y < rasterSize; y += 1) {
-            const rowIndex = Math.min(n - 1, Math.floor(((y + 0.5) * n) / rasterSize));
-            for (let x = 0; x < rasterSize; x += 1) {
-                const columnIndex = Math.min(n - 1, Math.floor(((x + 0.5) * n) / rasterSize));
-                const value = Math.max(0, Math.min(1, Number(matrix[rowIndex][columnIndex]) || 0));
-                const normalizedValue = (value - minValue) / valueRange;
-                const red = Math.round(245 - normalizedValue * 120);
-                const green = Math.round(245 - normalizedValue * 210);
-                const blue = Math.round(245 - normalizedValue * 220);
-                const pixelIndex = (y * rasterSize + x) * 4;
-                imageData.data[pixelIndex] = red;
-                imageData.data[pixelIndex + 1] = green;
-                imageData.data[pixelIndex + 2] = blue;
-                imageData.data[pixelIndex + 3] = 255;
-            }
-        }
-        rasterCtx.putImageData(imageData, 0, 0);
-        ctx.imageSmoothingEnabled = false;
-        ctx.drawImage(rasterCanvas, originX, originY, size, size);
-        ctx.imageSmoothingEnabled = true;
-        const legendX = padding + matrixRegionWidth + legendGap;
-        const legendY = originY;
-        const gradient = ctx.createLinearGradient(legendX, legendY + size, legendX, legendY);
-        gradient.addColorStop(0, "rgb(245, 245, 245)");
-        gradient.addColorStop(1, "rgb(125, 35, 25)");
-        ctx.fillStyle = gradient;
-        ctx.fillRect(legendX, legendY, legendBarWidth, size);
-        ctx.strokeStyle = "rgba(46, 38, 29, 0.28)";
-        ctx.strokeRect(legendX + 0.5, legendY + 0.5, legendBarWidth - 1, size - 1);
-        ctx.font = '11px "IBM Plex Sans", sans-serif';
-        ctx.fillStyle = "#6f6658";
-        ctx.textAlign = "left";
-        ctx.textBaseline = "middle";
-        const legendMax = maxValue.toFixed(2);
-        const legendMid = ((minValue + maxValue) / 2).toFixed(2);
-        const legendMin = minValue.toFixed(2);
-        ctx.fillText(legendMax, legendX + legendBarWidth + 6, legendY + 8);
-        ctx.fillText(legendMid, legendX + legendBarWidth + 6, legendY + size / 2);
-        ctx.fillText(legendMin, legendX + legendBarWidth + 6, legendY + size - 8);
-        ctx.save();
-        ctx.translate(legendX + legendBarWidth + 24, legendY + size / 2);
-        ctx.rotate(-Math.PI / 2);
-        ctx.textAlign = "center";
-        ctx.fillText("Distance", 0, 0);
-        ctx.restore();
-        ctx.textBaseline = "alphabetic";
-        const suffix = payload.truncated
-            ? ` Showing ${payload.row_count}/${payload.original_row_count} rows.`
-            : "";
-        const sortSuffix = payload.sort === "dominant_partner_domain"
-            ? " Sorted by dominant interacting domain."
-            : "";
-        setDistanceInfo(`${embeddingDistanceLabel(payload.distance)} distance matrix on row-level interface unions.${sortSuffix}${suffix}`);
     }
     function columnsChartCacheKey() {
         return [
@@ -956,10 +951,20 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         setColumnsInfo(`Stacked bars: per MSA column, each segment shows the fraction of a cluster interacting at that column (${visibleClusters.length}/${state.columnsChart.clusters.length} clusters visible).`);
     }
     function embeddingClusterByRowKey() {
-        return new Map((state.embeddingClustering?.points || []).map((point) => [
+        const source = state.embeddingClustering?.points || emptyClusteringPoints;
+        if (embeddingAnnotationCache.clusteringPoints === source &&
+            embeddingAnnotationCache.clusterByRowKey) {
+            return embeddingAnnotationCache.clusterByRowKey;
+        }
+        const clusterByRowKey = new Map(source.map((point) => [
             interactionRowKey(point.row_key, point.partner_domain),
             Number(point.cluster_label),
         ]));
+        embeddingAnnotationCache.clusteringPoints = source;
+        embeddingAnnotationCache.clusterByRowKey = clusterByRowKey;
+        embeddingAnnotationCache.embeddingPoints = null;
+        embeddingAnnotationCache.annotatedPoints = [];
+        return clusterByRowKey;
     }
     function embeddingPointMembers(point) {
         const members = Array.isArray(point?.members) ? point.members : [];
@@ -999,6 +1004,36 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         return [...counts.entries()]
             .sort((left, right) => right[1] - left[1] || Number(left[0]) - Number(right[0]))[0][0];
     }
+    function annotatedEmbeddingPoints() {
+        const embeddingPoints = state.embedding?.points || emptyEmbeddingPoints;
+        const clusteringPoints = state.embeddingClustering?.points || emptyClusteringPoints;
+        if (embeddingAnnotationCache.embeddingPoints === embeddingPoints &&
+            embeddingAnnotationCache.clusteringPoints === clusteringPoints) {
+            return embeddingAnnotationCache.annotatedPoints;
+        }
+        const clusterByRowKey = embeddingClusterByRowKey();
+        const annotatedPoints = embeddingPoints.map((point) => {
+            const members = embeddingPointMembers(point);
+            const memberKeys = members.map((member) => interactionRowKey(member.row_key, member.partner_domain));
+            const representativeKey = interactionRowKey(point.row_key, point.partner_domain);
+            const normalizedMemberKeys = memberKeys.includes(representativeKey)
+                ? memberKeys
+                : [representativeKey].concat(memberKeys);
+            return {
+                ...point,
+                members,
+                memberCount: embeddingPointMemberCount(point, members),
+                memberKeys: normalizedMemberKeys,
+                interactionRowKey: representativeKey,
+                clusterLabel: clusterLabelForEmbeddingPoint(normalizedMemberKeys, clusterByRowKey),
+            };
+        });
+        embeddingAnnotationCache.embeddingPoints = embeddingPoints;
+        embeddingAnnotationCache.clusteringPoints = clusteringPoints;
+        embeddingAnnotationCache.clusterByRowKey = clusterByRowKey;
+        embeddingAnnotationCache.annotatedPoints = annotatedPoints;
+        return annotatedPoints;
+    }
     function applyEmbeddingPointJitter(projectedPoints) {
         const buckets = new Map();
         for (const point of projectedPoints) {
@@ -1020,6 +1055,44 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 sortedBucket[index].screenY += Math.sin(angle) * jitterRadius;
             }
         }
+    }
+    function embeddingPointSprite(color, radius, alpha) {
+        const normalizedRadius = Math.max(1, Math.round(Number(radius || 1) * 2) / 2);
+        const normalizedAlpha = Math.max(0.05, Math.min(1, Math.round(Number(alpha || 1) * 20) / 20));
+        const key = `${color}|${normalizedRadius}|${normalizedAlpha}`;
+        const cached = embeddingPointSpriteCache.get(key);
+        if (cached) {
+            return cached;
+        }
+        if (embeddingPointSpriteCache.size > 800) {
+            embeddingPointSpriteCache.clear();
+        }
+        const padding = 3;
+        const cssSize = Math.ceil((normalizedRadius + padding) * 2);
+        const scale = 2;
+        const canvas = document.createElement("canvas");
+        canvas.width = cssSize * scale;
+        canvas.height = cssSize * scale;
+        const spriteCtx = canvas.getContext("2d");
+        if (spriteCtx) {
+            spriteCtx.setTransform(scale, 0, 0, scale, 0, 0);
+            spriteCtx.clearRect(0, 0, cssSize, cssSize);
+            spriteCtx.globalAlpha = normalizedAlpha;
+            spriteCtx.fillStyle = color;
+            spriteCtx.beginPath();
+            spriteCtx.arc(cssSize / 2, cssSize / 2, normalizedRadius, 0, Math.PI * 2);
+            spriteCtx.fill();
+            spriteCtx.globalAlpha = 1;
+        }
+        const sprite = { canvas, size: cssSize };
+        embeddingPointSpriteCache.set(key, sprite);
+        return sprite;
+    }
+    function drawEmbeddingPointSprite(ctx, point, color, alpha) {
+        const sprite = embeddingPointSprite(color, point.radius, alpha);
+        const left = point.screenX - sprite.size / 2;
+        const top = point.screenY - sprite.size / 2;
+        ctx.drawImage(sprite.canvas, left, top, sprite.size, sprite.size);
     }
     function selectedEmbeddingMemberKey() {
         const selection = state.embeddingMemberSelection;
@@ -1068,6 +1141,10 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         syncMemberControl(elements.structureMemberControls, elements.structureMemberCount, label, true);
     }
     function renderEmbeddingPlot() {
+        if (embeddingRenderFrameId) {
+            window.cancelAnimationFrame(embeddingRenderFrameId);
+            embeddingRenderFrameId = 0;
+        }
         const ctx = elements.embeddingCanvas.getContext("2d");
         const dpr = window.devicePixelRatio || 1;
         const width = elements.embeddingRoot.clientWidth;
@@ -1084,7 +1161,6 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         const scale = Math.min(width, height) * 0.34 * state.embeddingView.zoom;
         const embeddingPoints = state.embedding?.points || [];
         const colorMode = embeddingLegendMode();
-        const clusterByRowKey = embeddingClusterByRowKey();
         if (state.embedding?.error) {
             state.embeddingProjectedPoints = [];
             syncEmbeddingMemberControls([]);
@@ -1103,11 +1179,11 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             ctx.textAlign = "center";
             if (state.embeddingLoading) {
                 ctx.fillText("Preparing embedding...", centerX, centerY);
-                setEmbeddingInfo(`3D t-SNE on ${embeddingDistanceLabel()} interface distance. Loading in the background.`);
+                setEmbeddingInfo(`3D ${pointMethodLabel()} points on ${embeddingDistanceLabel()} input. Loading in the background.`);
             }
             else {
                 ctx.fillText("Load an interface selection to view embeddings.", centerX, centerY);
-                setEmbeddingInfo(`3D t-SNE on ${embeddingDistanceLabel()} interface distance. Drag to rotate.`);
+                setEmbeddingInfo(`3D ${pointMethodLabel()} points on ${embeddingDistanceLabel()} input. Drag to rotate.`);
             }
             return;
         }
@@ -1133,22 +1209,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 : "Switch to cluster coloring after clustering has loaded.");
             return;
         }
-        const annotatedPoints = embeddingPoints.map((point) => {
-            const members = embeddingPointMembers(point);
-            const memberKeys = members.map((member) => interactionRowKey(member.row_key, member.partner_domain));
-            const representativeKey = interactionRowKey(point.row_key, point.partner_domain);
-            const normalizedMemberKeys = memberKeys.includes(representativeKey)
-                ? memberKeys
-                : [representativeKey].concat(memberKeys);
-            return {
-                ...point,
-                members,
-                memberCount: embeddingPointMemberCount(point, members),
-                memberKeys: normalizedMemberKeys,
-                interactionRowKey: representativeKey,
-                clusterLabel: clusterLabelForEmbeddingPoint(normalizedMemberKeys, clusterByRowKey),
-            };
-        });
+        const annotatedPoints = annotatedEmbeddingPoints();
         const visibleClusters = visibleEmbeddingClusters();
         const visiblePartners = visibleEmbeddingPartners();
         const filteredPoints = colorMode === "cluster"
@@ -1197,12 +1258,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             const isSelected = point.memberKeys.includes(state.selectedRowKey);
             const isRepresentative = point.memberKeys.includes(state.representativeRowKey);
             const isHovered = point.memberKeys.includes(state.embeddingHoverRowKey);
-            ctx.beginPath();
-            ctx.fillStyle = color;
-            ctx.globalAlpha = isHovered ? 1.0 : point.alpha;
-            ctx.arc(point.screenX, point.screenY, point.radius, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.globalAlpha = 1.0;
+            drawEmbeddingPointSprite(ctx, point, color, isHovered ? 1.0 : point.alpha);
             if (isSelected || isRepresentative || isHovered) {
                 ctx.beginPath();
                 ctx.lineWidth = isHovered ? 2.4 : 1.8;
@@ -1225,8 +1281,9 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             const clusteringSummary = colorMode === "cluster" && state.embeddingClustering
                 ? ` ${clusteringMethod} on ${clusteringDistanceLabel} distance: ${state.embeddingClustering.cluster_count} clusters, ${state.embeddingClustering.noise_count} noise points.`
                 : "";
+            const methodLabel = pointMethodLabel(state.embedding?.method || state.embeddingSettings.method);
             const representedCount = filteredPoints.reduce((total, point) => total + Number(point.memberCount || 1), 0);
-            setEmbeddingInfo(`3D t-SNE on ${distanceLabel} interface distance. ${filteredPoints.length} visible points representing ${representedCount} interface rows. Drag to rotate.${clusteringSummary}`);
+            setEmbeddingInfo(`3D ${methodLabel} points on ${distanceLabel} input. ${filteredPoints.length} visible points representing ${representedCount} interface rows. Drag to rotate.${clusteringSummary}`);
         }
     }
     async function ensureEmbeddingDataLoaded() {
@@ -1263,7 +1320,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         state.embeddingLoadingKey = requestKey;
         syncEmbeddingLoadingUi();
         renderEmbeddingPlot();
-        setEmbeddingInfo(`Loading 3D t-SNE embedding (${embeddingDistanceLabel()} distance)...`);
+        setEmbeddingInfo(`Loading 3D ${pointMethodLabel()} points (${embeddingDistanceLabel()} input)...`);
         state.embeddingPromise = (async () => {
             try {
                 const payload = await fetchJson(currentEmbeddingQuery());
@@ -1275,6 +1332,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                     : state.embeddingSettings.perplexity;
                 state.embeddingSettings = {
                     ...state.embeddingSettings,
+                    method: payload.method || state.embeddingSettings.method,
                     distance: payload.distance || state.embeddingSettings.distance,
                     perplexity: resolvedPerplexity,
                 };
@@ -1308,6 +1366,83 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             }
         })();
         return state.embeddingPromise;
+    }
+    async function ensureHierarchyStatusLoaded(options = {}) {
+        if (!interfaceSelect.value || state.embeddingClusteringSettingsDraft.method !== "hierarchical") {
+            state.hierarchyStatus = null;
+            state.hierarchyStatusLoadingKey = null;
+            state.hierarchyStatusPromise = null;
+            syncHierarchyWarningUi();
+            return;
+        }
+        const requestKey = currentHierarchyStatusRequestKey();
+        if (state.hierarchyStatus?.requestKey !== requestKey) {
+            state.hierarchyStatus = null;
+            syncHierarchyWarningUi();
+        }
+        if (!options.force &&
+            state.hierarchyStatus?.requestKey === requestKey &&
+            !state.hierarchyStatus?.error) {
+            syncHierarchyWarningUi();
+            return;
+        }
+        if (state.hierarchyStatusLoadingKey === requestKey &&
+            state.hierarchyStatusPromise) {
+            syncHierarchyWarningUi();
+            return state.hierarchyStatusPromise;
+        }
+        const requestId = ++state.hierarchyStatusRequestId;
+        state.hierarchyStatusLoadingKey = requestKey;
+        state.hierarchyStatusPromise = (async () => {
+            try {
+                const payload = await fetchJson(currentHierarchyStatusQuery());
+                if (requestId !== state.hierarchyStatusRequestId) {
+                    return;
+                }
+                state.hierarchyStatus = {
+                    ...payload,
+                    requestKey,
+                };
+            }
+            catch (error) {
+                if (requestId !== state.hierarchyStatusRequestId) {
+                    return;
+                }
+                state.hierarchyStatus = {
+                    error: error.message,
+                    requestKey,
+                    local_calculation_required: false,
+                };
+            }
+            finally {
+                if (requestId === state.hierarchyStatusRequestId) {
+                    state.hierarchyStatusLoadingKey = null;
+                    state.hierarchyStatusPromise = null;
+                    syncHierarchyWarningUi();
+                }
+            }
+        })();
+        return state.hierarchyStatusPromise;
+    }
+    function applyHierarchyStatusFromClusteringPayload(payload) {
+        if (state.embeddingClusteringSettings.method !== "hierarchical" || !payload) {
+            return;
+        }
+        const requestKey = currentHierarchyStatusRequestKey();
+        state.hierarchyStatusRequestId += 1;
+        state.hierarchyStatusLoadingKey = null;
+        state.hierarchyStatusPromise = null;
+        state.hierarchyStatus = {
+            method: "hierarchical",
+            distance: payload.distance || state.embeddingClusteringSettings.distance,
+            linkage: state.embeddingClusteringSettings.linkage,
+            source: payload.hierarchy_source || "clustering",
+            local_calculation_required: false,
+            interface_count: payload.sample_count,
+            leaf_count: payload.hierarchy_leaf_count,
+            requestKey,
+        };
+        syncHierarchyWarningUi();
     }
     async function ensureEmbeddingClusteringLoaded() {
         if (!interfaceSelect.value) {
@@ -1367,9 +1502,12 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                     ...state.embeddingClusteringSettings,
                     distance: payload.distance || state.embeddingClusteringSettings.distance,
                 };
-                state.embeddingClusteringSettingsDraft = {
-                    ...state.embeddingClusteringSettings,
-                };
+                applyHierarchyStatusFromClusteringPayload(payload);
+                if (!state.embeddingSettingsOpen) {
+                    state.embeddingClusteringSettingsDraft = {
+                        ...state.embeddingClusteringSettings,
+                    };
+                }
                 state.columnsChart = null;
                 state.columnsChartKey = null;
                 resetEmbeddingClusterSelection();
@@ -1404,73 +1542,14 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                     if (state.representativeStructure && representativeLens() === "cluster") {
                         void renderRepresentativeStructure();
                     }
+                    if (state.embeddingSettingsOpen &&
+                        state.hierarchyStatus?.requestKey !== currentHierarchyStatusRequestKey()) {
+                        void ensureHierarchyStatusLoaded({ force: true });
+                    }
                 }
             }
         })();
         return state.embeddingClusteringPromise;
-    }
-    async function ensureDistanceMatrixLoaded() {
-        const renderDistanceView = () => {
-            resizeDistanceCanvas();
-            renderDistanceMatrixPlot();
-        };
-        if (!interfaceSelect.value) {
-            state.distanceMatrix = null;
-            state.distanceMatrixLoading = false;
-            state.distanceMatrixLoadingKey = null;
-            state.distanceMatrixPromise = null;
-            renderDistanceView();
-            return;
-        }
-        const requestKey = currentDistanceMatrixRequestKey();
-        if (state.distanceMatrix?.file === interfaceSelect.value &&
-            state.distanceMatrix?.distance === state.embeddingSettings.distance &&
-            !state.distanceMatrix?.error) {
-            state.distanceMatrixLoading = false;
-            state.distanceMatrixLoadingKey = null;
-            state.distanceMatrixPromise = null;
-            renderDistanceView();
-            return;
-        }
-        if (state.distanceMatrixLoading &&
-            state.distanceMatrixLoadingKey === requestKey &&
-            state.distanceMatrixPromise) {
-            renderDistanceView();
-            return state.distanceMatrixPromise;
-        }
-        const requestId = ++state.distanceMatrixRequestId;
-        state.distanceMatrixLoading = true;
-        state.distanceMatrixLoadingKey = requestKey;
-        renderDistanceView();
-        state.distanceMatrixPromise = (async () => {
-            try {
-                const payload = await fetchJson(currentDistanceMatrixQuery());
-                if (requestId !== state.distanceMatrixRequestId) {
-                    return;
-                }
-                state.distanceMatrix = payload;
-            }
-            catch (error) {
-                if (requestId !== state.distanceMatrixRequestId) {
-                    return;
-                }
-                state.distanceMatrix = {
-                    error: error.message,
-                    matrix: [],
-                    file: interfaceSelect.value,
-                    distance: state.embeddingSettings.distance,
-                };
-            }
-            finally {
-                if (requestId === state.distanceMatrixRequestId) {
-                    state.distanceMatrixLoading = false;
-                    state.distanceMatrixLoadingKey = null;
-                    state.distanceMatrixPromise = null;
-                    renderDistanceView();
-                }
-            }
-        })();
-        return state.distanceMatrixPromise;
     }
     function embeddingPointAt(clientX, clientY) {
         const rect = elements.embeddingCanvas.getBoundingClientRect();
@@ -1494,8 +1573,6 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         currentEmbeddingClusteringRequestKey,
         currentEmbeddingQuery,
         currentEmbeddingRequestKey,
-        currentDistanceMatrixQuery,
-        currentDistanceMatrixRequestKey,
         currentHierarchicalTarget,
         embeddingClusterColor,
         embeddingClusterLabel,
@@ -1506,7 +1583,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         embeddingSettingsKey,
         ensureEmbeddingClusteringLoaded,
         ensureEmbeddingDataLoaded,
-        ensureDistanceMatrixLoaded,
+        ensureHierarchyStatusLoaded,
         parseEmbeddingClusteringSettingsDraft,
         parseEmbeddingSettingsDraft,
         readEmbeddingClusteringDraftInputs,
@@ -1514,16 +1591,17 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         renderColumnsClusterLegend,
         renderEmbeddingLegend,
         renderEmbeddingPlot,
-        renderDistanceMatrixPlot,
+        requestEmbeddingRender,
         resetColumnsClusterSelection,
         resetEmbeddingClusterSelection,
         resetEmbeddingPartnerSelection,
         resetRepresentativeClusterSelection,
         resizeColumnsCanvas,
         resizeEmbeddingCanvas,
-        resizeDistanceCanvas,
         syncEmbeddingLoadingUi,
         syncEmbeddingSettingsUi,
+        syncHierarchyWarningUi,
+        syncDistanceThresholdValueUi,
         syncHierarchicalTargetMemoryFromDraft,
         syncHierarchicalTargetUi,
         normalizeHierarchicalDraft,
@@ -1533,7 +1611,6 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         clusteringMethodLabel,
         setEmbeddingInfo,
         setColumnsInfo,
-        setDistanceInfo,
         syncEmbeddingMemberControls,
     };
 }

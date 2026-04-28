@@ -30,16 +30,13 @@ export function createMsaViewController({
   syncEmbeddingMemberControls,
   syncEmbeddingSettingsUi,
   resizeEmbeddingCanvas,
-  resizeDistanceCanvas,
   resizeColumnsCanvas,
   renderEmbeddingPlot,
-  renderDistanceMatrixPlot,
   renderColumnsChart,
   renderColumnsClusterLegend,
   setEmbeddingInfo,
   setColumnsInfo,
   ensureEmbeddingDataLoaded,
-  ensureDistanceMatrixLoaded,
   ensureEmbeddingClusteringLoaded,
   resetColumnsClusterSelection,
   resetEmbeddingPartnerSelection,
@@ -72,7 +69,6 @@ export function createMsaViewController({
     detailsList,
     detailsBar,
     embeddingRoot,
-    distanceRoot,
     columnsRoot,
     gridCanvas,
     gridScroll,
@@ -117,12 +113,21 @@ export function createMsaViewController({
   let cachedMsaClusterCounts = new Map();
   let pfamMetadataPollHandle = 0;
   let pfamMetadataPollAttempts = 0;
-  const PFAM_METADATA_POLL_DELAY_MS = 5000;
+  let currentMsaStreamFilename = "";
+  let filesRequestPromise = null;
+  const pfamInfoRequests = new Map();
+  const INITIAL_MSA_ROW_LIMIT = 240;
+  const MSA_ROW_CHUNK_SIZE = 1200;
+  const PFAM_METADATA_POLL_DELAY_MS = 30000;
   const PFAM_METADATA_POLL_MAX_ATTEMPTS = 12;
   const pfamNumberFormatter = new Intl.NumberFormat();
 
   function activeMsaPanelView() {
     return state.msaPanelView;
+  }
+
+  function defaultPointMethodLabel() {
+    return DEFAULT_EMBEDDING_SETTINGS.method === "pca" ? "PCA" : "openTSNE";
   }
 
   function numericStyleValue(style, property) {
@@ -158,14 +163,11 @@ export function createMsaViewController({
     if (activeMsaPanelView() === "embeddings") {
       return embeddingRoot;
     }
-    if (activeMsaPanelView() === "distances") {
-      return distanceRoot;
-    }
     return columnsRoot;
   }
 
   function syncPaneHeights() {
-    const panelRoots = [infoRoot, viewerRoot, embeddingRoot, distanceRoot, columnsRoot];
+    const panelRoots = [infoRoot, viewerRoot, embeddingRoot, columnsRoot];
     panelRoots.forEach((root) => {
       if (root) {
         root.style.height = "";
@@ -214,7 +216,6 @@ export function createMsaViewController({
     const isInfoView = activeMsaPanelView() === "info";
     const isMsaView = activeMsaPanelView() === "msa";
     const isEmbeddingView = activeMsaPanelView() === "embeddings";
-    const isDistanceView = activeMsaPanelView() === "distances";
     const isColumnsView = activeMsaPanelView() === "columns";
     [...msaPanelTabs.querySelectorAll("[data-panel-view]")].forEach((button) => {
       const isActive = button.dataset.panelView === state.msaPanelView;
@@ -228,7 +229,6 @@ export function createMsaViewController({
     msaLegend.classList.toggle("panel-view-hidden", !isMsaView);
     viewerRoot.classList.toggle("panel-view-hidden", !isMsaView);
     embeddingRoot.classList.toggle("panel-view-hidden", !isEmbeddingView);
-    distanceRoot.classList.toggle("panel-view-hidden", !isDistanceView);
     columnsRoot.classList.toggle("panel-view-hidden", !isColumnsView);
   }
 
@@ -719,7 +719,7 @@ export function createMsaViewController({
   }
 
   async function showRandomInterfaceForHistogramBin(bin) {
-    if (!state.interface?.data || !state.msa) {
+    if (!state.interface?.data || !state.interface?.overlayComplete || !state.msa) {
       appStatus.textContent = "Load a filtered interface selection before using the histogram.";
       return;
     }
@@ -744,7 +744,9 @@ export function createMsaViewController({
   }
 
   function renderPfamInfoHistogram() {
-    const histogramEntries = histogramEntriesFromInterfacePayload(state.interface?.data);
+    const histogramEntries = state.interface?.overlayComplete
+      ? histogramEntriesFromInterfacePayload(state.interface?.data)
+      : [];
     const section = document.createElement("section");
     section.className = "pfam-info-histogram";
 
@@ -753,7 +755,7 @@ export function createMsaViewController({
     title.textContent = "Interface size";
     section.appendChild(title);
 
-    if (!state.interface?.data) {
+    if (!state.interface?.data || !state.interface?.overlayComplete) {
       const empty = document.createElement("p");
       empty.className = "pfam-info-histogram-empty";
       empty.textContent = "Loading filtered interface-size data…";
@@ -844,7 +846,10 @@ export function createMsaViewController({
     const pfamId = currentPfamId();
     const cachedInfo = state.pfamInfoByPfamId?.[pfamId] || null;
     const info = state.pfamInfo?.pfam_id === pfamId ? state.pfamInfo : cachedInfo;
-    const localSummary = state.interface?.data ? localInterfaceSummary(state.interface.data) : null;
+    const localSummary =
+      state.interface?.data && state.interface?.overlayComplete
+        ? localInterfaceSummary(state.interface.data)
+        : null;
     const datasetDomainCount = Number(localSummary?.datasetDomains ?? selected.stats?.dataset_domains);
     const datasetInterfaceCount = Number(localSummary?.datasetInterfaces ?? selected.stats?.dataset_interfaces);
     const pfamDomainCount = Number(info?.stats?.matches);
@@ -983,13 +988,17 @@ export function createMsaViewController({
       renderInfoPanel();
       return cachedInfo;
     }
+    const existingRequest = pfamInfoRequests.get(pfamId);
+    if (existingRequest) {
+      return existingRequest;
+    }
     const requestId = state.pfamInfoRequestId + 1;
     state.pfamInfoRequestId = requestId;
     state.pfamInfoLoading = true;
     state.pfamInfoError = "";
     state.pfamInfo = null;
     renderInfoPanel();
-    try {
+    const request = (async () => {
       const payload = await fetchJson(`/api/pfam-info?pfam_id=${encodeURIComponent(pfamId)}`);
       if (requestId !== state.pfamInfoRequestId || currentPfamId() !== pfamId) {
         return payload;
@@ -1001,6 +1010,10 @@ export function createMsaViewController({
       state.pfamInfo = payload;
       state.pfamInfoError = "";
       return payload;
+    })();
+    pfamInfoRequests.set(pfamId, request);
+    try {
+      return await request;
     } catch (error) {
       if (requestId !== state.pfamInfoRequestId || currentPfamId() !== pfamId) {
         return null;
@@ -1013,6 +1026,7 @@ export function createMsaViewController({
         state.pfamInfoLoading = false;
         renderInfoPanel();
       }
+      pfamInfoRequests.delete(pfamId);
     }
   }
 
@@ -1090,6 +1104,15 @@ export function createMsaViewController({
     );
   }
 
+  function fetchFilesPayload() {
+    if (!filesRequestPromise) {
+      filesRequestPromise = fetchJson("/api/files").finally(() => {
+        filesRequestPromise = null;
+      });
+    }
+    return filesRequestPromise;
+  }
+
   async function pollPfamMetadataIfNeeded() {
     if (!hasMissingPfamDisplayNames() || pfamMetadataPollAttempts >= PFAM_METADATA_POLL_MAX_ATTEMPTS) {
       return;
@@ -1098,7 +1121,7 @@ export function createMsaViewController({
     pfamMetadataPollHandle = window.setTimeout(async () => {
       pfamMetadataPollAttempts += 1;
       try {
-        const files = await fetchJson("/api/files");
+        const files = await fetchFilesPayload();
         files.pairs = buildPairs(files);
         const nextOptions = buildMsaOptionsFromFiles(files);
         const namesImproved = nextOptions.some(
@@ -1787,13 +1810,265 @@ export function createMsaViewController({
   }
 
   function updateStats() {
-    rowCount.textContent = String(state.filteredRowIndexes.length);
+    if (state.msa && !state.msaRowsComplete && state.msaRowsTotal > state.msaRowsLoaded) {
+      rowCount.textContent = `${state.filteredRowIndexes.length} shown (${state.msaRowsLoaded}/${state.msaRowsTotal} loaded)`;
+    } else {
+      rowCount.textContent = String(state.filteredRowIndexes.length);
+    }
     columnCount.textContent = String(displayAlignmentLength());
+  }
+
+  function fullColumnIndexes(alignmentLength) {
+    return Array.from({ length: Math.max(0, Number(alignmentLength || 0)) }, (_value, index) => index);
+  }
+
+  function interfacePayloadUrl(filename, options = {}) {
+    const params = new URLSearchParams({ file: filename });
+    appendSelectionSettingsToParams(params, state.selectionSettings);
+    if (options.rowOffset !== undefined) {
+      params.set("row_offset", String(options.rowOffset));
+    }
+    if (options.rowLimit !== undefined && options.rowLimit !== null) {
+      params.set("row_limit", String(options.rowLimit));
+    }
+    if (options.includeData !== undefined) {
+      params.set("include_data", options.includeData ? "1" : "0");
+    }
+    if (options.includeCleanColumnIdentity !== undefined) {
+      params.set(
+        "include_clean_column_identity",
+        options.includeCleanColumnIdentity ? "1" : "0"
+      );
+    }
+    if (options.dataOffset !== undefined) {
+      params.set("data_offset", String(options.dataOffset));
+    }
+    if (options.dataLimit !== undefined && options.dataLimit !== null) {
+      params.set("data_limit", String(options.dataLimit));
+    }
+    return `/api/interface?${params.toString()}`;
+  }
+
+  function partnerCountsFromPayload(payload, fallbackCounts = new Map()) {
+    const counts = new Map(fallbackCounts);
+    for (const [partnerDomain, count] of Object.entries(payload.interface_partner_counts || {})) {
+      counts.set(partnerDomain, Number(count || 0));
+    }
+    return counts;
+  }
+
+  function partnerDomainsFromPayload(payload, maps) {
+    const payloadDomains = Array.isArray(payload.interface_partner_domains)
+      ? payload.interface_partner_domains.map((partner) => String(partner || ""))
+      : [];
+    return (payloadDomains.length > 0 ? payloadDomains : maps.partnerDomains || []).sort();
+  }
+
+  function mergeInterfaceOverlayPayload(interfaceState, overlayPayload) {
+    if (!interfaceState || !overlayPayload) {
+      return;
+    }
+    if (!interfaceState.data) {
+      interfaceState.data = {};
+    }
+    const existingPartners = new Set(interfaceState.partnerDomains || []);
+    for (const [partnerDomain, rowsByKey] of Object.entries(overlayPayload || {})) {
+      if (!rowsByKey || typeof rowsByKey !== "object") {
+        continue;
+      }
+      existingPartners.add(partnerDomain);
+      if (!interfaceState.data[partnerDomain]) {
+        interfaceState.data[partnerDomain] = {};
+      }
+      for (const [rowKey, payload] of Object.entries(rowsByKey)) {
+        if (interfaceState.data[partnerDomain][rowKey]) {
+          continue;
+        }
+        interfaceState.data[partnerDomain][rowKey] = payload;
+        const interactionKey = interactionRowKey(rowKey, partnerDomain);
+        const partnerState = {
+          interface: new Set(payload.interface_msa_columns_a || []),
+          surface: new Set(payload.surface_msa_columns_a || []),
+        };
+        let rowState = interfaceState.overlayByRow.get(rowKey);
+        if (!rowState) {
+          rowState = {
+            all: { interface: new Set(), surface: new Set() },
+            byPartner: new Map(),
+          };
+          interfaceState.overlayByRow.set(rowKey, rowState);
+        }
+        rowState.byPartner.set(partnerDomain, partnerState);
+        interfaceState.overlayByInteractionRow.set(interactionKey, {
+          all: partnerState,
+          byPartner: new Map([[partnerDomain, partnerState]]),
+        });
+
+        const partnerColumnStats =
+          interfaceState.partnerColumnStats.get(partnerDomain) || {
+            denominator: 0,
+            columnCounts: new Map(),
+          };
+        if (partnerState.interface.size > 0) {
+          partnerColumnStats.denominator += 1;
+          for (const col of partnerState.interface) {
+            partnerColumnStats.columnCounts.set(
+              col,
+              (partnerColumnStats.columnCounts.get(col) || 0) + 1
+            );
+          }
+        }
+        interfaceState.partnerColumnStats.set(partnerDomain, partnerColumnStats);
+
+        const hadRowInterface = rowState.all.interface.size > 0;
+        for (const col of partnerState.interface) {
+          if (!rowState.all.interface.has(col)) {
+            rowState.all.interface.add(col);
+            interfaceState.allColumnStats.columnCounts.set(
+              col,
+              (interfaceState.allColumnStats.columnCounts.get(col) || 0) + 1
+            );
+          }
+        }
+        for (const col of partnerState.surface) {
+          rowState.all.surface.add(col);
+        }
+        if (!hadRowInterface && rowState.all.interface.size > 0) {
+          interfaceState.allColumnStats.denominator += 1;
+        }
+      }
+    }
+    interfaceState.partnerDomains = [...existingPartners].sort();
+  }
+
+  function applyInterfaceOverlayPayload(payload) {
+    if (!state.interface || !payload?.data) {
+      return;
+    }
+    mergeInterfaceOverlayPayload(state.interface, payload.data);
+    state.interface.overlayRowsTotal = Number(
+      payload.data_row_count || state.interface.overlayRowsTotal || state.msaRowsTotal || 0
+    );
+    state.interface.overlayRowsLoaded = Math.max(
+      Number(state.interface.overlayRowsLoaded || 0),
+      Number(payload.data_offset || 0) + Number(payload.data_loaded || 0)
+    );
+    state.interface.overlayComplete =
+      Boolean(payload.data_complete) ||
+      (
+        state.interface.overlayRowsTotal > 0 &&
+        state.interface.overlayRowsLoaded >= state.interface.overlayRowsTotal
+      );
+  }
+
+  function startMsaRowStreamIfNeeded() {
+    if (
+      !state.msa ||
+      !currentMsaStreamFilename ||
+      state.msaRowsLoading ||
+      state.msaRowsComplete ||
+      state.msaRowsLoaded >= state.msaRowsTotal ||
+      activeMsaPanelView() !== "msa"
+    ) {
+      return;
+    }
+    const requestId = state.msaRowsRequestId;
+    void loadRemainingInterfaceRows(
+      currentMsaStreamFilename,
+      requestId,
+      state.msaRowsLoaded,
+      state.msaRowsTotal
+    ).catch((error) => {
+      if (requestId === state.msaRowsRequestId) {
+        state.msaRowsLoading = false;
+        state.msaRowsComplete = false;
+        appStatus.textContent = error.message;
+        render();
+      }
+    });
+  }
+
+  function applyMsaRowsPayload(payload, rows, { replace = false } = {}) {
+    const rowOffset = Number(payload.row_offset || 0);
+    const rowCount = Number(payload.row_count || state.msa.row_count || rows.length);
+    const nextRows = replace ? rows : state.msa.rows.concat(rows);
+    state.msa.rows = nextRows;
+    state.msa.row_count = rowCount;
+    state.msaRowsLoaded = nextRows.length;
+    state.msaRowsTotal = rowCount;
+    state.msaRowsComplete = Boolean(payload.rows_complete) || nextRows.length >= rowCount;
+    state.msa.rows_complete = state.msaRowsComplete;
+    state.msa.loaded_row_count = state.msaRowsLoaded;
+    state.msa.visible_columns = state.msa.visible_columns || fullColumnIndexes(state.msa.alignment_length);
+    state.msa.hidden_gap_only_columns = Math.max(
+      0,
+      state.msa.alignment_length - state.msa.visible_columns.length
+    );
+    if (!replace && rowOffset !== nextRows.length - rows.length) {
+      console.debug("[msa-stream] non-contiguous row chunk", {
+        expectedOffset: nextRows.length - rows.length,
+        rowOffset,
+      });
+    }
+  }
+
+  async function loadRemainingInterfaceRows(filename, requestId, startOffset, totalRows) {
+    let nextOffset = Math.max(0, Number(startOffset || 0));
+    state.msaRowsLoading = nextOffset < totalRows;
+    while (
+      state.msa &&
+      requestId === state.msaRowsRequestId &&
+      nextOffset < totalRows
+    ) {
+      if (activeMsaPanelView() !== "msa") {
+        state.msaRowsLoading = false;
+        return;
+      }
+      const payload = await fetchJson(
+        interfacePayloadUrl(filename, {
+          rowOffset: nextOffset,
+          rowLimit: MSA_ROW_CHUNK_SIZE,
+          includeData: true,
+          dataOffset: nextOffset,
+          dataLimit: MSA_ROW_CHUNK_SIZE,
+          includeCleanColumnIdentity: false,
+        })
+      );
+      if (!state.msa || requestId !== state.msaRowsRequestId) {
+        return;
+      }
+      const rows = normalizeInterfaceRows(payload.rows || [], payload.alignment_length);
+      if (rows.length === 0) {
+        break;
+      }
+      applyMsaRowsPayload(payload, rows);
+      applyInterfaceOverlayPayload(payload);
+      nextOffset = state.msaRowsLoaded;
+      appStatus.textContent = `Loaded ${nextOffset} of ${totalRows} alignment rows`;
+      render();
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    }
+    if (state.msa && requestId === state.msaRowsRequestId) {
+      state.msaRowsLoading = false;
+      state.msaRowsComplete = nextOffset >= totalRows;
+      state.msa.rows_complete = state.msaRowsComplete;
+      if (state.msaRowsComplete) {
+        appStatus.textContent = `Loaded ${state.msaRowsLoaded} alignment rows`;
+      }
+      render();
+    }
   }
 
   async function loadInterface(filename) {
     state.interface = null;
     state.msa = null;
+    state.msaRowsRequestId += 1;
+    state.msaRowsLoading = false;
+    state.msaRowsLoaded = 0;
+    state.msaRowsTotal = 0;
+    state.msaRowsComplete = false;
+    currentMsaStreamFilename = "";
+    currentMsaStreamFilename = filename || "";
     state.embedding = null;
     state.embeddingClustering = null;
     state.columnsChart = null;
@@ -1815,31 +2090,56 @@ export function createMsaViewController({
     if (!filename) {
       return;
     }
-    const params = new URLSearchParams({ file: filename });
-    appendSelectionSettingsToParams(params, state.selectionSettings);
-    const payload = await fetchJson(`/api/interface?${params.toString()}`);
+    const requestId = state.msaRowsRequestId;
+    const payload = await fetchJson(
+      interfacePayloadUrl(filename, {
+        rowOffset: 0,
+        rowLimit: INITIAL_MSA_ROW_LIMIT,
+        includeData: true,
+        dataOffset: 0,
+        dataLimit: INITIAL_MSA_ROW_LIMIT,
+        includeCleanColumnIdentity: true,
+      })
+    );
+    if (requestId !== state.msaRowsRequestId) {
+      return;
+    }
     setLoading(65, "Loading alignment", `Preparing rows from ${filename}`);
     const rows = normalizeInterfaceRows(payload.rows, payload.alignment_length);
+    const alignmentLength = Number(payload.alignment_length || 0);
+    const totalRows = Number(payload.row_count || rows.length);
     state.msa = {
       file: payload.file,
       pfam_id: payload.pfam_id,
-      alignment_length: Number(payload.alignment_length || 0),
-      row_count: Number(payload.row_count || rows.length),
+      alignment_length: alignmentLength,
+      row_count: totalRows,
       clean_column_identity: payload.clean_column_identity || [],
       rows,
+      loaded_row_count: rows.length,
+      rows_complete: Boolean(payload.rows_complete) || rows.length >= totalRows,
     };
-    state.msa.visible_columns = computeVisibleColumns(state.msa.rows, state.msa.alignment_length);
+    state.msa.visible_columns = fullColumnIndexes(state.msa.alignment_length);
     state.msa.hidden_gap_only_columns = Math.max(
       0,
       state.msa.alignment_length - state.msa.visible_columns.length
     );
+    state.msaRowsLoaded = rows.length;
+    state.msaRowsTotal = totalRows;
+    state.msaRowsComplete = state.msa.rows_complete;
     syncColumnLegends();
     setLoading(78, "Loading interface", `Preparing overlays for ${filename}`);
-    const maps = buildOverlayMaps(payload.data);
+    const maps = buildOverlayMaps(payload.data || {});
+    const partnerDomains = partnerDomainsFromPayload(payload, maps);
+    const partnerInterfaceCounts = partnerCountsFromPayload(payload, maps.partnerInterfaceCounts);
     state.interface = {
       ...payload,
       ...maps,
-      partnerColors: buildPartnerColorMap(maps.partnerDomains),
+      partnerDomains,
+      partnerInterfaceCounts,
+      overlayRowsLoaded: Number(payload.data_loaded || rows.length),
+      overlayRowsTotal: Number(payload.data_row_count || totalRows),
+      overlayComplete: Boolean(payload.data_complete) || rows.length >= totalRows,
+      partnerColors: buildPartnerColorMap(partnerDomains),
     };
     resetEmbeddingPartnerSelection();
     resetEmbeddingClusterSelection();
@@ -1849,6 +2149,7 @@ export function createMsaViewController({
     renderRepresentativePartnerFilter();
     renderEmbeddingLegend();
     renderColumnsClusterLegend();
+    startMsaRowStreamIfNeeded();
   }
 
   async function refreshData() {
@@ -1872,8 +2173,6 @@ export function createMsaViewController({
     if (activeMsaPanelView() === "embeddings") {
       void ensureEmbeddingDataLoaded();
       void ensureEmbeddingClusteringLoaded();
-    } else if (activeMsaPanelView() === "distances") {
-      void ensureDistanceMatrixLoaded();
     } else if (activeMsaPanelView() === "columns") {
       void ensureEmbeddingClusteringLoaded().then(() => {
         if (state.msa && activeMsaPanelView() === "columns") {
@@ -1931,14 +2230,12 @@ export function createMsaViewController({
     } else if (activeMsaPanelView() === "embeddings") {
       resizeEmbeddingCanvas();
       renderEmbeddingPlot();
-    } else if (activeMsaPanelView() === "distances") {
-      resizeDistanceCanvas();
-      renderDistanceMatrixPlot();
     } else {
       resizeColumnsCanvas();
       renderColumnsChart();
     }
     setDetails(null);
+    startMsaRowStreamIfNeeded();
   }
 
   function syncLayout() {
@@ -1950,10 +2247,6 @@ export function createMsaViewController({
     if (activeMsaPanelView() === "embeddings") {
       resizeEmbeddingCanvas();
       renderEmbeddingPlot();
-    }
-    if (activeMsaPanelView() === "distances") {
-      resizeDistanceCanvas();
-      renderDistanceMatrixPlot();
     }
     if (activeMsaPanelView() === "columns") {
       resizeColumnsCanvas();
@@ -1987,8 +2280,12 @@ export function createMsaViewController({
     closeClusterCompareModal();
     state.msa = null;
     state.interface = null;
+    state.msaRowsRequestId += 1;
+    state.msaRowsLoading = false;
+    state.msaRowsLoaded = 0;
+    state.msaRowsTotal = 0;
+    state.msaRowsComplete = false;
     state.embedding = null;
-    state.distanceMatrix = null;
     state.columnsChart = null;
     state.columnsChartKey = null;
     state.embeddingClustering = null;
@@ -1997,11 +2294,7 @@ export function createMsaViewController({
     state.embeddingProjectedPoints = [];
     state.embeddingDrag = null;
     state.embeddingRequestId += 1;
-    state.distanceMatrixRequestId += 1;
     state.embeddingLoading = false;
-    state.distanceMatrixLoading = false;
-    state.distanceMatrixLoadingKey = null;
-    state.distanceMatrixPromise = null;
     state.embeddingLoadingKey = null;
     state.embeddingPromise = null;
     state.embeddingClusteringRequestId += 1;
@@ -2061,7 +2354,7 @@ export function createMsaViewController({
     resetRepresentativePanel();
     resetStructurePanel();
     setEmbeddingInfo(
-      `3D t-SNE on ${embeddingDistanceLabel(DEFAULT_EMBEDDING_SETTINGS.distance)} interface distance. Drag to rotate.`
+      `3D ${defaultPointMethodLabel()} points on ${embeddingDistanceLabel(DEFAULT_EMBEDDING_SETTINGS.distance)} input. Drag to rotate.`
     );
     setColumnsInfo("Stacked per-column cluster interaction profile.");
     syncEmbeddingLoadingUi();
@@ -2178,7 +2471,7 @@ export function createMsaViewController({
   }
 
   async function initialize() {
-    const files = await fetchJson("/api/files");
+    const files = await fetchFilesPayload();
     applyFilesPayload(files, { preserveSelection: false });
     setOptions(partnerSelect, [{ value: "__all__", label: "All partners" }], "__all__");
     const msaFromUrl = msaFileFromUrl();
@@ -2195,7 +2488,7 @@ export function createMsaViewController({
     syncMsaPanelView();
     syncSelectionSettingsUi();
     setEmbeddingInfo(
-      `3D t-SNE on ${embeddingDistanceLabel(DEFAULT_EMBEDDING_SETTINGS.distance)} interface distance. Drag to rotate.`
+      `3D ${defaultPointMethodLabel()} points on ${embeddingDistanceLabel(DEFAULT_EMBEDDING_SETTINGS.distance)} input. Drag to rotate.`
     );
     syncEmbeddingSettingsUi();
     clearViewer();

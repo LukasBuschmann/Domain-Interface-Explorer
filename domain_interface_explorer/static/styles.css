@@ -535,7 +535,6 @@ select,
 .viewer-panel > .viewer-root,
 .viewer-panel > .info-root,
 .viewer-panel > .embedding-root,
-.viewer-panel > .distance-root,
 .viewer-panel > .columns-root {
   flex: 1 1 auto;
   min-height: 0;
@@ -1101,17 +1100,6 @@ select,
   overflow: hidden;
 }
 
-.distance-root {
-  position: relative;
-  min-height: 0;
-  background:
-    radial-gradient(circle at 15% 18%, rgba(141, 91, 44, 0.1), transparent 24%),
-    linear-gradient(180deg, #fffdf8 0%, #f4ede0 100%);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  overflow: hidden;
-}
-
 .columns-root {
   position: relative;
   min-height: 0;
@@ -1121,12 +1109,6 @@ select,
   border: 1px solid var(--line);
   border-radius: 14px;
   overflow: hidden;
-}
-
-.distance-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
 }
 
 .columns-canvas {
@@ -1306,6 +1288,24 @@ select,
   color: var(--text);
 }
 
+.embedding-settings-subsection {
+  display: grid;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.embedding-settings-subsection + .embedding-settings-subsection {
+  padding-top: 10px;
+  border-top: 1px solid rgba(190, 178, 154, 0.65);
+}
+
+.embedding-settings-subsection-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
 .embedding-settings-panel label {
   display: grid;
   gap: 6px;
@@ -1335,7 +1335,30 @@ select,
   cursor: not-allowed;
 }
 
+.embedding-settings-range-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 10px;
+}
+
+.embedding-settings-range {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.embedding-settings-range-value {
+  color: var(--text);
+  font-size: 12px;
+  text-align: right;
+}
+
 .embedding-settings-apply {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   height: 34px;
   border: 1px solid #8d5b2c;
   border-radius: 10px;
@@ -1349,6 +1372,26 @@ select,
 .embedding-settings-apply:disabled {
   opacity: 0.62;
   cursor: wait;
+}
+
+.embedding-settings-warning-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #fff3c4;
+  color: #6f4a00;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.embedding-settings-warning {
+  margin: -2px 0 0;
+  color: #7b5a10;
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .embedding-settings-help {

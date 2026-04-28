@@ -9,7 +9,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from html import unescape
 from pathlib import Path
 from urllib.error import URLError
@@ -27,11 +27,13 @@ from .config import (
     SELECTOR_STATS_CACHE_VERSION,
 )
 from .interface_embedding import build_interface_alignment_rows
+from .interface_embedding import fragment_ranges
 from .interface_files import (
     directory_interface_json_paths,
     interface_file_pfam_id,
     load_interface_json,
 )
+from .timing import log_event, timed_step
 
 try:
     from tqdm import tqdm
@@ -40,18 +42,30 @@ except ImportError:  # pragma: no cover
 
 CLEAN_COLUMN_IDENTITY_CACHE_LIMIT = 32
 CLEAN_COLUMN_IDENTITY_CACHE: dict[str, list[int]] = {}
+CLEAN_COLUMN_IDENTITY_CACHE_LOCK = threading.Lock()
+CLEAN_COLUMN_IDENTITY_IN_FLIGHT: dict[str, Future[list[int]]] = {}
+CLEAN_COLUMN_IDENTITY_CACHE_VERSION = "3"
+CLEAN_COLUMN_IDENTITY_BATCH_SIZE = 2048
 PFAM_ACCESSION_PATTERN = re.compile(r"^PF\d+$", re.IGNORECASE)
 
 
 def clean_column_identity_cache_key(interface_path: Path) -> str:
     stat = interface_path.stat()
-    return "|".join(
+    return hashlib.sha1(
         (
-            str(interface_path.resolve()),
-            str(stat.st_size),
-            str(stat.st_mtime_ns),
-        )
-    )
+            CLEAN_COLUMN_IDENTITY_CACHE_VERSION
+            + "|"
+            + str(interface_path.resolve())
+            + "|"
+            + str(stat.st_size)
+            + "|"
+            + str(stat.st_mtime_ns)
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def clean_column_identity_cache_path(cache_dir: Path, interface_path: Path) -> Path:
+    return cache_dir / "clean_column_identity" / f"{clean_column_identity_cache_key(interface_path)}.json"
 
 
 def calc_identity_from_values(values: list[str]) -> int:
@@ -77,24 +91,226 @@ def calc_column_identity(aligned_sequences: list[str]) -> list[int]:
     ]
 
 
+def raw_interface_alignment_length(interface_payload: dict[str, dict[str, dict]]) -> int:
+    alignment_length = 0
+    for rows in interface_payload.values():
+        if not isinstance(rows, dict):
+            continue
+        for payload in rows.values():
+            if not isinstance(payload, dict):
+                continue
+            aligned_sequence = payload.get("aligned_seq")
+            if isinstance(aligned_sequence, str):
+                alignment_length = max(alignment_length, len(aligned_sequence))
+    return alignment_length
+
+
+def interface_fragment_key_from_row_key(row_key: str) -> str:
+    parts = str(row_key or "").split("_", 2)
+    return parts[1] if len(parts) > 1 else ""
+
+
+def collect_unique_identity_rows(
+    interface_payload: dict[str, dict[str, dict]],
+) -> tuple[list[tuple[str, tuple[tuple[int, int], ...]]], int]:
+    rows_for_identity: list[tuple[str, tuple[tuple[int, int], ...]]] = []
+    seen_row_keys: set[str] = set()
+    alignment_length = 0
+    for partner_domain in sorted(interface_payload):
+        rows = interface_payload.get(partner_domain)
+        if not isinstance(rows, dict):
+            continue
+        for row_key in sorted(rows):
+            if row_key in seen_row_keys:
+                continue
+            payload = rows.get(row_key)
+            if not isinstance(payload, dict):
+                continue
+            seen_row_keys.add(row_key)
+            aligned_sequence = payload.get("aligned_seq")
+            aligned_sequence = aligned_sequence if isinstance(aligned_sequence, str) else ""
+            alignment_length = max(alignment_length, len(aligned_sequence))
+            fragment_key = interface_fragment_key_from_row_key(str(row_key))
+            rows_for_identity.append((aligned_sequence, tuple(fragment_ranges(fragment_key))))
+    return rows_for_identity, alignment_length
+
+
+def ascii_sequence_array(aligned_sequence: str, alignment_length: int) -> object:
+    import numpy as np
+
+    encoded = aligned_sequence.encode("ascii", "replace")[:alignment_length]
+    return np.frombuffer(encoded, dtype=np.uint8)
+
+
+def count_clean_identity_batch(
+    batch_rows: list[tuple[str, tuple[tuple[int, int], ...]]],
+    alignment_length: int,
+) -> object:
+    import numpy as np
+
+    batch_size = len(batch_rows)
+    sequence_matrix = np.full((batch_size, alignment_length), ord("-"), dtype=np.uint8)
+    for row_index, (aligned_sequence, _ranges) in enumerate(batch_rows):
+        sequence_values = ascii_sequence_array(aligned_sequence, alignment_length)
+        if sequence_values.size:
+            sequence_matrix[row_index, : sequence_values.size] = sequence_values
+
+    lower_mask = (sequence_matrix >= ord("a")) & (sequence_matrix <= ord("z"))
+    uppercase_matrix = sequence_matrix.copy()
+    uppercase_matrix[lower_mask] -= 32
+    alpha_mask = (uppercase_matrix >= ord("A")) & (uppercase_matrix <= ord("Z"))
+
+    starts = np.array(
+        [ranges[0][0] if ranges else 1 for _sequence, ranges in batch_rows],
+        dtype=np.int32,
+    )
+    residue_ids = np.cumsum(alpha_mask, axis=1, dtype=np.int32) + starts[:, None] - 1
+    valid_mask = np.zeros_like(alpha_mask, dtype=bool)
+
+    range_counts = np.array([len(ranges) for _sequence, ranges in batch_rows], dtype=np.int16)
+    single_range_rows = np.flatnonzero(range_counts == 1)
+    if single_range_rows.size:
+        ends = np.array(
+            [batch_rows[int(row_index)][1][0][1] for row_index in single_range_rows],
+            dtype=np.int32,
+        )
+        valid_mask[single_range_rows] = (
+            alpha_mask[single_range_rows]
+            & (residue_ids[single_range_rows] <= ends[:, None])
+        )
+
+    for row_index in np.flatnonzero(range_counts > 1).tolist():
+        row_allowed = np.zeros((alignment_length,), dtype=bool)
+        for start, end in batch_rows[row_index][1]:
+            row_allowed |= (residue_ids[row_index] >= start) & (residue_ids[row_index] <= end)
+        valid_mask[row_index] = alpha_mask[row_index] & row_allowed
+
+    valid_rows, valid_columns = np.nonzero(valid_mask)
+    if valid_columns.size == 0:
+        return np.zeros((alignment_length, 26), dtype=np.int64)
+    letter_indexes = uppercase_matrix[valid_rows, valid_columns].astype(np.int16) - ord("A")
+    flat_indexes = (valid_columns.astype(np.int64) * 26) + letter_indexes.astype(np.int64)
+    return np.bincount(
+        flat_indexes,
+        minlength=alignment_length * 26,
+    ).reshape(alignment_length, 26)
+
+
+def compute_clean_column_identity_direct(interface_payload: dict[str, dict[str, dict]]) -> tuple[list[int], int]:
+    import numpy as np
+
+    with timed_step("json", "collect clean identity rows") as timer:
+        rows_for_identity, alignment_length = collect_unique_identity_rows(interface_payload)
+        timer.set(unique_rows=len(rows_for_identity), alignment_length=alignment_length)
+    unique_row_count = len(rows_for_identity)
+    if unique_row_count <= 0 or alignment_length <= 0:
+        return [0] * alignment_length, 0
+
+    column_letter_counts = np.zeros((alignment_length, 26), dtype=np.int64)
+    with timed_step(
+        "json",
+        "count clean identity residues",
+        unique_rows=unique_row_count,
+        alignment_length=alignment_length,
+        batch_size=CLEAN_COLUMN_IDENTITY_BATCH_SIZE,
+    ) as timer:
+        batch_count = 0
+        for batch_start in range(0, unique_row_count, CLEAN_COLUMN_IDENTITY_BATCH_SIZE):
+            batch_count += 1
+            batch_rows = rows_for_identity[
+                batch_start : batch_start + CLEAN_COLUMN_IDENTITY_BATCH_SIZE
+            ]
+            column_letter_counts += count_clean_identity_batch(batch_rows, alignment_length)
+        timer.set(batches=batch_count)
+    identity = (column_letter_counts.max(axis=1) * 100) // unique_row_count
+    return identity.astype(int).tolist(), unique_row_count
+
+
+def remember_clean_column_identity(cache_key: str, column_identity: list[int]) -> None:
+    CLEAN_COLUMN_IDENTITY_CACHE[cache_key] = column_identity
+    while len(CLEAN_COLUMN_IDENTITY_CACHE) > CLEAN_COLUMN_IDENTITY_CACHE_LIMIT:
+        CLEAN_COLUMN_IDENTITY_CACHE.pop(next(iter(CLEAN_COLUMN_IDENTITY_CACHE)))
+
+
 def load_or_compute_clean_column_identity(
+    cache_dir: Path,
     interface_path: Path,
     interface_payload: dict[str, dict[str, dict]],
 ) -> list[int]:
     cache_key = clean_column_identity_cache_key(interface_path)
-    cached = CLEAN_COLUMN_IDENTITY_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    rows, _alignment_length = build_interface_alignment_rows(interface_payload)
-    unique_sequences_by_row_key: dict[str, str] = {}
-    for row in rows:
-        row_key = str(row.get("interface_row_key") or "")
-        unique_sequences_by_row_key.setdefault(row_key, str(row.get("aligned_sequence") or ""))
-    column_identity = calc_column_identity(list(unique_sequences_by_row_key.values()))
-    CLEAN_COLUMN_IDENTITY_CACHE[cache_key] = column_identity
-    while len(CLEAN_COLUMN_IDENTITY_CACHE) > CLEAN_COLUMN_IDENTITY_CACHE_LIMIT:
-        CLEAN_COLUMN_IDENTITY_CACHE.pop(next(iter(CLEAN_COLUMN_IDENTITY_CACHE)))
-    return column_identity
+    owner = False
+    with CLEAN_COLUMN_IDENTITY_CACHE_LOCK:
+        cached = CLEAN_COLUMN_IDENTITY_CACHE.get(cache_key)
+        if cached is not None:
+            log_event(
+                "json",
+                "reuse clean column identity",
+                file=interface_path.name,
+                columns=len(cached),
+            )
+            return cached
+        future = CLEAN_COLUMN_IDENTITY_IN_FLIGHT.get(cache_key)
+        if future is None:
+            future = Future()
+            CLEAN_COLUMN_IDENTITY_IN_FLIGHT[cache_key] = future
+            owner = True
+    if not owner:
+        with timed_step("json", "wait for clean column identity", file=interface_path.name):
+            return future.result()
+
+    disk_cache_path = clean_column_identity_cache_path(cache_dir, interface_path)
+    try:
+        if disk_cache_path.exists():
+            try:
+                with timed_step(
+                    "json",
+                    "load clean column identity cache",
+                    file=disk_cache_path.name,
+                ) as timer:
+                    with disk_cache_path.open("r", encoding="utf-8") as handle:
+                        column_identity = json.load(handle)
+                    if not isinstance(column_identity, list):
+                        raise ValueError("clean column identity cache is not a list")
+                    column_identity = [int(value) for value in column_identity]
+                    timer.set(columns=len(column_identity))
+                with CLEAN_COLUMN_IDENTITY_CACHE_LOCK:
+                    remember_clean_column_identity(cache_key, column_identity)
+                    CLEAN_COLUMN_IDENTITY_IN_FLIGHT.pop(cache_key, None)
+                    future.set_result(column_identity)
+                return column_identity
+            except (OSError, ValueError, json.JSONDecodeError):
+                log_event("json", "clean column identity cache unreadable", file=disk_cache_path.name)
+        with timed_step("json", "compute clean column identity", file=interface_path.name) as timer:
+            with timed_step(
+                "json",
+                "calculate clean column identity",
+                file=interface_path.name,
+            ) as identity_timer:
+                column_identity, unique_rows = compute_clean_column_identity_direct(interface_payload)
+                identity_timer.set(columns=len(column_identity), unique_rows=unique_rows)
+            try:
+                with timed_step(
+                    "json",
+                    "write clean column identity cache",
+                    file=disk_cache_path.name,
+                    columns=len(column_identity),
+                ):
+                    disk_cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    with disk_cache_path.open("w", encoding="utf-8") as handle:
+                        json.dump(column_identity, handle)
+            except OSError:
+                log_event("json", "failed to write clean column identity cache", file=disk_cache_path.name)
+            timer.set(unique_rows=unique_rows, columns=len(column_identity))
+        with CLEAN_COLUMN_IDENTITY_CACHE_LOCK:
+            remember_clean_column_identity(cache_key, column_identity)
+            CLEAN_COLUMN_IDENTITY_IN_FLIGHT.pop(cache_key, None)
+            future.set_result(column_identity)
+        return column_identity
+    except Exception as exc:
+        with CLEAN_COLUMN_IDENTITY_CACHE_LOCK:
+            CLEAN_COLUMN_IDENTITY_IN_FLIGHT.pop(cache_key, None)
+            future.set_exception(exc)
+        raise
 
 
 def selector_stats_cache_path(cache_dir: Path, interface_dir: Path) -> Path:

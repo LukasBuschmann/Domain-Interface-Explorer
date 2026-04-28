@@ -92,11 +92,15 @@ Current options:
 
 - `--cache-dir CACHE_DIR`
   Default: `./cache`
-  Directory where DIE stores selector stats, distance matrices, embeddings, clustering results, AlphaFold downloads, aligned models, and rendered images.
+  Directory where DIE stores selector stats, quantized internal distance data, embeddings, clustering results, AlphaFold downloads, aligned models, and rendered images.
 
-- `--cache-workers CACHE_WORKERS`
+- `--hierarchy-dir HIERARCHY_DIR`
+  Default: not set
+  Optional directory containing precalculated hierarchical clustering data organized as `distance/linkage/linkage/*.linkage.npz` and `distance/linkage/resolver/*.leaves.json`.
+
+- `--workers WORKERS` / `--cache-workers CACHE_WORKERS`
   Default: `4`
-  Maximum worker count for cache-building jobs, including selector stats and lazy overlap-distance caches.
+  Maximum worker count for cache-building jobs, numba distance calculations, and openTSNE point layouts.
 
 Example with custom paths:
 
@@ -106,7 +110,8 @@ python -m domain_interface_explorer.server \
   --port 8080 \
   --interface-dir /path/to/interface-json-dir \
   --cache-dir /path/to/cache \
-  --cache-workers 4
+  --hierarchy-dir /path/to/hierarchies \
+  --workers 4
 ```
 
 ## Adding Data
@@ -125,9 +130,8 @@ You can also point the server at a different directory with `--interface-dir`.
 - Partner filter: Restrict the view to interfaces against one partner domain or inspect all partners together.
 - Alignment view: Browse interfaces in aligned sequence context with conservation and interface/surface overlays.
 - Search: Fuzzy-search visible interfaces by label.
-- Embeddings: Compute a 3D t-SNE embedding of interface similarity.
+- Points: Compute a 3D openTSNE or PCA layout from binary interface columns or compressed interface distances.
 - Clustering: Group similar interfaces with hierarchical clustering or HDBSCAN.
-- Distance matrix view: Inspect pairwise interface similarity directly.
 - Column view: Explore how interface signal is distributed across alignment columns.
 - Structure preview: Open an interactive 3D view for a selected interface using bundled 3Dmol.js.
 - AlphaFold integration: Fetch models on demand and cache them locally for later reuse.
@@ -138,30 +142,3 @@ You can also point the server at a different directory with `--interface-dir`.
 - The first structure request for a protein may download AlphaFold data from EBI.
 - Cache files are safe to delete if you want DIE to recompute them.
 - Start the server with `python -m domain_interface_explorer.server`, not by running `server.py` directly.
-
-## GitHub Actions Builds
-
-The repository includes a workflow at `.github/workflows/build-interface-distance.yml` that builds the
-`interface_distance` native C helper on GitHub-hosted Linux, Windows, and macOS runners.
-
-To try it on a branch:
-
-```bash
-git push origin <branch-name>
-```
-
-You can also trigger it manually from the Actions tab with `workflow_dispatch`.
-
-Each run uploads one artifact per platform:
-
-- `linux-x86_64`
-- `windows-x86_64`
-- `macos-x86_64`
-- `macos-arm64`
-
-The workflow outputs should be unpacked into these tracked paths:
-
-- `interface_distance/bin/linux-x86_64/interface_distance`
-- `interface_distance/bin/windows-x86_64/interface_distance.exe`
-- `interface_distance/bin/macos-x86_64/interface_distance`
-- `interface_distance/bin/macos-arm64/interface_distance`

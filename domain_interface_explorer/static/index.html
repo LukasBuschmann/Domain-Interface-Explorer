@@ -139,15 +139,6 @@
               <button
                 type="button"
                 class="msa-panel-tab"
-                data-panel-view="distances"
-                role="tab"
-                aria-selected="false"
-              >
-                Distances
-              </button>
-              <button
-                type="button"
-                class="msa-panel-tab"
                 data-panel-view="columns"
                 role="tab"
                 aria-selected="false"
@@ -222,10 +213,10 @@
                     <button
                       type="button"
                       class="embedding-settings-mode-button active"
-                      data-settings-section="tsne"
+                      data-settings-section="points"
                       aria-pressed="true"
                     >
-                      t-SNE
+                      Points
                     </button>
                     <button
                       type="button"
@@ -237,24 +228,43 @@
                     </button>
                   </div>
                 </div>
-                <section class="embedding-settings-section" data-settings-section-panel="tsne">
-                  <h3 class="embedding-settings-section-title">t-SNE</h3>
+                <section class="embedding-settings-section" data-settings-section-panel="points">
+                  <h3 class="embedding-settings-section-title">Points</h3>
+                  <div class="embedding-settings-mode" role="tablist" aria-label="Point layout method">
+                    <button
+                      type="button"
+                      class="embedding-clustering-mode-button active"
+                      data-points-method="tsne"
+                      aria-pressed="true"
+                    >
+                      openTSNE
+                    </button>
+                    <button
+                      type="button"
+                      class="embedding-clustering-mode-button"
+                      data-points-method="pca"
+                      aria-pressed="false"
+                    >
+                      PCA
+                    </button>
+                  </div>
                   <label>
                     <span>
                       Distance
                       <span
                         class="embedding-settings-help"
                         tabindex="0"
-                        title="Controls how interface sets are compared before t-SNE. Dice emphasizes relative overlap for smaller sets, Jaccard penalizes non-shared positions more evenly, and Overlap asks how fully the smaller set is covered by the larger one."
+                        title="Controls the input used to place points. Binary uses the interface columns directly and avoids building a distance matrix. Dice, Jaccard, and Overlap use the compressed interface distance matrix."
                       >?</span>
                     </span>
                     <select id="embedding-distance" class="embedding-settings-input">
+                      <option value="binary">Binary Columns</option>
                       <option value="dice">Dice</option>
                       <option value="jaccard">Jaccard</option>
                       <option value="overlap">Overlap</option>
                     </select>
                   </label>
-                  <label>
+                  <label data-points-method-panel="tsne">
                     <span>
                       Perplexity
                       <span
@@ -272,7 +282,7 @@
                       placeholder="auto"
                     >
                   </label>
-                  <label>
+                  <label data-points-method-panel="tsne">
                     <span>
                       Learning Rate
                       <span
@@ -289,7 +299,7 @@
                       placeholder="auto"
                     >
                   </label>
-                  <label>
+                  <label data-points-method-panel="tsne">
                     <span>
                       Iterations
                       <span
@@ -307,7 +317,25 @@
                       value="1000"
                     >
                   </label>
-                  <label>
+                  <label data-points-method-panel="tsne">
+                    <span>
+                      Early Iterations
+                      <span
+                        class="embedding-settings-help"
+                        tabindex="0"
+                        title="Number of openTSNE optimization steps run with early exaggeration before the normal optimization phase."
+                      >?</span>
+                    </span>
+                    <input
+                      id="embedding-early-exaggeration-iter"
+                      class="embedding-settings-input"
+                      type="number"
+                      step="25"
+                      min="1"
+                      value="250"
+                    >
+                  </label>
+                  <label data-points-method-panel="tsne">
                     <span>
                       Early Exaggeration
                       <span
@@ -323,6 +351,40 @@
                       step="0.1"
                       min="0.1"
                       value="12"
+                    >
+                  </label>
+                  <label data-points-method-panel="tsne">
+                    <span>
+                      Neighbors
+                      <span
+                        class="embedding-settings-help"
+                        tabindex="0"
+                        title="Nearest-neighbor search used by openTSNE for binary input. Approx is faster for large selections; exact is slower but deterministic. Distance-matrix inputs always resolve to exact."
+                      >?</span>
+                    </span>
+                    <select id="embedding-neighbors" class="embedding-settings-input">
+                      <option value="approx">Approx</option>
+                      <option value="auto">Auto</option>
+                      <option value="exact">Exact</option>
+                    </select>
+                  </label>
+                  <label data-points-method-panel="tsne">
+                    <span>
+                      Theta
+                      <span
+                        class="embedding-settings-help"
+                        tabindex="0"
+                        title="Barnes-Hut speed/accuracy tradeoff used during openTSNE optimization. 0 is exact but slow; larger values are faster and more approximate."
+                      >?</span>
+                    </span>
+                    <input
+                      id="embedding-theta"
+                      class="embedding-settings-input"
+                      type="number"
+                      step="0.05"
+                      min="0"
+                      max="1"
+                      value="0.5"
                     >
                   </label>
                   <button id="embedding-tsne-apply" class="embedding-settings-apply" type="button">
@@ -352,188 +414,208 @@
                       HDBSCAN
                     </button>
                   </div>
-                  <label>
-                    <span>
-                      Distance
+                  <div class="embedding-settings-subsection">
+                    <h4 class="embedding-settings-subsection-title">Hierarchy</h4>
+                    <label>
+                      <span>
+                        Distance
+                        <span
+                          class="embedding-settings-help"
+                          tabindex="0"
+                          title="Distance matrix used by the clustering algorithm. This can differ from the point-layout distance, so the point layout and the cluster assignment may emphasize different structure."
+                        >?</span>
+                      </span>
+                      <select id="embedding-cluster-distance" class="embedding-settings-input">
+                        <option value="dice">Dice</option>
+                        <option value="jaccard">Jaccard</option>
+                        <option value="overlap">Overlap</option>
+                      </select>
+                    </label>
+                    <label data-clustering-panel="hierarchical" class="embedding-settings-section-hidden">
+                      <span>
+                        Linkage
+                        <span
+                          class="embedding-settings-help"
+                          tabindex="0"
+                          title="Defines how distances between groups are measured while merging. Single can chain clusters, complete favors tighter groups, and average is a balanced default."
+                        >?</span>
+                      </span>
+                      <select id="embedding-cluster-linkage" class="embedding-settings-input">
+                        <option value="average">Average</option>
+                        <option value="complete">Complete</option>
+                        <option value="single">Single</option>
+                      </select>
+                    </label>
+                    <button id="embedding-clustering-apply" class="embedding-settings-apply" type="button">
                       <span
-                        class="embedding-settings-help"
-                        tabindex="0"
-                        title="Distance matrix used by the clustering algorithm. This can differ from the t-SNE distance, so the point layout and the cluster assignment may emphasize different structure."
-                      >?</span>
-                    </span>
-                    <select id="embedding-cluster-distance" class="embedding-settings-input">
-                      <option value="dice">Dice</option>
-                      <option value="jaccard">Jaccard</option>
-                      <option value="overlap">Overlap</option>
-                    </select>
-                  </label>
-                  <label data-clustering-panel="hdbscan">
-                    <span>
-                      Min Cluster Size
-                      <span
-                        class="embedding-settings-help"
-                        tabindex="0"
-                        title="Smaller values allow smaller groups to become clusters. Larger values demand broader, denser groups."
-                      >?</span>
-                    </span>
-                    <input
-                      id="embedding-cluster-min-size"
-                      class="embedding-settings-input"
-                      type="number"
-                      step="1"
-                      min="1"
-                      value="25"
-                    >
-                  </label>
-                  <label data-clustering-panel="hdbscan">
-                    <span>
-                      Min Samples
-                      <span
-                        class="embedding-settings-help"
-                        tabindex="0"
-                        title="Higher values make clustering more conservative and label more points as noise. Leave blank to let HDBSCAN use its default behavior."
-                      >?</span>
-                    </span>
-                    <input
-                      id="embedding-cluster-min-samples"
-                      class="embedding-settings-input"
-                      type="number"
-                      step="1"
-                      min="1"
-                      placeholder="auto"
-                    >
-                  </label>
-                  <label data-clustering-panel="hdbscan">
-                    <span>
-                      Cluster Selection Epsilon
-                      <span
-                        class="embedding-settings-help"
-                        tabindex="0"
-                        title="Merges nearby dense branches after the hierarchy is built. Increasing it tends to produce fewer, broader clusters."
-                      >?</span>
-                    </span>
-                    <input
-                      id="embedding-cluster-epsilon"
-                      class="embedding-settings-input"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value="0.25"
-                    >
-                  </label>
-                  <label data-clustering-panel="hierarchical" class="embedding-settings-section-hidden">
-                    <span>
-                      Linkage
-                      <span
-                        class="embedding-settings-help"
-                        tabindex="0"
-                        title="Defines how distances between groups are measured while merging. Single can chain clusters, complete favors tighter groups, and average is a balanced default."
-                      >?</span>
-                    </span>
-                    <select id="embedding-cluster-linkage" class="embedding-settings-input">
-                      <option value="average">Average</option>
-                      <option value="complete">Complete</option>
-                      <option value="single">Single</option>
-                    </select>
-                  </label>
-                  <div
-                    class="embedding-settings-mode embedding-settings-section-hidden"
-                    data-clustering-panel="hierarchical"
-                    role="tablist"
-                    aria-label="Hierarchical target"
-                  >
-                    <button
-                      type="button"
-                      class="embedding-clustering-mode-button active"
-                      data-hierarchical-target="distance_threshold"
-                      aria-pressed="true"
-                    >
-                      Cutoff
+                        id="embedding-clustering-apply-warning"
+                        class="embedding-settings-warning-badge hidden"
+                        aria-hidden="true"
+                      >!</span>
+                      <span>Apply</span>
                     </button>
-                    <button
-                      type="button"
-                      class="embedding-clustering-mode-button"
-                      data-hierarchical-target="n_clusters"
-                      aria-pressed="false"
-                    >
-                      N Clusters
-                    </button>
+                    <p id="embedding-hierarchy-warning" class="embedding-settings-warning hidden"></p>
                   </div>
-                  <label
-                    data-clustering-panel="hierarchical"
-                    data-hierarchical-target-panel="n_clusters"
-                    class="embedding-settings-section-hidden"
-                  >
-                    <span>
-                      Number Of Clusters
-                      <span
-                        class="embedding-settings-help"
-                        tabindex="0"
-                        title="Cuts the hierarchy to a fixed number of groups. Use this when you already have a rough target for how many clusters you want to inspect."
-                      >?</span>
-                    </span>
-                    <input
-                      id="embedding-cluster-n-clusters"
-                      class="embedding-settings-input"
-                      type="number"
-                      step="1"
-                      min="1"
-                      value="8"
-                      placeholder="auto"
+                  <div class="embedding-settings-subsection">
+                    <h4 class="embedding-settings-subsection-title">Clustering</h4>
+                    <label data-clustering-panel="hdbscan">
+                      <span>
+                        Min Cluster Size
+                        <span
+                          class="embedding-settings-help"
+                          tabindex="0"
+                          title="Smaller values allow smaller groups to become clusters. Larger values demand broader, denser groups."
+                        >?</span>
+                      </span>
+                      <input
+                        id="embedding-cluster-min-size"
+                        class="embedding-settings-input"
+                        type="number"
+                        step="1"
+                        min="1"
+                        value="25"
+                      >
+                    </label>
+                    <label data-clustering-panel="hdbscan">
+                      <span>
+                        Min Samples
+                        <span
+                          class="embedding-settings-help"
+                          tabindex="0"
+                          title="Higher values make clustering more conservative and label more points as noise. Leave blank to let HDBSCAN use its default behavior."
+                        >?</span>
+                      </span>
+                      <input
+                        id="embedding-cluster-min-samples"
+                        class="embedding-settings-input"
+                        type="number"
+                        step="1"
+                        min="1"
+                        placeholder="auto"
+                      >
+                    </label>
+                    <label data-clustering-panel="hdbscan">
+                      <span>
+                        Cluster Selection Epsilon
+                        <span
+                          class="embedding-settings-help"
+                          tabindex="0"
+                          title="Merges nearby dense branches after the hierarchy is built. Increasing it tends to produce fewer, broader clusters."
+                        >?</span>
+                      </span>
+                      <input
+                        id="embedding-cluster-epsilon"
+                        class="embedding-settings-input"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value="0.25"
+                      >
+                    </label>
+                    <div
+                      class="embedding-settings-mode embedding-settings-section-hidden"
+                      data-clustering-panel="hierarchical"
+                      role="tablist"
+                      aria-label="Hierarchical target"
                     >
-                  </label>
-                  <label
-                    data-clustering-panel="hierarchical"
-                    data-hierarchical-target-panel="distance_threshold"
-                    class="embedding-settings-section-hidden"
-                  >
-                    <span>
-                      Cutoff Distance
-                      <span
-                        class="embedding-settings-help"
-                        tabindex="0"
-                        title="Cuts the hierarchy at a distance level instead of a fixed cluster count. Lower values create more clusters; higher values merge more aggressively."
-                      >?</span>
-                    </span>
-                    <input
-                      id="embedding-cluster-distance-threshold"
-                      class="embedding-settings-input"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value="0.5"
+                      <button
+                        type="button"
+                        class="embedding-clustering-mode-button active"
+                        data-hierarchical-target="distance_threshold"
+                        aria-pressed="true"
+                      >
+                        Cutoff
+                      </button>
+                      <button
+                        type="button"
+                        class="embedding-clustering-mode-button"
+                        data-hierarchical-target="n_clusters"
+                        aria-pressed="false"
+                      >
+                        N Clusters
+                      </button>
+                    </div>
+                    <label
+                      data-clustering-panel="hierarchical"
+                      data-hierarchical-target-panel="n_clusters"
+                      class="embedding-settings-section-hidden"
                     >
-                  </label>
-                  <label
-                    data-clustering-panel="hierarchical"
-                    data-hierarchical-target-panel="distance_threshold"
-                    class="embedding-settings-section-hidden"
-                  >
-                    <span>
-                      Minimal Cluster Size
-                      <span
-                        class="embedding-settings-help"
-                        tabindex="0"
-                        title="After cutting the hierarchy, clusters smaller than this size are relabeled as noise instead of being kept as standalone groups."
-                      >?</span>
-                    </span>
-                    <input
-                      id="embedding-cluster-hierarchical-min-size"
-                      class="embedding-settings-input"
-                      type="number"
-                      step="1"
-                      min="1"
-                      value="10"
+                      <span>
+                        Number Of Clusters
+                        <span
+                          class="embedding-settings-help"
+                          tabindex="0"
+                          title="Cuts the hierarchy to a fixed number of groups. Use this when you already have a rough target for how many clusters you want to inspect."
+                        >?</span>
+                      </span>
+                      <input
+                        id="embedding-cluster-n-clusters"
+                        class="embedding-settings-input"
+                        type="number"
+                        step="1"
+                        min="1"
+                        value="8"
+                        placeholder="auto"
+                      >
+                    </label>
+                    <label
+                      data-clustering-panel="hierarchical"
+                      data-hierarchical-target-panel="distance_threshold"
+                      class="embedding-settings-section-hidden"
                     >
-                  </label>
-                  <button id="embedding-clustering-apply" class="embedding-settings-apply" type="button">
-                    Apply
-                  </button>
+                      <span>
+                        Cutoff Distance
+                        <span
+                          class="embedding-settings-help"
+                          tabindex="0"
+                          title="Cuts the hierarchy at a distance level instead of a fixed cluster count. Lower values create more clusters; higher values merge more aggressively."
+                        >?</span>
+                      </span>
+                      <div class="embedding-settings-range-row">
+                        <input
+                          id="embedding-cluster-distance-threshold"
+                          class="embedding-settings-input embedding-settings-range"
+                          type="range"
+                          step="0.01"
+                          min="0"
+                          max="1"
+                          value="0.5"
+                        >
+                        <output
+                          id="embedding-cluster-distance-threshold-value"
+                          class="embedding-settings-range-value"
+                          for="embedding-cluster-distance-threshold"
+                        >0.50</output>
+                      </div>
+                    </label>
+                    <label
+                      data-clustering-panel="hierarchical"
+                      data-hierarchical-target-panel="distance_threshold"
+                      class="embedding-settings-section-hidden"
+                    >
+                      <span>
+                        Minimal Cluster Size
+                        <span
+                          class="embedding-settings-help"
+                          tabindex="0"
+                          title="After cutting the hierarchy, clusters smaller than this size are relabeled as noise instead of being kept as standalone groups."
+                        >?</span>
+                      </span>
+                      <input
+                        id="embedding-cluster-hierarchical-min-size"
+                        class="embedding-settings-input"
+                        type="number"
+                        step="1"
+                        min="1"
+                        value="10"
+                      >
+                    </label>
+                  </div>
                 </section>
               </div>
               <div id="embedding-partner-legend" class="embedding-partner-legend"></div>
               <div id="embedding-info" class="embedding-info">
-                3D t-SNE on Dice interface distance. Drag to rotate.
+                3D openTSNE points on binary columns. Drag to rotate.
               </div>
               <div id="embedding-member-controls" class="embedding-member-controls hidden" aria-hidden="true">
                 <button
@@ -553,18 +635,6 @@
                 >
                   &#8250;
                 </button>
-              </div>
-            </div>
-            <div id="distance-root" class="distance-root panel-view-hidden">
-              <canvas id="distance-canvas" class="distance-canvas"></canvas>
-              <div id="distance-loading" class="embedding-loading hidden">
-                <strong id="distance-loading-label">Loading distance matrix</strong>
-                <div class="embedding-loading-track">
-                  <div class="embedding-loading-bar"></div>
-                </div>
-              </div>
-              <div id="distance-info" class="embedding-info">
-                Interface distance matrix view.
               </div>
             </div>
             <div id="columns-root" class="columns-root panel-view-hidden">

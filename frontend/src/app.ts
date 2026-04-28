@@ -57,6 +57,7 @@ const {
   embeddingClusterDistanceInput,
   embeddingClusterDistanceThresholdInput,
   embeddingClusterEpsilonInput,
+  embeddingClusterHierarchicalMinSizeInput,
   embeddingClusterLinkageInput,
   embeddingClusterMinSamplesInput,
   embeddingClusterMinSizeInput,
@@ -73,7 +74,6 @@ const {
   embeddingMaxIterInput,
   embeddingPartnerLegend,
   embeddingPerplexityInput,
-  distanceRoot,
   embeddingSettingsPanel,
   embeddingSettingsToggle,
   embeddingTsneApply,
@@ -237,7 +237,7 @@ async function selectActiveEmbeddingMember() {
   if (!row) {
     return;
   }
-  renderEmbeddingPlot();
+  requestEmbeddingRender();
   try {
     await loadInteractiveStructure();
   } catch (error) {
@@ -344,8 +344,6 @@ const {
   currentClusterCompareQuery,
   currentEmbeddingClusteringQuery,
   currentEmbeddingClusteringRequestKey,
-  currentDistanceMatrixQuery,
-  currentDistanceMatrixRequestKey,
   currentEmbeddingQuery,
   currentEmbeddingRequestKey,
   currentHierarchicalTarget,
@@ -358,28 +356,27 @@ const {
   embeddingSettingsKey,
   ensureEmbeddingClusteringLoaded,
   ensureEmbeddingDataLoaded,
-  ensureDistanceMatrixLoaded,
+  ensureHierarchyStatusLoaded,
   normalizeHierarchicalDraft,
   parseEmbeddingClusteringSettingsDraft,
   parseEmbeddingSettingsDraft,
   readEmbeddingClusteringDraftInputs,
   renderEmbeddingLegend,
   renderEmbeddingPlot,
+  requestEmbeddingRender,
   renderColumnsChart,
   renderColumnsClusterLegend,
-  renderDistanceMatrixPlot,
   resetColumnsClusterSelection,
   resetEmbeddingClusterSelection,
   resetEmbeddingPartnerSelection,
   resetRepresentativeClusterSelection,
   resizeColumnsCanvas,
   resizeEmbeddingCanvas,
-  resizeDistanceCanvas,
   setEmbeddingInfo,
   setColumnsInfo,
-  setDistanceInfo,
   syncEmbeddingLoadingUi,
   syncEmbeddingMemberControls,
+  syncDistanceThresholdValueUi,
   syncEmbeddingSettingsUi,
   syncHierarchicalTargetMemoryFromDraft,
   syncHierarchicalTargetUi,
@@ -1292,16 +1289,13 @@ const msaViewController = createMsaViewController({
   syncEmbeddingMemberControls,
   syncEmbeddingSettingsUi,
   resizeEmbeddingCanvas,
-  resizeDistanceCanvas,
   resizeColumnsCanvas,
   renderEmbeddingPlot,
-  renderDistanceMatrixPlot,
   renderColumnsChart,
   renderColumnsClusterLegend,
   setEmbeddingInfo,
   setColumnsInfo,
   ensureEmbeddingDataLoaded,
-  ensureDistanceMatrixLoaded,
   ensureEmbeddingClusteringLoaded,
   resetColumnsClusterSelection,
   resetEmbeddingPartnerSelection,
@@ -1529,12 +1523,51 @@ msaPanelTabs.addEventListener("click", (event) => {
   } else if (nextView === "embeddings") {
     void ensureEmbeddingDataLoaded();
     void ensureEmbeddingClusteringLoaded();
-  } else if (nextView === "distances") {
-    void ensureDistanceMatrixLoaded();
   } else if (nextView === "columns") {
     void ensureEmbeddingClusteringLoaded();
   }
 });
+
+let liveHierarchicalClusteringTimer = 0;
+let hierarchyStatusTimer = 0;
+
+function hierarchyDraftMatchesApplied() {
+  return (
+    state.embeddingClusteringSettings.method === "hierarchical" &&
+    state.embeddingClusteringSettingsDraft.method === "hierarchical" &&
+    state.embeddingClusteringSettings.distance === state.embeddingClusteringSettingsDraft.distance &&
+    state.embeddingClusteringSettings.linkage === state.embeddingClusteringSettingsDraft.linkage
+  );
+}
+
+function scheduleLiveHierarchicalClusteringUpdate() {
+  if (!hierarchyDraftMatchesApplied()) {
+    return;
+  }
+  window.clearTimeout(liveHierarchicalClusteringTimer);
+  liveHierarchicalClusteringTimer = window.setTimeout(async () => {
+    try {
+      const nextSettings = parseEmbeddingClusteringSettingsDraft({
+        preserveAppliedHierarchy: true,
+      });
+      state.embeddingClusteringSettings = nextSettings;
+      if (activeMsaPanelView() === "embeddings" || activeMsaPanelView() === "columns") {
+        await ensureEmbeddingClusteringLoaded();
+      }
+      render();
+    } catch (error) {
+      setEmbeddingInfo(error.message);
+    }
+  }, 250);
+}
+
+function scheduleHierarchyStatusUpdate() {
+  window.clearTimeout(hierarchyStatusTimer);
+  hierarchyStatusTimer = window.setTimeout(() => {
+    state.embeddingClusteringSettingsDraft = readEmbeddingClusteringDraftInputs();
+    void ensureHierarchyStatusLoaded();
+  }, 250);
+}
 
 embeddingSettingsToggle.addEventListener("click", () => {
   state.embeddingSettingsOpen = !state.embeddingSettingsOpen;
@@ -1554,9 +1587,26 @@ embeddingSettingsToggle.addEventListener("click", () => {
   }
   state.embeddingClusteringSettingsDraft = normalizeHierarchicalDraft(state.embeddingClusteringSettingsDraft);
   syncEmbeddingSettingsUi();
+  if (state.embeddingSettingsOpen) {
+    void ensureHierarchyStatusLoaded();
+  }
 });
 
 embeddingSettingsPanel.addEventListener("click", (event) => {
+  const pointsMethodButton = event.target.closest("[data-points-method]");
+  if (pointsMethodButton) {
+    const nextMethod = pointsMethodButton.dataset.pointsMethod;
+    if (!nextMethod || nextMethod === state.embeddingSettingsDraft.method) {
+      return;
+    }
+    state.embeddingSettingsDraft = {
+      ...state.embeddingSettingsDraft,
+      method: nextMethod,
+    };
+    syncEmbeddingSettingsUi();
+    return;
+  }
+
   const methodButton = event.target.closest("[data-clustering-method]");
   if (methodButton) {
     const nextMethod = methodButton.dataset.clusteringMethod;
@@ -1571,6 +1621,7 @@ embeddingSettingsPanel.addEventListener("click", (event) => {
       state.embeddingClusteringSettingsDraft = normalizeHierarchicalDraft(state.embeddingClusteringSettingsDraft);
     }
     syncEmbeddingSettingsUi();
+    void ensureHierarchyStatusLoaded();
     return;
   }
 
@@ -1586,6 +1637,8 @@ embeddingSettingsPanel.addEventListener("click", (event) => {
       hierarchicalTarget: nextTarget,
     });
     syncEmbeddingSettingsUi();
+    scheduleLiveHierarchicalClusteringUpdate();
+    scheduleHierarchyStatusUpdate();
     return;
   }
 
@@ -1606,13 +1659,33 @@ embeddingClusterNClustersInput.addEventListener("input", () => {
   if (value !== "") {
     state.embeddingHierarchicalTargetMemory.nClusters = value;
   }
+  scheduleHierarchyStatusUpdate();
+  scheduleLiveHierarchicalClusteringUpdate();
 });
 
 embeddingClusterDistanceThresholdInput.addEventListener("input", () => {
+  syncDistanceThresholdValueUi();
   const value = embeddingClusterDistanceThresholdInput.value.trim();
   if (value !== "") {
     state.embeddingHierarchicalTargetMemory.distanceThreshold = value;
   }
+  scheduleHierarchyStatusUpdate();
+  scheduleLiveHierarchicalClusteringUpdate();
+});
+
+embeddingClusterHierarchicalMinSizeInput.addEventListener("input", () => {
+  scheduleHierarchyStatusUpdate();
+  scheduleLiveHierarchicalClusteringUpdate();
+});
+
+embeddingClusterDistanceInput.addEventListener("change", () => {
+  state.embeddingClusteringSettingsDraft = readEmbeddingClusteringDraftInputs();
+  void ensureHierarchyStatusLoaded();
+});
+
+embeddingClusterLinkageInput.addEventListener("change", () => {
+  state.embeddingClusteringSettingsDraft = readEmbeddingClusteringDraftInputs();
+  void ensureHierarchyStatusLoaded();
 });
 
 embeddingTsneApply.addEventListener("click", async () => {
@@ -1639,6 +1712,11 @@ embeddingClusteringApply.addEventListener("click", async () => {
     state.embeddingClusteringSettingsDraft = {
       ...nextSettings,
     };
+    if (nextSettings.method === "hierarchical") {
+      state.hierarchyStatus = null;
+      state.hierarchyStatusLoadingKey = null;
+      state.hierarchyStatusPromise = null;
+    }
     state.embeddingSettingsOpen = false;
     syncEmbeddingSettingsUi();
     if (activeMsaPanelView() === "embeddings" || activeMsaPanelView() === "columns") {
@@ -1659,7 +1737,7 @@ embeddingPartnerLegend.addEventListener("click", (event) => {
     }
     state.embeddingColorMode = nextMode;
     renderEmbeddingLegend();
-    renderEmbeddingPlot();
+    requestEmbeddingRender();
     if (nextMode === "cluster") {
       void ensureEmbeddingClusteringLoaded();
     }
@@ -1686,7 +1764,7 @@ embeddingPartnerLegend.addEventListener("click", (event) => {
       state.embeddingVisibleClusters.add(clusterLabel);
     }
     renderEmbeddingLegend();
-    renderEmbeddingPlot();
+    requestEmbeddingRender();
     return;
   }
 
@@ -1712,7 +1790,7 @@ embeddingPartnerLegend.addEventListener("click", (event) => {
     state.embeddingVisiblePartners.add(partnerDomain);
   }
   renderEmbeddingLegend();
-  renderEmbeddingPlot();
+  requestEmbeddingRender();
 });
 
 representativeClusterLegend?.addEventListener("click", (event) => {
@@ -1891,7 +1969,7 @@ window.addEventListener("mousemove", (event) => {
       -1.35,
       Math.min(1.35, state.embeddingDrag.pitch + deltaY * 0.01)
     );
-    renderEmbeddingPlot();
+    requestEmbeddingRender();
     return;
   }
   if (activeMsaPanelView() !== "embeddings") {
@@ -1901,7 +1979,7 @@ window.addEventListener("mousemove", (event) => {
   const nextRowKey = hoveredPoint?.interactionRowKey || null;
   if (nextRowKey !== state.embeddingHoverRowKey) {
     state.embeddingHoverRowKey = nextRowKey;
-    renderEmbeddingPlot();
+    requestEmbeddingRender();
   }
 });
 
@@ -1915,7 +1993,7 @@ embeddingCanvas.addEventListener("mouseleave", () => {
   }
   if (state.embeddingHoverRowKey !== null) {
     state.embeddingHoverRowKey = null;
-    renderEmbeddingPlot();
+    requestEmbeddingRender();
   }
 });
 
@@ -1969,7 +2047,7 @@ embeddingCanvas.addEventListener(
     event.preventDefault();
     const zoomFactor = event.deltaY > 0 ? 1 / 1.12 : 1.12;
     state.embeddingView.zoom = Math.max(0.55, state.embeddingView.zoom * zoomFactor);
-    renderEmbeddingPlot();
+    requestEmbeddingRender();
   },
   { passive: false }
 );
@@ -2121,7 +2199,6 @@ if (window.ResizeObserver) {
   layoutObserver.observe(viewerRoot);
   layoutObserver.observe(gridScroll);
   layoutObserver.observe(embeddingRoot);
-  layoutObserver.observe(distanceRoot);
   layoutObserver.observe(columnsRoot);
   layoutObserver.observe(representativeViewerRoot);
 }

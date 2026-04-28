@@ -4,6 +4,8 @@ import argparse
 import json
 import mimetypes
 import sys
+import threading
+from collections import OrderedDict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -24,17 +26,19 @@ from domain_interface_explorer.serverlib.interface_files import (
     load_interface_json,
 )
 from domain_interface_explorer.serverlib.interface_embedding import (
-    build_interface_alignment_rows,
+    build_interface_alignment_rows_from_metadata,
     compute_cluster_compare_payload,
-    compute_tsne_embedding_payload,
+    compute_embedding_payload,
     clustering_cache_path,
     embedding_cache_path,
     filter_interface_payload,
+    hierarchy_status_payload,
+    collect_interface_alignment_row_metadata,
+    interface_filter_settings_key,
     load_interface_distance_data,
-    load_or_compute_row_distance_matrix_payload,
+    load_interface_point_data,
     load_or_compute_clustering_payload,
     parse_clustering_settings,
-    parse_distance_metric,
     parse_embedding_settings,
     parse_interface_filter_settings,
 )
@@ -59,6 +63,7 @@ from domain_interface_explorer.serverlib.structure_service import (
     structure_cache_key,
     validate_pymol_api,
 )
+from domain_interface_explorer.serverlib.timing import log_event, timed_step
 
 
 def positive_int(value: str) -> int:
@@ -77,7 +82,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--interface-dir", type=Path, default=DEFAULT_INTERFACE_DIR)
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
-    parser.add_argument("--cache-workers", type=positive_int, default=DEFAULT_CACHE_WORKERS)
+    parser.add_argument("--hierarchy-dir", type=Path, default=None)
+    parser.add_argument(
+        "--workers",
+        "--cache-workers",
+        dest="cache_workers",
+        type=positive_int,
+        default=DEFAULT_CACHE_WORKERS,
+    )
     return parser.parse_args()
 
 
@@ -94,9 +106,175 @@ def safe_file_path(directory: Path, filename: str) -> Path | None:
     return candidate
 
 
+INTERFACE_VIEW_CACHE_LIMIT = 4
+INTERFACE_VIEW_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
+INTERFACE_VIEW_CACHE_LOCK = threading.Lock()
+
+
+def interface_view_cache_key(path: Path, filter_settings: dict[str, object]) -> str:
+    stat = path.stat()
+    return "|".join(
+        (
+            str(path.resolve()),
+            str(stat.st_size),
+            str(stat.st_mtime_ns),
+            interface_filter_settings_key(filter_settings),
+        )
+    )
+
+
+def load_cached_interface_view(
+    path: Path,
+    filter_settings: dict[str, object],
+) -> tuple[str, dict[str, object], dict[str, dict[str, dict]], dict[str, object]]:
+    raw_payload = load_interface_json(path)
+    cache_key = interface_view_cache_key(path, filter_settings)
+    with INTERFACE_VIEW_CACHE_LOCK:
+        cached = INTERFACE_VIEW_CACHE.get(cache_key)
+        if cached is not None:
+            INTERFACE_VIEW_CACHE.move_to_end(cache_key)
+            filtered_payload = cached["filtered_payload"]
+            if isinstance(filtered_payload, dict):
+                log_event(
+                    "json",
+                    "reuse filtered interface payload",
+                    file=path.name,
+                    rows=sum(len(rows) for rows in filtered_payload.values() if isinstance(rows, dict)),
+                )
+                return cache_key, raw_payload, filtered_payload, cached
+    filtered_payload = filter_interface_payload(raw_payload, filter_settings)
+    cache_entry: dict[str, object] = {
+        "filtered_payload": filtered_payload,
+    }
+    with INTERFACE_VIEW_CACHE_LOCK:
+        INTERFACE_VIEW_CACHE[cache_key] = cache_entry
+        INTERFACE_VIEW_CACHE.move_to_end(cache_key)
+        while len(INTERFACE_VIEW_CACHE) > INTERFACE_VIEW_CACHE_LIMIT:
+            INTERFACE_VIEW_CACHE.popitem(last=False)
+    return cache_key, raw_payload, filtered_payload, cache_entry
+
+
+def cached_alignment_metadata(
+    cache_key: str,
+    cache_entry: dict[str, object],
+    filtered_payload: dict[str, dict[str, dict]],
+) -> tuple[list[dict[str, object]], int]:
+    raw_rows = cache_entry.get("alignment_raw_rows")
+    alignment_length = cache_entry.get("alignment_length")
+    if isinstance(raw_rows, list) and isinstance(alignment_length, int):
+        log_event(
+            "json",
+            "reuse alignment row metadata",
+            raw_rows=len(raw_rows),
+            alignment_length=alignment_length,
+        )
+        return raw_rows, alignment_length
+    raw_rows, alignment_length = collect_interface_alignment_row_metadata(filtered_payload)
+    with INTERFACE_VIEW_CACHE_LOCK:
+        current = INTERFACE_VIEW_CACHE.get(cache_key)
+        if current is not None:
+            current["alignment_raw_rows"] = raw_rows
+            current["alignment_length"] = alignment_length
+    cache_entry["alignment_raw_rows"] = raw_rows
+    cache_entry["alignment_length"] = alignment_length
+    return raw_rows, alignment_length
+
+
+def query_flag(query: dict[str, list[str]], name: str, default: bool = True) -> bool:
+    raw_value = query.get(name, [None])[0]
+    if raw_value is None:
+        return default
+    normalized = str(raw_value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def query_non_negative_int(
+    query: dict[str, list[str]],
+    name: str,
+    default: int = 0,
+) -> int:
+    raw_value = query.get(name, [str(default)])[0]
+    if raw_value is None or str(raw_value).strip() == "":
+        return default
+    parsed = int(str(raw_value).strip())
+    if parsed < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return parsed
+
+
+def query_positive_int_or_none(query: dict[str, list[str]], name: str) -> int | None:
+    raw_value = query.get(name, [""])[0]
+    if raw_value is None or str(raw_value).strip() == "":
+        return None
+    parsed = int(str(raw_value).strip())
+    if parsed <= 0:
+        raise ValueError(f"{name} must be positive")
+    return parsed
+
+
+def compact_interface_payload_for_client(
+    interface_payload: dict[str, dict[str, dict]],
+    raw_rows: list[dict[str, object]] | None = None,
+    row_offset: int = 0,
+    row_limit: int | None = None,
+) -> dict[str, dict[str, dict[str, object]]]:
+    normalized_offset = max(0, int(row_offset or 0))
+    normalized_limit = None if row_limit is None else max(0, int(row_limit))
+    with timed_step(
+        "json",
+        "compact interface overlay payload",
+        partner_domains=len(interface_payload),
+        row_offset=normalized_offset,
+        row_limit=normalized_limit if normalized_limit is not None else "all",
+    ) as timer:
+        compact_payload: dict[str, dict[str, dict[str, object]]] = {}
+        row_count = 0
+        if raw_rows is not None:
+            selected_rows = (
+                raw_rows[normalized_offset:]
+                if normalized_limit is None
+                else raw_rows[normalized_offset:normalized_offset + normalized_limit]
+            )
+            for raw_row in selected_rows:
+                partner_domain = str(raw_row.get("partner_domain") or "")
+                row_key = str(raw_row.get("interface_row_key") or "")
+                row_payload = interface_payload.get(partner_domain, {}).get(row_key)
+                if not isinstance(row_payload, dict):
+                    continue
+                compact_payload.setdefault(partner_domain, {})[row_key] = {
+                    "interface_msa_columns_a": row_payload.get("interface_msa_columns_a", []),
+                    "surface_msa_columns_a": row_payload.get("surface_msa_columns_a", []),
+                }
+                row_count += 1
+            timer.set(rows=row_count, partner_domains=len(compact_payload))
+            return compact_payload
+        for partner_domain in sorted(interface_payload):
+            rows = interface_payload.get(partner_domain)
+            if not isinstance(rows, dict):
+                continue
+            compact_rows: dict[str, dict[str, object]] = {}
+            for row_key, row_payload in rows.items():
+                if not isinstance(row_payload, dict):
+                    continue
+                compact_rows[str(row_key)] = {
+                    "interface_msa_columns_a": row_payload.get("interface_msa_columns_a", []),
+                    "surface_msa_columns_a": row_payload.get("surface_msa_columns_a", []),
+                }
+                row_count += 1
+            if compact_rows:
+                compact_payload[str(partner_domain)] = compact_rows
+        timer.set(rows=row_count, partner_domains=len(compact_payload))
+        return compact_payload
+
+
 class ViewerRequestHandler(BaseHTTPRequestHandler):
     interface_dir: Path
     cache_dir: Path
+    hierarchy_dir: Path | None
     cache_workers: int
     pfam_option_stats: dict[str, dict[str, object]]
 
@@ -120,8 +298,8 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/clustering":
             self._handle_clustering(parse_qs(parsed.query))
             return
-        if parsed.path == "/api/distance-matrix":
-            self._handle_distance_matrix(parse_qs(parsed.query))
+        if parsed.path == "/api/hierarchy-status":
+            self._handle_hierarchy_status(parse_qs(parsed.query))
             return
         if parsed.path == "/api/cluster-compare":
             self._handle_cluster_compare(parse_qs(parsed.query))
@@ -172,11 +350,28 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         filename: str,
         query: dict[str, list[str]],
     ) -> tuple[
+        str,
         Path,
         dict[str, dict[str, dict]],
         dict[str, dict[str, dict]],
         dict[str, object],
+        dict[str, object],
     ] | None:
+        resolved = self._resolve_interface_file_and_filter(filename, query)
+        if resolved is None:
+            return None
+        path, interface_filter_settings = resolved
+        cache_key, interface_payload, filtered_payload, cache_entry = load_cached_interface_view(
+            path,
+            interface_filter_settings,
+        )
+        return cache_key, path, interface_payload, filtered_payload, interface_filter_settings, cache_entry
+
+    def _resolve_interface_file_and_filter(
+        self,
+        filename: str,
+        query: dict[str, list[str]],
+    ) -> tuple[Path, dict[str, object]] | None:
         path = safe_file_path(self.interface_dir, filename)
         if path is None:
             self._send_json({"error": f"missing interface file {filename}"}, status=HTTPStatus.NOT_FOUND)
@@ -186,9 +381,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return None
-        interface_payload = load_interface_json(path)
-        filtered_payload = filter_interface_payload(interface_payload, interface_filter_settings)
-        return path, interface_payload, filtered_payload, interface_filter_settings
+        return path, interface_filter_settings
 
     def _handle_msa(self, query: dict[str, list[str]]) -> None:
         self._send_json(
@@ -201,21 +394,104 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         resolved = self._resolve_interface_request(filename, query)
         if resolved is None:
             return
-        path, raw_payload, filtered_payload, interface_filter_settings = resolved
-        rows, alignment_length = build_interface_alignment_rows(filtered_payload)
-        pfam_id = interface_file_pfam_id(path)
-        self._send_json(
-            {
+        cache_key, path, raw_payload, filtered_payload, interface_filter_settings, cache_entry = resolved
+        try:
+            row_offset = query_non_negative_int(query, "row_offset", 0)
+            row_limit = query_positive_int_or_none(query, "row_limit")
+            data_offset = query_non_negative_int(query, "data_offset", row_offset)
+            data_limit = query_positive_int_or_none(query, "data_limit")
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if data_limit is None:
+            data_limit = row_limit
+        include_rows = query_flag(query, "include_rows", True)
+        include_data = query_flag(query, "include_data", True)
+        include_clean_column_identity = query_flag(
+            query,
+            "include_clean_column_identity",
+            query_flag(query, "include_clean", True),
+        )
+        with timed_step("json", "build interface endpoint payload", file=path.name) as timer:
+            pfam_id = interface_file_pfam_id(path)
+            clean_column_identity = (
+                load_or_compute_clean_column_identity(self.cache_dir, path, raw_payload)
+                if include_clean_column_identity
+                else None
+            )
+            raw_rows, alignment_length = cached_alignment_metadata(
+                cache_key,
+                cache_entry,
+                filtered_payload,
+            )
+            rows, alignment_length, total_rows = build_interface_alignment_rows_from_metadata(
+                raw_rows,
+                alignment_length,
+                row_offset=row_offset if include_rows else 0,
+                row_limit=row_limit if include_rows else 0,
+                include_total=True,
+            )
+            compact_interface_payload = (
+                compact_interface_payload_for_client(
+                    filtered_payload,
+                    raw_rows=raw_rows,
+                    row_offset=data_offset,
+                    row_limit=data_limit,
+                )
+                if include_data
+                else None
+            )
+            returned_row_count = len(rows)
+            rows_complete = row_offset + returned_row_count >= total_rows
+            data_loaded = (
+                sum(len(rows_by_partner) for rows_by_partner in compact_interface_payload.values())
+                if compact_interface_payload is not None
+                else 0
+            )
+            data_complete = data_offset + data_loaded >= total_rows
+            interface_partner_counts = {
+                str(partner_domain): len(rows_by_partner)
+                for partner_domain, rows_by_partner in sorted(filtered_payload.items())
+                if isinstance(rows_by_partner, dict)
+            }
+            response_payload = {
                 "file": path.name,
                 "pfam_id": pfam_id,
                 "filter_settings": interface_filter_settings,
                 "alignment_length": alignment_length,
-                "row_count": len(rows),
-                "clean_column_identity": load_or_compute_clean_column_identity(path, raw_payload),
+                "row_count": total_rows,
+                "interface_partner_domains": list(interface_partner_counts),
+                "interface_partner_counts": interface_partner_counts,
+                "row_offset": row_offset,
+                "row_limit": row_limit,
+                "rows_loaded": returned_row_count,
+                "rows_complete": rows_complete,
                 "rows": rows,
-                "data": filtered_payload,
             }
-        )
+            if clean_column_identity is not None:
+                response_payload["clean_column_identity"] = clean_column_identity
+            if compact_interface_payload is not None:
+                response_payload["data"] = compact_interface_payload
+                response_payload["data_row_count"] = total_rows
+                response_payload["data_offset"] = data_offset
+                response_payload["data_limit"] = data_limit
+                response_payload["data_loaded"] = data_loaded
+                response_payload["data_complete"] = data_complete
+            timer.set(
+                rows=returned_row_count,
+                total_rows=total_rows,
+                alignment_length=alignment_length,
+                clean_columns=len(clean_column_identity or []),
+                overlay_rows=data_loaded,
+                partner_domains=len(compact_interface_payload or {}),
+                include_data=include_data,
+                include_clean_column_identity=include_clean_column_identity,
+                row_offset=row_offset,
+                row_limit=row_limit if row_limit is not None else "all",
+                data_offset=data_offset,
+                data_limit=data_limit if data_limit is not None else "all",
+            )
+        self._send_json(response_payload)
 
     def _handle_pfam_info(self, query: dict[str, list[str]]) -> None:
         pfam_id = query.get("pfam_id", [""])[0]
@@ -248,10 +524,10 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_embedding(self, query: dict[str, list[str]]) -> None:
         filename = query.get("file", [""])[0]
-        resolved = self._resolve_interface_request(filename, query)
+        resolved = self._resolve_interface_file_and_filter(filename, query)
         if resolved is None:
             return
-        path, _raw_payload, interface_payload, interface_filter_settings = resolved
+        path, interface_filter_settings = resolved
         try:
             settings = parse_embedding_settings(query)
         except ValueError as exc:
@@ -259,20 +535,30 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         cache_path = embedding_cache_path(self.cache_dir, path, settings, interface_filter_settings)
         if cache_path.exists():
-            with cache_path.open("r", encoding="utf-8") as handle:
-                self._send_json(json.load(handle))
+            with timed_step(
+                "points",
+                "load cached point layout",
+                file=cache_path.name,
+                method=settings["method"],
+                distance=settings["distance"],
+            ):
+                with cache_path.open("r", encoding="utf-8") as handle:
+                    self._send_json(json.load(handle))
             return
+        _cache_key, _raw_payload, interface_payload, _cache_entry = load_cached_interface_view(
+            path,
+            interface_filter_settings,
+        )
         try:
-            distance_data = load_interface_distance_data(
+            point_data = load_interface_point_data(
                 self.cache_dir,
                 path,
                 interface_payload,
                 str(settings["distance"]),
                 interface_filter_settings,
-                distance_scope="compressed",
                 cache_workers=self.cache_workers,
             )
-            embedding_payload = compute_tsne_embedding_payload(distance_data, settings)
+            embedding_payload = compute_embedding_payload(point_data, settings, worker_count=self.cache_workers)
         except (RuntimeError, ValueError) as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -282,17 +568,25 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             "filter_settings": interface_filter_settings,
             **embedding_payload,
         }
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with cache_path.open("w", encoding="utf-8") as handle:
-            json.dump(response_payload, handle)
+        with timed_step(
+            "points",
+            "write point layout cache",
+            file=cache_path.name,
+            method=settings["method"],
+            distance=settings["distance"],
+            points=len(response_payload.get("points", [])),
+        ):
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with cache_path.open("w", encoding="utf-8") as handle:
+                json.dump(response_payload, handle)
         self._send_json(response_payload)
 
     def _handle_clustering(self, query: dict[str, list[str]]) -> None:
         filename = query.get("file", [""])[0]
-        resolved = self._resolve_interface_request(filename, query)
+        resolved = self._resolve_interface_file_and_filter(filename, query)
         if resolved is None:
             return
-        path, _raw_payload, interface_payload, interface_filter_settings = resolved
+        path, interface_filter_settings = resolved
         try:
             clustering_settings = parse_clustering_settings(query)
         except ValueError as exc:
@@ -305,9 +599,20 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             interface_filter_settings,
         )
         if cache_path.exists():
-            with cache_path.open("r", encoding="utf-8") as handle:
-                self._send_json(json.load(handle))
+            with timed_step(
+                "clustering",
+                "load cached clustering response",
+                file=cache_path.name,
+                method=clustering_settings["method"],
+                distance=clustering_settings["distance"],
+            ):
+                with cache_path.open("r", encoding="utf-8") as handle:
+                    self._send_json(json.load(handle))
             return
+        _cache_key, _raw_payload, interface_payload, _cache_entry = load_cached_interface_view(
+            path,
+            interface_filter_settings,
+        )
         try:
             response_payload = load_or_compute_clustering_payload(
                 self.cache_dir,
@@ -316,6 +621,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 clustering_settings,
                 interface_filter_settings,
                 cache_workers=self.cache_workers,
+                hierarchy_dir=self.hierarchy_dir,
             )
         except (RuntimeError, ValueError) as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
@@ -325,34 +631,36 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json(response_payload)
 
-    def _handle_distance_matrix(self, query: dict[str, list[str]]) -> None:
+    def _handle_hierarchy_status(self, query: dict[str, list[str]]) -> None:
         filename = query.get("file", [""])[0]
         resolved = self._resolve_interface_request(filename, query)
         if resolved is None:
             return
-        path, _raw_payload, interface_payload, interface_filter_settings = resolved
+        _cache_key, path, _raw_payload, interface_payload, interface_filter_settings, _cache_entry = resolved
         try:
-            distance_metric = parse_distance_metric(query)
-        except ValueError as exc:
-            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-            return
-        try:
-            response_payload = {
-                "file": path.name,
-                "pfam_id": interface_file_pfam_id(path),
-                "filter_settings": interface_filter_settings,
-                **load_or_compute_row_distance_matrix_payload(
-                    self.cache_dir,
-                    path,
-                    interface_payload,
-                    distance_metric,
-                    interface_filter_settings,
-                ),
-            }
+            clustering_settings = parse_clustering_settings(query)
+            response_payload = hierarchy_status_payload(
+                self.cache_dir,
+                path,
+                interface_payload,
+                clustering_settings,
+                interface_filter_settings,
+                hierarchy_dir=self.hierarchy_dir,
+            )
         except (RuntimeError, ValueError) as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
-        self._send_json(response_payload)
+        except Exception as exc:  # pragma: no cover
+            self._send_json({"error": f"Unexpected hierarchy status error: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._send_json(
+            {
+                "file": path.name,
+                "pfam_id": interface_file_pfam_id(path),
+                "filter_settings": interface_filter_settings,
+                **response_payload,
+            }
+        )
 
     def _handle_cluster_compare(self, query: dict[str, list[str]]) -> None:
         filename = query.get("file", [""])[0]
@@ -360,7 +668,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         resolved = self._resolve_interface_request(filename, query)
         if resolved is None:
             return
-        path, _raw_payload, interface_payload, interface_filter_settings = resolved
+        _cache_key, path, _raw_payload, interface_payload, interface_filter_settings, _cache_entry = resolved
         if cluster_label_raw == "":
             self._send_json({"error": "cluster_label is required"}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -388,6 +696,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 clustering_settings,
                 interface_filter_settings,
                 cache_workers=self.cache_workers,
+                hierarchy_dir=self.hierarchy_dir,
             )
             response_payload = {
                 "file": path.name,
@@ -460,7 +769,10 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 return
         if not row_key:
             row_key = f"{uniprot_id}_{fragment_key_name}"
-        interface_data = filter_interface_payload(load_interface_json(interface_path), interface_filter_settings)
+        _cache_key, _raw_payload, interface_data, _cache_entry = load_cached_interface_view(
+            interface_path,
+            interface_filter_settings,
+        )
         row_structure = collect_row_structure_payload(interface_data, row_key, partner)
         fragment_start, fragment_end = fragment_bounds(fragment_key_name)
         fragment_residue_ids = sorted(expand_fragment_key_to_residue_ids(fragment_key_name))
@@ -675,13 +987,28 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
 
     def _send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
-        body = json.dumps(payload).encode("utf-8")
+        endpoint = self.path.split("?", maxsplit=1)[0]
+        with timed_step(
+            "http",
+            "serialize json response",
+            endpoint=endpoint,
+            status=int(status),
+        ) as timer:
+            body = json.dumps(payload).encode("utf-8")
+            timer.set(bytes=len(body))
         try:
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            with timed_step(
+                "http",
+                "send json response",
+                endpoint=endpoint,
+                status=int(status),
+                bytes=len(body),
+            ):
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             return
 
@@ -689,6 +1016,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
 def build_handler(
     interface_dir: Path,
     cache_dir: Path,
+    hierarchy_dir: Path | None,
     cache_workers: int,
     pfam_option_stats: dict[str, dict[str, object]],
 ):
@@ -697,6 +1025,7 @@ def build_handler(
 
     ConfiguredHandler.interface_dir = interface_dir
     ConfiguredHandler.cache_dir = cache_dir
+    ConfiguredHandler.hierarchy_dir = hierarchy_dir
     ConfiguredHandler.cache_workers = max(1, int(cache_workers))
     ConfiguredHandler.pfam_option_stats = pfam_option_stats
     return ConfiguredHandler
@@ -705,6 +1034,7 @@ def build_handler(
 def main() -> None:
     args = parse_args()
     cache_workers = max(1, int(args.cache_workers))
+    hierarchy_dir = args.hierarchy_dir.resolve() if args.hierarchy_dir is not None else None
     pymol_status = validate_pymol_api()
     if not pymol_status.available:
         print(
@@ -721,6 +1051,7 @@ def main() -> None:
     handler = build_handler(
         args.interface_dir.resolve(),
         args.cache_dir.resolve(),
+        hierarchy_dir,
         cache_workers,
         pfam_option_stats,
     )
@@ -728,6 +1059,8 @@ def main() -> None:
     print(
         f"Serving Domain Interface Explorer at http://{args.host}:{args.port} "
         f"(interface-dir={args.interface_dir}, cache-dir={args.cache_dir}, "
+        f"hierarchy-dir={hierarchy_dir or 'none'}, "
+        f"workers={cache_workers}, "
         f"pymol-api={'available' if pymol_status.available else 'unavailable'})"
     )
     start_background_pfam_metadata_refresh(args.cache_dir.resolve(), pfam_option_stats)

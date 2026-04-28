@@ -4,11 +4,15 @@ export const HEADER_HEIGHT = 42;
 export const LABEL_WIDTH = 240;
 export const TEXT_FONT = '12px "Iosevka Web", "IBM Plex Mono", monospace';
 export const DEFAULT_EMBEDDING_SETTINGS = {
-    distance: "overlap",
+    method: "pca",
+    distance: "binary",
     perplexity: "auto",
     learningRate: "auto",
     maxIter: 1000,
+    earlyExaggerationIter: 250,
     earlyExaggeration: 12.0,
+    neighbors: "approx",
+    theta: 0.5,
 };
 export const DEFAULT_CLUSTERING_SETTINGS = {
     method: "hierarchical",
