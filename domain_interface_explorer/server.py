@@ -25,6 +25,7 @@ from domain_interface_explorer.serverlib.interface_files import (
     is_interface_json_path,
     load_interface_json,
 )
+from domain_interface_explorer.serverlib.interface_store import InterfaceStore
 from domain_interface_explorer.serverlib.interface_embedding import (
     build_interface_alignment_rows_from_metadata,
     compute_cluster_compare_payload,
@@ -275,6 +276,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
     interface_dir: Path
     cache_dir: Path
     hierarchy_dir: Path | None
+    interface_store: InterfaceStore | None
     cache_workers: int
     pfam_option_stats: dict[str, dict[str, object]]
 
@@ -391,10 +393,10 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_interface(self, query: dict[str, list[str]]) -> None:
         filename = query.get("file", [""])[0]
-        resolved = self._resolve_interface_request(filename, query)
-        if resolved is None:
+        resolved_file = self._resolve_interface_file_and_filter(filename, query)
+        if resolved_file is None:
             return
-        cache_key, path, raw_payload, filtered_payload, interface_filter_settings, cache_entry = resolved
+        path, interface_filter_settings = resolved_file
         try:
             row_offset = query_non_negative_int(query, "row_offset", 0)
             row_limit = query_positive_int_or_none(query, "row_limit")
@@ -412,6 +414,31 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             "include_clean_column_identity",
             query_flag(query, "include_clean", True),
         )
+        if self.interface_store is not None:
+            try:
+                response_payload = self.interface_store.get_interface_page(
+                    path,
+                    interface_filter_settings,
+                    row_offset=row_offset,
+                    row_limit=row_limit,
+                    include_rows=include_rows,
+                    include_data=include_data,
+                    data_offset=data_offset,
+                    data_limit=data_limit,
+                    include_clean_column_identity=include_clean_column_identity,
+                )
+                self._send_json(response_payload)
+                return
+            except Exception as exc:
+                log_event("store", "interface store fallback", file=path.name, error=exc)
+        cache_key, raw_payload, filtered_payload, cache_entry = load_cached_interface_view(
+            path,
+            interface_filter_settings,
+        )
+        resolved = (cache_key, path, raw_payload, filtered_payload, interface_filter_settings, cache_entry)
+        if resolved is None:
+            return
+        cache_key, path, raw_payload, filtered_payload, interface_filter_settings, cache_entry = resolved
         with timed_step("json", "build interface endpoint payload", file=path.name) as timer:
             pfam_id = interface_file_pfam_id(path)
             clean_column_identity = (
@@ -545,10 +572,20 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 with cache_path.open("r", encoding="utf-8") as handle:
                     self._send_json(json.load(handle))
             return
-        _cache_key, _raw_payload, interface_payload, _cache_entry = load_cached_interface_view(
-            path,
-            interface_filter_settings,
-        )
+        try:
+            interface_payload = (
+                self.interface_store.get_columns_payload(path, interface_filter_settings)
+                if self.interface_store is not None
+                else None
+            )
+        except Exception as exc:
+            log_event("store", "embedding columns payload fallback", file=path.name, error=exc)
+            interface_payload = None
+        if interface_payload is None:
+            _cache_key, _raw_payload, interface_payload, _cache_entry = load_cached_interface_view(
+                path,
+                interface_filter_settings,
+            )
         try:
             point_data = load_interface_point_data(
                 self.cache_dir,
@@ -609,10 +646,20 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 with cache_path.open("r", encoding="utf-8") as handle:
                     self._send_json(json.load(handle))
             return
-        _cache_key, _raw_payload, interface_payload, _cache_entry = load_cached_interface_view(
-            path,
-            interface_filter_settings,
-        )
+        try:
+            interface_payload = (
+                self.interface_store.get_columns_payload(path, interface_filter_settings)
+                if self.interface_store is not None
+                else None
+            )
+        except Exception as exc:
+            log_event("store", "clustering columns payload fallback", file=path.name, error=exc)
+            interface_payload = None
+        if interface_payload is None:
+            _cache_key, _raw_payload, interface_payload, _cache_entry = load_cached_interface_view(
+                path,
+                interface_filter_settings,
+            )
         try:
             response_payload = load_or_compute_clustering_payload(
                 self.cache_dir,
@@ -633,10 +680,24 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_hierarchy_status(self, query: dict[str, list[str]]) -> None:
         filename = query.get("file", [""])[0]
-        resolved = self._resolve_interface_request(filename, query)
-        if resolved is None:
+        resolved_file = self._resolve_interface_file_and_filter(filename, query)
+        if resolved_file is None:
             return
-        _cache_key, path, _raw_payload, interface_payload, interface_filter_settings, _cache_entry = resolved
+        path, interface_filter_settings = resolved_file
+        try:
+            interface_payload = (
+                self.interface_store.get_columns_payload(path, interface_filter_settings)
+                if self.interface_store is not None
+                else None
+            )
+        except Exception as exc:
+            log_event("store", "hierarchy-status columns payload fallback", file=path.name, error=exc)
+            interface_payload = None
+        if interface_payload is None:
+            resolved = self._resolve_interface_request(filename, query)
+            if resolved is None:
+                return
+            _cache_key, path, _raw_payload, interface_payload, interface_filter_settings, _cache_entry = resolved
         try:
             clustering_settings = parse_clustering_settings(query)
             response_payload = hierarchy_status_payload(
@@ -665,10 +726,10 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
     def _handle_cluster_compare(self, query: dict[str, list[str]]) -> None:
         filename = query.get("file", [""])[0]
         cluster_label_raw = query.get("cluster_label", [""])[0].strip()
-        resolved = self._resolve_interface_request(filename, query)
-        if resolved is None:
+        resolved_file = self._resolve_interface_file_and_filter(filename, query)
+        if resolved_file is None:
             return
-        _cache_key, path, _raw_payload, interface_payload, interface_filter_settings, _cache_entry = resolved
+        path, interface_filter_settings = resolved_file
         if cluster_label_raw == "":
             self._send_json({"error": "cluster_label is required"}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -678,6 +739,20 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
+        try:
+            interface_payload = (
+                self.interface_store.get_columns_payload(path, interface_filter_settings)
+                if self.interface_store is not None
+                else None
+            )
+        except Exception as exc:
+            log_event("store", "cluster-compare columns payload fallback", file=path.name, error=exc)
+            interface_payload = None
+        if interface_payload is None:
+            _cache_key, _raw_payload, interface_payload, _cache_entry = load_cached_interface_view(
+                path,
+                interface_filter_settings,
+            )
         try:
             distance_scope = "expanded" if clustering_settings["method"] == "hdbscan" else "compressed"
             distance_data = load_interface_distance_data(
@@ -769,10 +844,25 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 return
         if not row_key:
             row_key = f"{uniprot_id}_{fragment_key_name}"
-        _cache_key, _raw_payload, interface_data, _cache_entry = load_cached_interface_view(
-            interface_path,
-            interface_filter_settings,
-        )
+        try:
+            interface_data = (
+                self.interface_store.get_structure_interface_payload(
+                    interface_path,
+                    interface_filter_settings,
+                    row_key,
+                    partner,
+                )
+                if self.interface_store is not None
+                else None
+            )
+        except Exception as exc:
+            log_event("store", "structure row payload fallback", file=interface_path.name, error=exc)
+            interface_data = None
+        if interface_data is None:
+            _cache_key, _raw_payload, interface_data, _cache_entry = load_cached_interface_view(
+                interface_path,
+                interface_filter_settings,
+            )
         row_structure = collect_row_structure_payload(interface_data, row_key, partner)
         fragment_start, fragment_end = fragment_bounds(fragment_key_name)
         fragment_residue_ids = sorted(expand_fragment_key_to_residue_ids(fragment_key_name))
@@ -1017,6 +1107,7 @@ def build_handler(
     interface_dir: Path,
     cache_dir: Path,
     hierarchy_dir: Path | None,
+    interface_store: InterfaceStore | None,
     cache_workers: int,
     pfam_option_stats: dict[str, dict[str, object]],
 ):
@@ -1026,6 +1117,7 @@ def build_handler(
     ConfiguredHandler.interface_dir = interface_dir
     ConfiguredHandler.cache_dir = cache_dir
     ConfiguredHandler.hierarchy_dir = hierarchy_dir
+    ConfiguredHandler.interface_store = interface_store
     ConfiguredHandler.cache_workers = max(1, int(cache_workers))
     ConfiguredHandler.pfam_option_stats = pfam_option_stats
     return ConfiguredHandler
@@ -1034,7 +1126,10 @@ def build_handler(
 def main() -> None:
     args = parse_args()
     cache_workers = max(1, int(args.cache_workers))
+    interface_dir = args.interface_dir.resolve()
+    cache_dir = args.cache_dir.resolve()
     hierarchy_dir = args.hierarchy_dir.resolve() if args.hierarchy_dir is not None else None
+    interface_store = InterfaceStore(cache_dir / "interface_store.sqlite", interface_dir)
     pymol_status = validate_pymol_api()
     if not pymol_status.available:
         print(
@@ -1044,14 +1139,15 @@ def main() -> None:
             flush=True,
         )
     pfam_option_stats = load_cached_pfam_option_stats(
-        args.cache_dir.resolve(),
-        args.interface_dir.resolve(),
+        cache_dir,
+        interface_dir,
         cache_workers,
     )
     handler = build_handler(
-        args.interface_dir.resolve(),
-        args.cache_dir.resolve(),
+        interface_dir,
+        cache_dir,
         hierarchy_dir,
+        interface_store,
         cache_workers,
         pfam_option_stats,
     )
@@ -1059,11 +1155,13 @@ def main() -> None:
     print(
         f"Serving Domain Interface Explorer at http://{args.host}:{args.port} "
         f"(interface-dir={args.interface_dir}, cache-dir={args.cache_dir}, "
+        f"interface-store={interface_store.db_path}, "
         f"hierarchy-dir={hierarchy_dir or 'none'}, "
         f"workers={cache_workers}, "
         f"pymol-api={'available' if pymol_status.available else 'unavailable'})"
     )
-    start_background_pfam_metadata_refresh(args.cache_dir.resolve(), pfam_option_stats)
+    interface_store.start_background_sync()
+    start_background_pfam_metadata_refresh(cache_dir, pfam_option_stats)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
