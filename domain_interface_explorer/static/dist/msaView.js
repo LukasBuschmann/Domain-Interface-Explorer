@@ -1,6 +1,6 @@
 import { CELL_WIDTH, DEFAULT_CLUSTERING_SETTINGS, DEFAULT_EMBEDDING_SETTINGS, HEADER_HEIGHT, LABEL_WIDTH, ROW_HEIGHT, TEXT_FONT, } from "./constants.js";
 import { fetchJson } from "./api.js";
-import { interactionRowKey, interfaceFileStem } from "./interfaceModel.js";
+import { interactionRowKey, interfaceFileStem, parseInteractionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams, normalizeSelectionSettings, } from "./selectionSettings.js";
 export function createMsaViewController({ state, elements, buildPairs, activeConservationVector, conservationColor, overlayStateForRow, representativeLens, embeddingDistanceLabel, syncColumnLegends, syncRepresentativeLensControls, syncEmbeddingLoadingUi, syncEmbeddingMemberControls, syncEmbeddingSettingsUi, resizeEmbeddingCanvas, resizeColumnsCanvas, renderEmbeddingPlot, renderColumnsChart, renderColumnsClusterLegend, setEmbeddingInfo, setColumnsInfo, ensureEmbeddingDataLoaded, ensureEmbeddingClusteringLoaded, resetColumnsClusterSelection, resetEmbeddingPartnerSelection, resetEmbeddingClusterSelection, resetRepresentativePartnerSelection, resetRepresentativeClusterSelection, renderRepresentativePartnerFilter, renderEmbeddingLegend, refreshRepresentativeSelection, loadInteractiveStructure, handleStructureLoadFailure, resetRepresentativePanel, resetStructurePanel, closeClusterCompareModal, closeStructureModal, resizeClusterCompareViewers, buildOverlayMaps, buildPartnerColorMap, embeddingClusterColor, embeddingClusterLabel, allColumnsClusterLabels, visibleColumnsClusters, updatePartnerOptions, }) {
     const { appStatus, cellDetailsPanel, columnCount, columnsClusterLegend, detailsList, detailsBar, embeddingRoot, columnsRoot, gridCanvas, gridScroll, gridSpacer, headerCanvas, infoRoot, interfaceSelect, labelsCanvas, loadingDetail, loadingLabel, loadingPanel, loadStructureButton, msaLegend, msaPanelTabs, msaClusterLegend, msaPickerButton, msaPickerFilters, msaPickerMenu, msaPickerOptions, msaPickerSearch, msaPickerSelection, msaSelect, selectionSettingsPanel, selectionSettingsToggle, selectionMinInterfaceSizeInput, partnerSelect, progressBar, representativeShell, representativeViewerRoot, rowCount, selectedRowCopy, statsPanel, structureModal, viewerPanel, viewerRoot, } = elements;
@@ -1721,6 +1721,8 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
     async function loadInterface(filename) {
         state.interface = null;
         state.msa = null;
+        state.selectedRowKey = null;
+        state.selectedRowSnapshot = null;
         state.msaRowsRequestId += 1;
         state.msaRowsLoading = false;
         state.msaRowsLoaded = 0;
@@ -1930,6 +1932,8 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         closeClusterCompareModal();
         state.msa = null;
         state.interface = null;
+        state.selectedRowKey = null;
+        state.selectedRowSnapshot = null;
         state.msaRowsRequestId += 1;
         state.msaRowsLoading = false;
         state.msaRowsLoaded = 0;
@@ -1972,6 +1976,7 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         };
         state.selectedPartner = "__all__";
         state.selectedRowKey = null;
+        state.selectedRowSnapshot = null;
         state.representativeRowKey = null;
         state.representativeAnchorRowKey = null;
         state.representativeVisiblePartners = new Set();
@@ -2030,13 +2035,39 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         if (!state.msa || !state.selectedRowKey) {
             return null;
         }
-        return state.msa.rows.find((row) => row.row_key === state.selectedRowKey) || null;
+        return (state.msa.rows.find((row) => row.row_key === state.selectedRowKey) ||
+            (state.selectedRowSnapshot?.row_key === state.selectedRowKey ? state.selectedRowSnapshot : null));
     }
     function getRowByKey(rowKey) {
         if (!state.msa) {
             return null;
         }
         return state.msa.rows.find((row) => row.row_key === rowKey) || null;
+    }
+    function syntheticStructureRowFromKey(rowKey) {
+        const parsed = parseInteractionRowKey(rowKey);
+        const interfaceRowKey = parsed.interfaceRowKey || String(rowKey || "");
+        const partnerDomain = parsed.partnerDomain || "";
+        const proteinId = parsed.proteinId || "";
+        const fragmentKey = parsed.fragmentKey || "";
+        const fullRowKey = interactionRowKey(interfaceRowKey, partnerDomain);
+        if (!interfaceRowKey || !partnerDomain || !proteinId || !fragmentKey) {
+            return null;
+        }
+        return {
+            interface_row_key: interfaceRowKey,
+            partner_domain: partnerDomain,
+            row_key: fullRowKey,
+            display_row_key: `${proteinId} | ${partnerDomain}`,
+            protein_id: proteinId,
+            fragment_key: fragmentKey,
+            alignment_fragment_key: fragmentKey,
+            partner_fragment_key: parsed.partnerFragmentKey || "",
+            aligned_sequence: "",
+            residueIds: [],
+            has_alignment: false,
+            synthetic: true,
+        };
     }
     function clearEmbeddingMemberSelectionUnlessSelected(rowKey) {
         const members = state.embeddingMemberSelection?.members || [];
@@ -2057,6 +2088,7 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         const rowIndex = state.filteredRowIndexes[filteredRowIndex];
         const row = state.msa.rows[rowIndex];
         state.selectedRowKey = row.row_key;
+        state.selectedRowSnapshot = row;
         clearEmbeddingMemberSelectionUnlessSelected(row.row_key);
         updateSelectedRowUi();
         resetStructurePanel("Click a row name or use the button to open the structure.");
@@ -2068,11 +2100,13 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
             return null;
         }
         const row = state.msa.rows.find((entry) => entry.row_key === rowKey) || null;
-        if (!row) {
+        const selectedRow = row || syntheticStructureRowFromKey(rowKey);
+        if (!selectedRow) {
             return null;
         }
-        state.selectedRowKey = row.row_key;
-        clearEmbeddingMemberSelectionUnlessSelected(row.row_key);
+        state.selectedRowKey = selectedRow.row_key;
+        state.selectedRowSnapshot = selectedRow;
+        clearEmbeddingMemberSelectionUnlessSelected(selectedRow.row_key);
         updateSelectedRowUi();
         resetStructurePanel("Click a row name or use the button to open the structure.");
         if (activeMsaPanelView() === "msa") {
@@ -2081,7 +2115,7 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         else {
             renderEmbeddingPlot();
         }
-        return row;
+        return selectedRow;
     }
     function setDetails(payload) {
         const values = payload || {

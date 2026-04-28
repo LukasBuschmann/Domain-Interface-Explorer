@@ -536,6 +536,9 @@ async function refreshRepresentativeSelection(emptyMessage = "No representative 
 }
 
 function buildStructureResidueLookup(row) {
+  if (!Array.isArray(row?.residueIds) || !row.residueIds.length) {
+    return new Map();
+  }
   return buildStructureResidueLookupFromModel(row, activeConservationVector());
 }
 
@@ -946,7 +949,10 @@ function getSelectedRow() {
   if (!state.msa || !state.selectedRowKey) {
     return null;
   }
-  return state.msa.rows.find((row) => row.row_key === state.selectedRowKey) || null;
+  return (
+    state.msa.rows.find((row) => row.row_key === state.selectedRowKey) ||
+    (state.selectedRowSnapshot?.row_key === state.selectedRowKey ? state.selectedRowSnapshot : null)
+  );
 }
 
 function getRepresentativeRow() {
@@ -971,7 +977,10 @@ function getRowByKey(rowKey) {
   if (!state.msa) {
     return null;
   }
-  return state.msa.rows.find((row) => row.row_key === rowKey) || null;
+  return (
+    state.msa.rows.find((row) => row.row_key === rowKey) ||
+    (state.selectedRowSnapshot?.row_key === rowKey ? state.selectedRowSnapshot : null)
+  );
 }
 
 function nextBrowserPaint() {

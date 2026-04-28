@@ -78,6 +78,7 @@ export const state = {
   selectedPartner: "__all__",
   rowSearchQuery: "",
   selectedRowKey: null,
+  selectedRowSnapshot: null,
   representativeRowKey: null,
   representativeAnchorRowKey: null,
   representativeLens: "interface",
