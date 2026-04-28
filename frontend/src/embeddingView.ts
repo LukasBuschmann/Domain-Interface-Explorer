@@ -18,6 +18,7 @@ export function createEmbeddingViewController({
   partnerColor,
   renderRepresentativeClusterLegend,
   renderRepresentativeStructure,
+  syncRepresentativeScopeControls = () => {},
   representativeLens,
 }) {
   let columnsRenderFrameId = 0;
@@ -1744,6 +1745,7 @@ export function createEmbeddingViewController({
       state.columnsChart = null;
       state.columnsChartKey = null;
       state.columnsVisibleClusters = new Set();
+      syncRepresentativeScopeControls();
       syncEmbeddingLoadingUi();
       renderEmbeddingLegend();
       renderEmbeddingPlot();
@@ -1764,6 +1766,7 @@ export function createEmbeddingViewController({
       syncEmbeddingLoadingUi();
       renderEmbeddingLegend();
       renderEmbeddingPlot();
+      syncRepresentativeScopeControls();
       return;
     }
     if (
@@ -1774,11 +1777,13 @@ export function createEmbeddingViewController({
       syncEmbeddingLoadingUi();
       renderEmbeddingLegend();
       renderEmbeddingPlot();
+      syncRepresentativeScopeControls();
       return state.embeddingClusteringPromise;
     }
     const requestId = ++state.embeddingClusteringRequestId;
     state.embeddingClusteringLoading = true;
     state.embeddingClusteringLoadingKey = requestKey;
+    syncRepresentativeScopeControls();
     syncEmbeddingLoadingUi();
     renderEmbeddingLegend();
     renderEmbeddingPlot();
@@ -1833,6 +1838,7 @@ export function createEmbeddingViewController({
           renderEmbeddingPlot();
           renderColumnsClusterLegend();
           renderColumnsChart();
+          syncRepresentativeScopeControls();
           renderRepresentativeClusterLegend();
           if (state.representativeStructure && representativeLens() === "cluster") {
             void renderRepresentativeStructure();

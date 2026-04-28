@@ -650,6 +650,52 @@ class InterfaceStore:
             timer.set(rows=row_count, partner_domains=len(payload))
             return payload
 
+    def get_representative_candidates(
+        self,
+        path: Path,
+        filter_settings: dict[str, object],
+    ) -> tuple[list[dict[str, object]], int]:
+        source_id = self.ensure_source_ready(path)
+        min_size = filter_min_interface_size(filter_settings)
+        where_sql, where_args = self.filtered_where(min_size)
+        with timed_step("store", "load representative candidates", file=path.name) as timer:
+            candidates: list[dict[str, object]] = []
+            with self.connect() as connection:
+                alignment_length = int(
+                    connection.execute(
+                        f"""
+                        SELECT COALESCE(MAX(LENGTH(aligned_seq)), 0)
+                        FROM interface_rows
+                        WHERE source_id = ? AND {where_sql}
+                        """,
+                        (source_id, *where_args),
+                    ).fetchone()[0]
+                )
+                for row in connection.execute(
+                    f"""
+                    SELECT interface_row_key, protein_id, fragment_key,
+                           partner_fragment_key, partner_domain, aligned_seq,
+                           interface_msa_columns_a
+                    FROM interface_rows
+                    WHERE source_id = ? AND {where_sql}
+                    ORDER BY row_order
+                    """,
+                    (source_id, *where_args),
+                ):
+                    candidates.append(
+                        {
+                            "interface_row_key": str(row[0]),
+                            "protein_id": str(row[1]),
+                            "fragment_key": str(row[2]),
+                            "partner_fragment_key": str(row[3]),
+                            "partner_domain": str(row[4]),
+                            "aligned_sequence": str(row[5] or ""),
+                            "interface_msa_columns_a": unpack_uints(row[6]),
+                        }
+                    )
+            timer.set(rows=len(candidates), alignment_length=alignment_length)
+            return candidates, alignment_length
+
     def get_structure_interface_payload(
         self,
         path: Path,

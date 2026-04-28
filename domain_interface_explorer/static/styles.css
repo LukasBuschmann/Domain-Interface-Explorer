@@ -1905,6 +1905,53 @@ select,
   white-space: nowrap;
 }
 
+.representative-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.representative-header h2 {
+  margin: 0;
+}
+
+.representative-scope-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  border: 1px solid rgba(141, 91, 44, 0.2);
+  border-radius: 10px;
+  background: rgba(255, 252, 245, 0.84);
+  padding: 5px 8px;
+}
+
+.representative-scope-control.hidden {
+  display: none;
+}
+
+.representative-scope-swatch {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 1px solid rgba(46, 38, 29, 0.16);
+  background: #8d5b2c;
+}
+
+.representative-scope-control select {
+  max-width: 150px;
+  min-width: 100px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
 .representative-controls {
   display: grid;
   align-content: start;

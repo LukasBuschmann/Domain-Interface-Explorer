@@ -8,10 +8,10 @@ import { createRepresentativeViewController } from "./representativeView.js";
 import { createEmbeddingViewController } from "./embeddingView.js";
 import { createMsaViewController } from "./msaView.js";
 import { buildPartnerColorMap, clusterHoverColor as clusterHoverColorForLabel, clusterLensColor as clusterLensColorForLabel, colorToRgb as parseColorToRgb, columnColor as colorColumn, conservationColor, interpolateColor as mixColor, nonZeroRoundedPercent, partnerColorFromMap, partnerLensColor as colorPartnerLens, } from "./colors.js";
-import { activeConservationVector as getActiveConservationVector, buildStructureResidueLookup as buildStructureResidueLookupFromModel, columnStateDistribution as getColumnStateDistribution, computeRepresentativeRowKey as getRepresentativeRowKey, interactiveRowIndexes as getInteractiveRowIndexes, topResiduesForColumn as getTopResiduesForColumn, } from "./msaModel.js";
+import { activeConservationVector as getActiveConservationVector, buildStructureResidueLookup as buildStructureResidueLookupFromModel, columnStateDistribution as getColumnStateDistribution, topResiduesForColumn as getTopResiduesForColumn, } from "./msaModel.js";
 import { buildOverlayMaps, buildPairs, interactionRowKey, parseInteractionRowKey } from "./interfaceModel.js";
-import { parseSelectionSettingsDraft } from "./selectionSettings.js";
-const { appStatus, closeClusterCompareModalButton, closeStructureModalButton, clusterCompareGrid, clusterCompareModal, columnCount, columnsRoot, detailsList, embeddingCanvas, embeddingRoot, embeddingClusterDistanceInput, embeddingClusterDistanceThresholdInput, embeddingClusterEpsilonInput, embeddingClusterHierarchicalMinSizeInput, embeddingClusterLinkageInput, embeddingClusterMinSamplesInput, embeddingClusterMinSizeInput, embeddingClusterNClustersInput, embeddingClusteringApply, embeddingEarlyExaggerationInput, embeddingDistanceInput, embeddingInfo, embeddingLearningRateInput, embeddingLoading, embeddingLoadingLabel, embeddingMemberNext, embeddingMemberPrev, embeddingMaxIterInput, embeddingPartnerLegend, embeddingPerplexityInput, embeddingSettingsPanel, embeddingSettingsToggle, embeddingTsneApply, gridCanvas, gridScroll, gridSpacer, headerCanvas, interfaceSelect, labelsCanvas, loadingDetail, loadingLabel, loadingPanel, loadStructureButton, msaLegend, msaPanelTabs, msaPickerButton, msaPickerFilters, msaPickerMenu, msaPickerOptions, msaPickerSearch, msaPickerSelection, msaSelect, selectionSettingsApply, selectionSettingsPanel, selectionSettingsToggle, selectionMinInterfaceSizeInput, partnerSelect, progressBar, representativeClusterLegend, representativeColumnLegend, representativeColumnLegendEnd, representativeColumnLegendMid, representativeColumnLegendStart, representativeCopy, representativeHoverAccentLabel, representativeHoverCard, representativeHoverDetails, representativeHoverDistributionChart, representativeHoverDistributionLayout, representativeHoverDistributionLegend, representativeHoverDistributionPieLegend, representativeHoverDistributionTitle, representativeHoverTitle, representativeLensGroup, representativePartnerFilterList, representativeViewerRoot, rowCount, rowSearchInput, selectedRowCopy, structureColumnLegend, structureColumnLegendEnd, structureColumnLegendMid, structureColumnLegendStart, structureColumnViewToggle, structureHoverCard, structureHoverDetails, structureHoverDistributionChart, structureHoverDistributionLegend, structureHoverHistogram, structureModal, structureMemberNext, structureMemberPrev, structureContactViewToggle, structureDisplaySettingsClose, structureDisplaySettingsPanel, structureRecenterDomainButton, structureModalStatus, structureModalSubtitle, structureModalTitle, structureStatus, structureViewerRoot, clusterCompareRerollButton, viewerRoot, } = elements;
+import { appendSelectionSettingsToParams, parseSelectionSettingsDraft } from "./selectionSettings.js";
+const { appStatus, closeClusterCompareModalButton, closeStructureModalButton, clusterCompareGrid, clusterCompareModal, columnCount, columnsRoot, detailsList, embeddingCanvas, embeddingRoot, embeddingClusterDistanceInput, embeddingClusterDistanceThresholdInput, embeddingClusterEpsilonInput, embeddingClusterHierarchicalMinSizeInput, embeddingClusterLinkageInput, embeddingClusterMinSamplesInput, embeddingClusterMinSizeInput, embeddingClusterNClustersInput, embeddingClusteringApply, embeddingEarlyExaggerationInput, embeddingDistanceInput, embeddingInfo, embeddingLearningRateInput, embeddingLoading, embeddingLoadingLabel, embeddingMemberNext, embeddingMemberPrev, embeddingMaxIterInput, embeddingPartnerLegend, embeddingPerplexityInput, embeddingSettingsPanel, embeddingSettingsToggle, embeddingTsneApply, gridCanvas, gridScroll, gridSpacer, headerCanvas, interfaceSelect, labelsCanvas, loadingDetail, loadingLabel, loadingPanel, loadStructureButton, msaLegend, msaPanelTabs, msaPickerButton, msaPickerFilters, msaPickerMenu, msaPickerOptions, msaPickerSearch, msaPickerSelection, msaSelect, selectionSettingsApply, selectionSettingsPanel, selectionSettingsToggle, selectionMinInterfaceSizeInput, partnerSelect, progressBar, representativeClusterLegend, representativeColumnLegend, representativeColumnLegendEnd, representativeColumnLegendMid, representativeColumnLegendStart, representativeCopy, representativeHoverAccentLabel, representativeHoverCard, representativeHoverDetails, representativeHoverDistributionChart, representativeHoverDistributionLayout, representativeHoverDistributionLegend, representativeHoverDistributionPieLegend, representativeHoverDistributionTitle, representativeHoverTitle, representativeLensGroup, representativePartnerFilterList, representativeScopeControl, representativeScopeSelect, representativeScopeSwatch, representativeViewerRoot, rowCount, rowSearchInput, selectedRowCopy, structureColumnLegend, structureColumnLegendEnd, structureColumnLegendMid, structureColumnLegendStart, structureColumnViewToggle, structureHoverCard, structureHoverDetails, structureHoverDistributionChart, structureHoverDistributionLegend, structureHoverHistogram, structureModal, structureMemberNext, structureMemberPrev, structureContactViewToggle, structureDisplaySettingsClose, structureDisplaySettingsPanel, structureRecenterDomainButton, structureModalStatus, structureModalSubtitle, structureModalTitle, structureStatus, structureViewerRoot, clusterCompareRerollButton, viewerRoot, } = elements;
 function activeConservationVector() {
     return getActiveConservationVector(state.msa);
 }
@@ -183,6 +183,7 @@ const embeddingViewController = createEmbeddingViewController({
     renderRepresentativeStructure: () => {
         void renderRepresentativeStructure();
     },
+    syncRepresentativeScopeControls,
     representativeLens,
 });
 const { allEmbeddingClusterLabels, allColumnsClusterLabels, allRepresentativeClusterLabels, clusteringMethodLabel, currentClusterCompareQuery, currentEmbeddingClusteringQuery, currentEmbeddingClusteringRequestKey, currentEmbeddingQuery, currentEmbeddingRequestKey, currentHierarchicalTarget, embeddingClusterColor, embeddingClusterLabel, embeddingClusteringSettingsKey, embeddingDistanceLabel, embeddingLegendMode, embeddingPointAt, embeddingSettingsKey, ensureEmbeddingClusteringLoaded, ensureEmbeddingDataLoaded, ensureHierarchyStatusLoaded, normalizeHierarchicalDraft, parseEmbeddingClusteringSettingsDraft, parseEmbeddingSettingsDraft, readEmbeddingClusteringDraftInputs, renderEmbeddingLegend, renderEmbeddingPlot, requestEmbeddingRender, renderColumnsChart, renderColumnsClusterLegend, resetColumnsClusterSelection, resetEmbeddingClusterSelection, resetEmbeddingPartnerSelection, resetRepresentativeClusterSelection, resizeColumnsCanvas, resizeEmbeddingCanvas, setEmbeddingInfo, setColumnsInfo, syncEmbeddingLoadingUi, syncEmbeddingMemberControls, syncDistanceThresholdValueUi, syncEmbeddingSettingsUi, syncHierarchicalTargetMemoryFromDraft, syncHierarchicalTargetUi, visibleColumnsClusters, visibleRepresentativeClusters, } = embeddingViewController;
@@ -279,20 +280,212 @@ function shouldShowRepresentativePartnerFilter() {
         state.selectedPartner === "__all__" &&
         Boolean(state.interface?.partnerDomains?.length));
 }
-function interactiveRowIndexes(useSelectedPartner = false) {
-    return getInteractiveRowIndexes(state.msa, state.interface, overlayStateForRow, useSelectedPartner);
+function representativeScopeClusterLabels() {
+    const clusterLabels = allRepresentativeClusterLabels();
+    if (state.selectedPartner === "__all__") {
+        return clusterLabels;
+    }
+    const labelsForPartner = new Set((state.embeddingClustering?.points || [])
+        .filter((point) => String(point.partner_domain || "") === state.selectedPartner)
+        .map((point) => String(point.cluster_label))
+        .filter((clusterLabel) => Number(clusterLabel) >= 0));
+    return clusterLabels.filter((clusterLabel) => labelsForPartner.has(String(clusterLabel)));
 }
-function computeRepresentativeRowKey() {
-    return getRepresentativeRowKey(state.msa, state.interface, overlayStateForRow);
+function activeRepresentativeClusterLabel() {
+    const clusterLabels = representativeScopeClusterLabels();
+    if (clusterLabels.length === 0) {
+        return null;
+    }
+    const currentLabel = String(state.representativeClusterLabel ?? "");
+    if (clusterLabels.includes(currentLabel)) {
+        return currentLabel;
+    }
+    state.representativeClusterLabel = clusterLabels[0];
+    return clusterLabels[0];
+}
+function syncRepresentativeScopeControls() {
+    if (!representativeScopeControl || !representativeScopeSelect) {
+        return;
+    }
+    const clusterLabels = representativeScopeClusterLabels();
+    const hasClusters = clusterLabels.length > 0;
+    representativeScopeControl.classList.toggle("hidden", !hasClusters);
+    if (!hasClusters) {
+        if (!state.embeddingClusteringLoading) {
+            state.representativeScope = "overall";
+            state.representativeClusterLabel = null;
+        }
+        if (representativeScopeSwatch) {
+            representativeScopeSwatch.style.background = "#8d5b2c";
+        }
+        return;
+    }
+    if (state.representativeScope === "cluster") {
+        activeRepresentativeClusterLabel();
+    }
+    const optionsKey = clusterLabels.join("|");
+    if (representativeScopeSelect.dataset.optionsKey !== optionsKey) {
+        representativeScopeSelect.innerHTML = [
+            '<option value="overall">Overall</option>',
+            ...clusterLabels.map((clusterLabel) => `<option value="cluster:${clusterLabel}">${embeddingClusterLabel(clusterLabel)}</option>`),
+        ].join("");
+        representativeScopeSelect.dataset.optionsKey = optionsKey;
+    }
+    const selectedValue = state.representativeScope === "cluster"
+        ? `cluster:${activeRepresentativeClusterLabel()}`
+        : "overall";
+    representativeScopeSelect.value = selectedValue;
+    representativeScopeSelect.disabled = Boolean(state.embeddingClusteringLoading);
+    const selectedClusterLabel = state.representativeScope === "cluster" ? activeRepresentativeClusterLabel() : null;
+    const swatchColor = selectedClusterLabel === null ? "#8d5b2c" : embeddingClusterColor(selectedClusterLabel);
+    if (representativeScopeSwatch) {
+        representativeScopeSwatch.style.background = swatchColor;
+    }
+    representativeScopeControl.style.borderColor =
+        selectedClusterLabel === null ? "rgba(141, 91, 44, 0.2)" : swatchColor;
+}
+function setRepresentativeScopeFromValue(value) {
+    const normalized = String(value || "overall");
+    if (normalized.startsWith("cluster:")) {
+        state.representativeScope = "cluster";
+        state.representativeClusterLabel = normalized.slice("cluster:".length);
+    }
+    else {
+        state.representativeScope = "overall";
+        state.representativeClusterLabel = null;
+    }
+    syncRepresentativeScopeControls();
+}
+function appendClusteringSettingsToParams(params) {
+    params.set("method", String(state.embeddingClusteringSettings.method));
+    params.set("distance", String(state.embeddingClusteringSettings.distance));
+    if (state.embeddingClusteringSettings.method === "hierarchical") {
+        const hierarchicalTarget = currentHierarchicalTarget(state.embeddingClusteringSettings);
+        params.set("linkage", String(state.embeddingClusteringSettings.linkage));
+        if (hierarchicalTarget === "n_clusters" &&
+            String(state.embeddingClusteringSettings.nClusters).trim() !== "") {
+            params.set("n_clusters", String(state.embeddingClusteringSettings.nClusters));
+        }
+        if (hierarchicalTarget === "distance_threshold" &&
+            String(state.embeddingClusteringSettings.distanceThreshold).trim() !== "") {
+            params.set("distance_threshold", String(state.embeddingClusteringSettings.distanceThreshold));
+            params.set("hierarchical_min_cluster_size", String(state.embeddingClusteringSettings.hierarchicalMinClusterSize));
+        }
+    }
+    else {
+        params.set("min_cluster_size", String(state.embeddingClusteringSettings.minClusterSize));
+        params.set("cluster_selection_epsilon", String(state.embeddingClusteringSettings.clusterSelectionEpsilon));
+        if (String(state.embeddingClusteringSettings.minSamples).trim() !== "") {
+            params.set("min_samples", String(state.embeddingClusteringSettings.minSamples));
+        }
+    }
+    return params;
+}
+async function representativeSelectionUrl() {
+    if (state.representativeScope === "cluster") {
+        await ensureEmbeddingClusteringLoaded();
+        syncRepresentativeScopeControls();
+    }
+    const params = new URLSearchParams({
+        file: interfaceSelect.value,
+        partner: String(state.selectedPartner || "__all__"),
+        representative_scope: String(state.representativeScope || "overall"),
+    });
+    appendSelectionSettingsToParams(params, state.selectionSettings);
+    if (state.representativeScope === "cluster") {
+        const clusterLabel = activeRepresentativeClusterLabel();
+        if (clusterLabel !== null) {
+            params.set("cluster_label", String(clusterLabel));
+            appendClusteringSettingsToParams(params);
+        }
+        else {
+            params.set("representative_scope", "overall");
+            state.representativeScope = "overall";
+        }
+    }
+    return `/api/representative?${params.toString()}`;
+}
+function normalizeRepresentativeResidueIds(row, alignmentLength) {
+    const rawResidueIds = Array.isArray(row?.residueIds)
+        ? row.residueIds
+        : Array.isArray(row?.residue_ids)
+            ? row.residue_ids
+            : [];
+    const normalized = rawResidueIds.map((value) => {
+        if (value === null || value === undefined || value === "") {
+            return null;
+        }
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+    });
+    if (normalized.length >= alignmentLength) {
+        return normalized.slice(0, alignmentLength);
+    }
+    return normalized.concat(new Array(alignmentLength - normalized.length).fill(null));
+}
+function normalizeRepresentativeRow(row, alignmentLength) {
+    if (!row) {
+        return null;
+    }
+    const normalizedLength = Math.max(0, Number(alignmentLength || state.msa?.alignment_length || row?.aligned_sequence?.length || 0));
+    const interfaceRowKey = String(row.interface_row_key || "");
+    const proteinId = String(row.protein_id || "");
+    const partnerDomain = String(row.partner_domain || "");
+    const fullInteractionRowKey = String(row.row_key || interactionRowKey(interfaceRowKey, partnerDomain));
+    const alignedSequenceRaw = String(row.aligned_sequence || "");
+    const alignedSequence = alignedSequenceRaw.length < normalizedLength
+        ? alignedSequenceRaw + "-".repeat(normalizedLength - alignedSequenceRaw.length)
+        : alignedSequenceRaw;
+    const effectiveLength = Math.max(normalizedLength, alignedSequence.length);
+    return {
+        ...row,
+        interface_row_key: interfaceRowKey,
+        partner_domain: partnerDomain,
+        row_key: fullInteractionRowKey,
+        display_row_key: String(row.display_row_key || "") ||
+            (partnerDomain ? `${proteinId} | ${partnerDomain}` : proteinId || interfaceRowKey),
+        aligned_sequence: alignedSequence,
+        alignment_fragment_key: String(row.alignment_fragment_key || row.fragment_key || ""),
+        has_alignment: row.has_alignment !== false,
+        residueIds: normalizeRepresentativeResidueIds(row, effectiveLength),
+    };
 }
 async function refreshRepresentativeSelection(emptyMessage = "No representative row found.") {
-    state.representativeRowKey = computeRepresentativeRowKey();
-    drawGrid();
-    if (!state.representativeRowKey) {
+    if (!interfaceSelect.value) {
+        state.representativeRowKey = null;
+        state.representativeRowSnapshot = null;
+        state.representativeClusterSummaries = null;
         resetRepresentativePanel(emptyMessage);
         return;
     }
+    const requestId = state.representativeSelectionRequestId + 1;
+    state.representativeSelectionRequestId = requestId;
+    representativeCopy.textContent = "Finding representative";
     try {
+        const payload = await fetchJson(await representativeSelectionUrl());
+        if (requestId !== state.representativeSelectionRequestId) {
+            return;
+        }
+        const row = normalizeRepresentativeRow(payload.row || null, payload.alignment_length);
+        const nextRowKey = row?.row_key || payload.representative_row_key || null;
+        if (nextRowKey !== state.representativeRowKey) {
+            state.representativeStructure = null;
+            state.representativeRenderedRowKey = null;
+            state.representativeHoveredClusterLabel = null;
+        }
+        state.representativeRowKey = nextRowKey;
+        state.representativeRowSnapshot = row;
+        state.representativeClusterSummaries = Array.isArray(payload.cluster_summaries)
+            ? payload.cluster_summaries
+            : null;
+        if (state.representativeStructure?.row?.row_key === state.representativeRowKey) {
+            state.representativeStructure.row = row;
+        }
+        drawGrid();
+        if (!state.representativeRowKey || !state.representativeRowSnapshot) {
+            resetRepresentativePanel(emptyMessage);
+            return;
+        }
         await loadRepresentativeStructure();
     }
     catch (error) {
@@ -301,10 +494,13 @@ async function refreshRepresentativeSelection(emptyMessage = "No representative 
     }
 }
 function buildStructureResidueLookup(row) {
-    if (!Array.isArray(row?.residueIds) || !row.residueIds.length) {
+    const normalizedRow = !Array.isArray(row?.residueIds) && Array.isArray(row?.residue_ids)
+        ? normalizeRepresentativeRow(row, state.msa?.alignment_length)
+        : row;
+    if (!Array.isArray(normalizedRow?.residueIds) || !normalizedRow.residueIds.length) {
         return new Map();
     }
-    return buildStructureResidueLookupFromModel(row, activeConservationVector());
+    return buildStructureResidueLookupFromModel(normalizedRow, activeConservationVector());
 }
 function columnResidueStyles(residueLookup) {
     const styles = [];
@@ -446,7 +642,66 @@ function clusterLensColor(clusterLabel, supportFraction = 0) {
 function clusterHoverColor(clusterLabel) {
     return clusterHoverColorForLabel(clusterLabel);
 }
+function representativeClusterSummariesFromPayload() {
+    const payloadSummaries = state.representativeClusterSummaries;
+    if (!Array.isArray(payloadSummaries)) {
+        return null;
+    }
+    return payloadSummaries
+        .map((summary) => {
+        const clusterLabel = Number(summary?.cluster_label);
+        if (!Number.isFinite(clusterLabel) || clusterLabel < 0) {
+            return null;
+        }
+        const partnerCounts = summary?.partner_counts || {};
+        const totalPartnerCounts = summary?.total_partner_counts || {};
+        const partnerDistribution = Object.entries(partnerCounts)
+            .map(([partnerDomain, count]) => {
+            const numericCount = Number(count || 0);
+            const totalPartnerCount = Number(totalPartnerCounts[partnerDomain] || 0);
+            const rawPercent = totalPartnerCount > 0 ? (numericCount / totalPartnerCount) * 100 : 0;
+            return {
+                label: partnerDomain,
+                color: partnerColor(partnerDomain),
+                count: numericCount,
+                totalCount: totalPartnerCount,
+                percent: nonZeroRoundedPercent(rawPercent),
+                chartPercent: rawPercent,
+            };
+        })
+            .sort((left, right) => right.chartPercent - left.chartPercent ||
+            right.count - left.count ||
+            left.label.localeCompare(right.label));
+        const columnCounts = new Map();
+        for (const entry of summary?.column_counts || []) {
+            if (!Array.isArray(entry) || entry.length < 2) {
+                continue;
+            }
+            const columnIndex = Number(entry[0]);
+            const count = Number(entry[1]);
+            if (!Number.isInteger(columnIndex) || columnIndex < 0 || !Number.isFinite(count)) {
+                continue;
+            }
+            columnCounts.set(columnIndex, count);
+        }
+        return {
+            clusterLabel,
+            label: embeddingClusterLabel(clusterLabel),
+            color: embeddingClusterColor(clusterLabel),
+            memberCount: Number(summary?.member_count || 0),
+            columnCounts,
+            partnerCounts: new Map(Object.entries(partnerCounts)),
+            partnerDistribution,
+        };
+    })
+        .filter(Boolean)
+        .sort((left, right) => left.clusterLabel - right.clusterLabel);
+}
 function representativeClusterSummaries() {
+    const payloadSummaries = representativeClusterSummariesFromPayload();
+    if (payloadSummaries) {
+        return payloadSummaries;
+    }
     if (!state.interface || !state.embeddingClustering?.points?.length) {
         return [];
     }
@@ -654,7 +909,10 @@ function getRepresentativeRow() {
     if (!state.msa || !state.representativeRowKey) {
         return null;
     }
-    return state.msa.rows.find((row) => row.row_key === state.representativeRowKey) || null;
+    return (state.msa.rows.find((row) => row.row_key === state.representativeRowKey) ||
+        (state.representativeRowSnapshot?.row_key === state.representativeRowKey
+            ? state.representativeRowSnapshot
+            : null));
 }
 function updateSelectedRowUi() {
     const row = getSelectedRow();
@@ -935,6 +1193,7 @@ const msaViewController = createMsaViewController({
     embeddingDistanceLabel,
     syncColumnLegends,
     syncRepresentativeLensControls,
+    syncRepresentativeScopeControls,
     syncEmbeddingLoadingUi,
     syncEmbeddingMemberControls,
     syncEmbeddingSettingsUi,
@@ -1092,6 +1351,7 @@ partnerSelect.addEventListener("change", async () => {
     state.selectedPartner = partnerSelect.value;
     state.representativeHoveredClusterLabel = null;
     syncRepresentativeLensControls();
+    syncRepresentativeScopeControls();
     state.hover = null;
     resetStructurePanel("Partner filter changed. Reload the interactive structure if needed.");
     render();
@@ -1440,6 +1700,11 @@ representativeLensGroup.addEventListener("click", (event) => {
     if (state.representativeStructure) {
         void renderRepresentativeStructure();
     }
+});
+representativeScopeSelect?.addEventListener("change", () => {
+    setRepresentativeScopeFromValue(representativeScopeSelect.value);
+    state.representativeHoveredClusterLabel = null;
+    void refreshRepresentativeSelection("No representative row found for the selected scope.");
 });
 structureColumnViewToggle.addEventListener("change", () => {
     state.structureColumnView = structureColumnViewToggle.checked;

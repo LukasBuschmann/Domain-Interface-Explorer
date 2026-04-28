@@ -43,6 +43,11 @@ from domain_interface_explorer.serverlib.interface_embedding import (
     parse_embedding_settings,
     parse_interface_filter_settings,
 )
+from domain_interface_explorer.serverlib.representative import (
+    compute_cluster_summary_payload,
+    compute_representative_payload,
+    interaction_row_key as representative_interaction_row_key,
+)
 from domain_interface_explorer.serverlib.stats_service import (
     load_cached_pfam_option_stats,
     load_or_fetch_pfam_info,
@@ -110,6 +115,9 @@ def safe_file_path(directory: Path, filename: str) -> Path | None:
 INTERFACE_VIEW_CACHE_LIMIT = 4
 INTERFACE_VIEW_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
 INTERFACE_VIEW_CACHE_LOCK = threading.Lock()
+REPRESENTATIVE_CACHE_LIMIT = 32
+REPRESENTATIVE_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
+REPRESENTATIVE_CACHE_LOCK = threading.Lock()
 
 
 def interface_view_cache_key(path: Path, filter_settings: dict[str, object]) -> str:
@@ -120,6 +128,29 @@ def interface_view_cache_key(path: Path, filter_settings: dict[str, object]) -> 
             str(stat.st_size),
             str(stat.st_mtime_ns),
             interface_filter_settings_key(filter_settings),
+        )
+    )
+
+
+def representative_cache_key(
+    path: Path,
+    filter_settings: dict[str, object],
+    partner_filter: str,
+    scope: str,
+    cluster_label: int | None,
+    clustering_settings: dict[str, object] | None,
+) -> str:
+    stat = path.stat()
+    return "|".join(
+        (
+            str(path.resolve()),
+            str(stat.st_size),
+            str(stat.st_mtime_ns),
+            interface_filter_settings_key(filter_settings),
+            str(partner_filter),
+            str(scope),
+            "" if cluster_label is None else str(cluster_label),
+            json.dumps(clustering_settings or {}, sort_keys=True),
         )
     )
 
@@ -305,6 +336,9 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/cluster-compare":
             self._handle_cluster_compare(parse_qs(parsed.query))
+            return
+        if parsed.path == "/api/representative":
+            self._handle_representative(parse_qs(parsed.query))
             return
         if parsed.path == "/api/structure-preview":
             self._handle_structure_preview(parse_qs(parsed.query))
@@ -618,17 +652,35 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 json.dump(response_payload, handle)
         self._send_json(response_payload)
 
-    def _handle_clustering(self, query: dict[str, list[str]]) -> None:
-        filename = query.get("file", [""])[0]
-        resolved = self._resolve_interface_file_and_filter(filename, query)
-        if resolved is None:
-            return
-        path, interface_filter_settings = resolved
+    def _load_interface_columns_payload(
+        self,
+        path: Path,
+        interface_filter_settings: dict[str, object],
+        *,
+        fallback_context: str,
+    ) -> dict[str, dict[str, dict[str, object]]]:
         try:
-            clustering_settings = parse_clustering_settings(query)
-        except ValueError as exc:
-            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-            return
+            interface_payload = (
+                self.interface_store.get_columns_payload(path, interface_filter_settings)
+                if self.interface_store is not None
+                else None
+            )
+        except Exception as exc:
+            log_event("store", fallback_context, file=path.name, error=exc)
+            interface_payload = None
+        if interface_payload is None:
+            _cache_key, _raw_payload, interface_payload, _cache_entry = load_cached_interface_view(
+                path,
+                interface_filter_settings,
+            )
+        return interface_payload
+
+    def _load_clustering_payload(
+        self,
+        path: Path,
+        interface_filter_settings: dict[str, object],
+        clustering_settings: dict[str, object],
+    ) -> dict[str, object]:
         cache_path = clustering_cache_path(
             self.cache_dir,
             path,
@@ -644,31 +696,38 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 distance=clustering_settings["distance"],
             ):
                 with cache_path.open("r", encoding="utf-8") as handle:
-                    self._send_json(json.load(handle))
+                    return json.load(handle)
+        interface_payload = self._load_interface_columns_payload(
+            path,
+            interface_filter_settings,
+            fallback_context="clustering columns payload fallback",
+        )
+        return load_or_compute_clustering_payload(
+            self.cache_dir,
+            path,
+            interface_payload,
+            clustering_settings,
+            interface_filter_settings,
+            cache_workers=self.cache_workers,
+            hierarchy_dir=self.hierarchy_dir,
+        )
+
+    def _handle_clustering(self, query: dict[str, list[str]]) -> None:
+        filename = query.get("file", [""])[0]
+        resolved = self._resolve_interface_file_and_filter(filename, query)
+        if resolved is None:
+            return
+        path, interface_filter_settings = resolved
+        try:
+            clustering_settings = parse_clustering_settings(query)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
         try:
-            interface_payload = (
-                self.interface_store.get_columns_payload(path, interface_filter_settings)
-                if self.interface_store is not None
-                else None
-            )
-        except Exception as exc:
-            log_event("store", "clustering columns payload fallback", file=path.name, error=exc)
-            interface_payload = None
-        if interface_payload is None:
-            _cache_key, _raw_payload, interface_payload, _cache_entry = load_cached_interface_view(
+            response_payload = self._load_clustering_payload(
                 path,
                 interface_filter_settings,
-            )
-        try:
-            response_payload = load_or_compute_clustering_payload(
-                self.cache_dir,
-                path,
-                interface_payload,
                 clustering_settings,
-                interface_filter_settings,
-                cache_workers=self.cache_workers,
-                hierarchy_dir=self.hierarchy_dir,
             )
         except (RuntimeError, ValueError) as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
@@ -785,6 +844,191 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # pragma: no cover
             self._send_json({"error": f"Unexpected cluster compare error: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
+        self._send_json(response_payload)
+
+    def _load_representative_candidates(
+        self,
+        path: Path,
+        interface_filter_settings: dict[str, object],
+    ) -> tuple[list[dict[str, object]], int]:
+        if self.interface_store is not None:
+            try:
+                return self.interface_store.get_representative_candidates(
+                    path,
+                    interface_filter_settings,
+                )
+            except Exception as exc:
+                log_event("store", "representative candidates fallback", file=path.name, error=exc)
+        cache_key, _raw_payload, filtered_payload, cache_entry = load_cached_interface_view(
+            path,
+            interface_filter_settings,
+        )
+        raw_rows, alignment_length = cached_alignment_metadata(
+            cache_key,
+            cache_entry,
+            filtered_payload,
+        )
+        candidates: list[dict[str, object]] = []
+        with timed_step(
+            "json",
+            "load representative candidates",
+            file=path.name,
+            rows=len(raw_rows),
+        ) as timer:
+            for raw_row in raw_rows:
+                partner_domain = str(raw_row.get("partner_domain") or "")
+                row_key = str(raw_row.get("interface_row_key") or "")
+                row_payload = filtered_payload.get(partner_domain, {}).get(row_key, {})
+                candidates.append(
+                    {
+                        **raw_row,
+                        "interface_msa_columns_a": (
+                            row_payload.get("interface_msa_columns_a", [])
+                            if isinstance(row_payload, dict)
+                            else []
+                        ),
+                    }
+                )
+            timer.set(alignment_length=alignment_length)
+        return candidates, alignment_length
+
+    def _cluster_member_interaction_keys(
+        self,
+        clustering_payload: dict[str, object],
+        cluster_label: int,
+    ) -> set[str]:
+        member_keys: set[str] = set()
+        points = clustering_payload.get("points")
+        if not isinstance(points, list):
+            return member_keys
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            try:
+                point_cluster_label = int(point.get("cluster_label", -1))
+            except (TypeError, ValueError):
+                continue
+            if point_cluster_label != cluster_label:
+                continue
+            member_keys.add(
+                representative_interaction_row_key(
+                    point.get("row_key"),
+                    point.get("partner_domain"),
+                )
+            )
+        return member_keys
+
+    def _handle_representative(self, query: dict[str, list[str]]) -> None:
+        filename = query.get("file", [""])[0]
+        resolved_file = self._resolve_interface_file_and_filter(filename, query)
+        if resolved_file is None:
+            return
+        path, interface_filter_settings = resolved_file
+        scope = query.get("representative_scope", query.get("scope", ["overall"]))[0].strip().lower()
+        partner_filter = query.get("partner", ["__all__"])[0].strip() or "__all__"
+        if scope not in {"overall", "cluster"}:
+            self._send_json(
+                {"error": "representative_scope must be either 'overall' or 'cluster'"},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        cluster_label: int | None = None
+        if scope == "cluster":
+            cluster_label_raw = query.get("cluster_label", [""])[0].strip()
+            if cluster_label_raw == "":
+                self._send_json({"error": "cluster_label is required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                cluster_label = int(cluster_label_raw)
+                clustering_settings = parse_clustering_settings(query)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+        else:
+            clustering_settings = None
+        cache_key = representative_cache_key(
+            path,
+            interface_filter_settings,
+            partner_filter,
+            scope,
+            cluster_label,
+            clustering_settings,
+        )
+        with REPRESENTATIVE_CACHE_LOCK:
+            cached_response = REPRESENTATIVE_CACHE.get(cache_key)
+            if cached_response is not None:
+                REPRESENTATIVE_CACHE.move_to_end(cache_key)
+                log_event(
+                    "representative",
+                    "reuse cached representative",
+                    file=path.name,
+                    representative_scope=scope,
+                    partner=partner_filter,
+                    cluster_label=cluster_label if cluster_label is not None else "",
+                    row_key=cached_response.get("representative_row_key"),
+                )
+                self._send_json(cached_response)
+                return
+        try:
+            candidates, alignment_length = self._load_representative_candidates(
+                path,
+                interface_filter_settings,
+            )
+            if partner_filter != "__all__":
+                candidates = [
+                    candidate
+                    for candidate in candidates
+                    if str(candidate.get("partner_domain") or "") == partner_filter
+                ]
+            cluster_summaries: list[dict[str, object]] | None = None
+            if scope == "cluster" and clustering_settings is not None and cluster_label is not None:
+                clustering_payload = self._load_clustering_payload(
+                    path,
+                    interface_filter_settings,
+                    clustering_settings,
+                )
+                cluster_summaries = compute_cluster_summary_payload(
+                    candidates,
+                    clustering_payload,
+                )
+                member_keys = self._cluster_member_interaction_keys(
+                    clustering_payload,
+                    cluster_label,
+                )
+                candidates = [
+                    candidate
+                    for candidate in candidates
+                    if representative_interaction_row_key(
+                        candidate.get("interface_row_key"),
+                        candidate.get("partner_domain"),
+                    )
+                    in member_keys
+                ]
+            response_payload = {
+                "file": path.name,
+                "pfam_id": interface_file_pfam_id(path),
+                "filter_settings": interface_filter_settings,
+                "partner_filter": partner_filter,
+                **compute_representative_payload(
+                    candidates,
+                    alignment_length,
+                    scope=scope,
+                    cluster_label=cluster_label,
+                ),
+            }
+            if cluster_summaries is not None:
+                response_payload["cluster_summaries"] = cluster_summaries
+        except (RuntimeError, ValueError) as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as exc:  # pragma: no cover
+            self._send_json({"error": f"Unexpected representative error: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        with REPRESENTATIVE_CACHE_LOCK:
+            REPRESENTATIVE_CACHE[cache_key] = response_payload
+            REPRESENTATIVE_CACHE.move_to_end(cache_key)
+            while len(REPRESENTATIVE_CACHE) > REPRESENTATIVE_CACHE_LIMIT:
+                REPRESENTATIVE_CACHE.popitem(last=False)
         self._send_json(response_payload)
 
     def _handle_structure_preview(self, query: dict[str, list[str]]) -> None:

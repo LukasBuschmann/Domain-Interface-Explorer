@@ -2,7 +2,7 @@ import { CLUSTER_COLOR_PALETTE, DEFAULT_CLUSTERING_SETTINGS, DEFAULT_EMBEDDING_S
 import { fetchJson } from "./api.js";
 import { interactionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams, selectionSettingsKey, } from "./selectionSettings.js";
-export function createEmbeddingViewController({ state, elements, interfaceSelect, partnerColor, renderRepresentativeClusterLegend, renderRepresentativeStructure, representativeLens, }) {
+export function createEmbeddingViewController({ state, elements, interfaceSelect, partnerColor, renderRepresentativeClusterLegend, renderRepresentativeStructure, syncRepresentativeScopeControls = () => { }, representativeLens, }) {
     let columnsRenderFrameId = 0;
     let embeddingRenderFrameId = 0;
     const emptyEmbeddingPoints = [];
@@ -1453,6 +1453,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             state.columnsChart = null;
             state.columnsChartKey = null;
             state.columnsVisibleClusters = new Set();
+            syncRepresentativeScopeControls();
             syncEmbeddingLoadingUi();
             renderEmbeddingLegend();
             renderEmbeddingPlot();
@@ -1471,6 +1472,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             syncEmbeddingLoadingUi();
             renderEmbeddingLegend();
             renderEmbeddingPlot();
+            syncRepresentativeScopeControls();
             return;
         }
         if (state.embeddingClusteringLoading &&
@@ -1479,11 +1481,13 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             syncEmbeddingLoadingUi();
             renderEmbeddingLegend();
             renderEmbeddingPlot();
+            syncRepresentativeScopeControls();
             return state.embeddingClusteringPromise;
         }
         const requestId = ++state.embeddingClusteringRequestId;
         state.embeddingClusteringLoading = true;
         state.embeddingClusteringLoadingKey = requestKey;
+        syncRepresentativeScopeControls();
         syncEmbeddingLoadingUi();
         renderEmbeddingLegend();
         renderEmbeddingPlot();
@@ -1538,6 +1542,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                     renderEmbeddingPlot();
                     renderColumnsClusterLegend();
                     renderColumnsChart();
+                    syncRepresentativeScopeControls();
                     renderRepresentativeClusterLegend();
                     if (state.representativeStructure && representativeLens() === "cluster") {
                         void renderRepresentativeStructure();

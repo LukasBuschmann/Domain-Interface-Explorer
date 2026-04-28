@@ -2,7 +2,7 @@ import { CELL_WIDTH, DEFAULT_CLUSTERING_SETTINGS, DEFAULT_EMBEDDING_SETTINGS, HE
 import { fetchJson } from "./api.js";
 import { interactionRowKey, interfaceFileStem, parseInteractionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams, normalizeSelectionSettings, } from "./selectionSettings.js";
-export function createMsaViewController({ state, elements, buildPairs, activeConservationVector, conservationColor, overlayStateForRow, representativeLens, embeddingDistanceLabel, syncColumnLegends, syncRepresentativeLensControls, syncEmbeddingLoadingUi, syncEmbeddingMemberControls, syncEmbeddingSettingsUi, resizeEmbeddingCanvas, resizeColumnsCanvas, renderEmbeddingPlot, renderColumnsChart, renderColumnsClusterLegend, setEmbeddingInfo, setColumnsInfo, ensureEmbeddingDataLoaded, ensureEmbeddingClusteringLoaded, resetColumnsClusterSelection, resetEmbeddingPartnerSelection, resetEmbeddingClusterSelection, resetRepresentativePartnerSelection, resetRepresentativeClusterSelection, renderRepresentativePartnerFilter, renderEmbeddingLegend, refreshRepresentativeSelection, loadInteractiveStructure, handleStructureLoadFailure, resetRepresentativePanel, resetStructurePanel, closeClusterCompareModal, closeStructureModal, resizeClusterCompareViewers, buildOverlayMaps, buildPartnerColorMap, embeddingClusterColor, embeddingClusterLabel, allColumnsClusterLabels, visibleColumnsClusters, updatePartnerOptions, }) {
+export function createMsaViewController({ state, elements, buildPairs, activeConservationVector, conservationColor, overlayStateForRow, representativeLens, embeddingDistanceLabel, syncColumnLegends, syncRepresentativeLensControls, syncRepresentativeScopeControls, syncEmbeddingLoadingUi, syncEmbeddingMemberControls, syncEmbeddingSettingsUi, resizeEmbeddingCanvas, resizeColumnsCanvas, renderEmbeddingPlot, renderColumnsChart, renderColumnsClusterLegend, setEmbeddingInfo, setColumnsInfo, ensureEmbeddingDataLoaded, ensureEmbeddingClusteringLoaded, resetColumnsClusterSelection, resetEmbeddingPartnerSelection, resetEmbeddingClusterSelection, resetRepresentativePartnerSelection, resetRepresentativeClusterSelection, renderRepresentativePartnerFilter, renderEmbeddingLegend, refreshRepresentativeSelection, loadInteractiveStructure, handleStructureLoadFailure, resetRepresentativePanel, resetStructurePanel, closeClusterCompareModal, closeStructureModal, resizeClusterCompareViewers, buildOverlayMaps, buildPartnerColorMap, embeddingClusterColor, embeddingClusterLabel, allColumnsClusterLabels, visibleColumnsClusters, updatePartnerOptions, }) {
     const { appStatus, cellDetailsPanel, columnCount, columnsClusterLegend, detailsList, detailsBar, embeddingRoot, columnsRoot, gridCanvas, gridScroll, gridSpacer, headerCanvas, infoRoot, interfaceSelect, labelsCanvas, loadingDetail, loadingLabel, loadingPanel, loadStructureButton, msaLegend, msaPanelTabs, msaClusterLegend, msaPickerButton, msaPickerFilters, msaPickerMenu, msaPickerOptions, msaPickerSearch, msaPickerSelection, msaSelect, selectionSettingsPanel, selectionSettingsToggle, selectionMinInterfaceSizeInput, partnerSelect, progressBar, representativeShell, representativeViewerRoot, rowCount, selectedRowCopy, statsPanel, structureModal, viewerPanel, viewerRoot, } = elements;
     let layoutSyncScheduled = false;
     let cachedMsaClusterSource = null;
@@ -1723,6 +1723,12 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         state.msa = null;
         state.selectedRowKey = null;
         state.selectedRowSnapshot = null;
+        state.representativeRowKey = null;
+        state.representativeRowSnapshot = null;
+        state.representativeScope = "overall";
+        state.representativeClusterLabel = null;
+        state.representativeClusterSummaries = null;
+        state.representativeSelectionRequestId += 1;
         state.msaRowsRequestId += 1;
         state.msaRowsLoading = false;
         state.msaRowsLoaded = 0;
@@ -1803,6 +1809,7 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         resetRepresentativePartnerSelection();
         resetRepresentativeClusterSelection();
         renderRepresentativePartnerFilter();
+        syncRepresentativeScopeControls();
         renderEmbeddingLegend();
         renderColumnsClusterLegend();
         startMsaRowStreamIfNeeded();
@@ -1978,12 +1985,17 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         state.selectedRowKey = null;
         state.selectedRowSnapshot = null;
         state.representativeRowKey = null;
+        state.representativeRowSnapshot = null;
         state.representativeAnchorRowKey = null;
+        state.representativeScope = "overall";
+        state.representativeClusterLabel = null;
+        state.representativeClusterSummaries = null;
         state.representativeVisiblePartners = new Set();
         state.representativeVisibleClusters = new Set();
         state.representativeHoveredClusterLabel = null;
         state.representativeRenderedRowKey = null;
         state.representativeStructure = null;
+        state.representativeSelectionRequestId = 0;
         state.representativeRequestId = 0;
         state.representativePointer = null;
         state.embeddingView = {
@@ -2001,6 +2013,7 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         closeStructureModal();
         updatePartnerOptions();
         syncRepresentativeLensControls();
+        syncRepresentativeScopeControls();
         renderRepresentativePartnerFilter();
         renderEmbeddingLegend();
         renderColumnsClusterLegend();
@@ -2157,6 +2170,7 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
             void ensurePfamInfoLoaded();
         }
         syncRepresentativeLensControls();
+        syncRepresentativeScopeControls();
         syncMsaPanelView();
         syncSelectionSettingsUi();
         setEmbeddingInfo(`3D ${defaultPointMethodLabel()} points on ${embeddingDistanceLabel(DEFAULT_EMBEDDING_SETTINGS.distance)} input. Drag to rotate.`);

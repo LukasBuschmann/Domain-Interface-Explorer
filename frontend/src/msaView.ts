@@ -26,6 +26,7 @@ export function createMsaViewController({
   embeddingDistanceLabel,
   syncColumnLegends,
   syncRepresentativeLensControls,
+  syncRepresentativeScopeControls,
   syncEmbeddingLoadingUi,
   syncEmbeddingMemberControls,
   syncEmbeddingSettingsUi,
@@ -2064,6 +2065,12 @@ export function createMsaViewController({
     state.msa = null;
     state.selectedRowKey = null;
     state.selectedRowSnapshot = null;
+    state.representativeRowKey = null;
+    state.representativeRowSnapshot = null;
+    state.representativeScope = "overall";
+    state.representativeClusterLabel = null;
+    state.representativeClusterSummaries = null;
+    state.representativeSelectionRequestId += 1;
     state.msaRowsRequestId += 1;
     state.msaRowsLoading = false;
     state.msaRowsLoaded = 0;
@@ -2149,6 +2156,7 @@ export function createMsaViewController({
     resetRepresentativePartnerSelection();
     resetRepresentativeClusterSelection();
     renderRepresentativePartnerFilter();
+    syncRepresentativeScopeControls();
     renderEmbeddingLegend();
     renderColumnsClusterLegend();
     startMsaRowStreamIfNeeded();
@@ -2328,12 +2336,17 @@ export function createMsaViewController({
     state.selectedRowKey = null;
     state.selectedRowSnapshot = null;
     state.representativeRowKey = null;
+    state.representativeRowSnapshot = null;
     state.representativeAnchorRowKey = null;
+    state.representativeScope = "overall";
+    state.representativeClusterLabel = null;
+    state.representativeClusterSummaries = null;
     state.representativeVisiblePartners = new Set();
     state.representativeVisibleClusters = new Set();
     state.representativeHoveredClusterLabel = null;
     state.representativeRenderedRowKey = null;
     state.representativeStructure = null;
+    state.representativeSelectionRequestId = 0;
     state.representativeRequestId = 0;
     state.representativePointer = null;
     state.embeddingView = {
@@ -2351,6 +2364,7 @@ export function createMsaViewController({
     closeStructureModal();
     updatePartnerOptions();
     syncRepresentativeLensControls();
+    syncRepresentativeScopeControls();
     renderRepresentativePartnerFilter();
     renderEmbeddingLegend();
     renderColumnsClusterLegend();
@@ -2522,6 +2536,7 @@ export function createMsaViewController({
       void ensurePfamInfoLoaded();
     }
     syncRepresentativeLensControls();
+    syncRepresentativeScopeControls();
     syncMsaPanelView();
     syncSelectionSettingsUi();
     setEmbeddingInfo(

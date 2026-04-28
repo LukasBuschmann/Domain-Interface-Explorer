@@ -676,7 +676,15 @@
           </section>
 
           <section class="representative-shell representative-panel">
-            <h2>Representative</h2>
+            <div class="representative-header">
+              <h2>Representative</h2>
+              <label id="representative-scope-control" class="representative-scope-control hidden">
+                <span id="representative-scope-swatch" class="representative-scope-swatch"></span>
+                <select id="representative-scope-select" aria-label="Representative scope">
+                  <option value="overall">Overall</option>
+                </select>
+              </label>
+            </div>
             <p id="representative-copy" class="structure-copy">No representative row loaded.</p>
             <div class="representative-stage">
               <div id="representative-viewer" class="representative-viewer">
@@ -721,11 +729,11 @@
               <div class="representative-controls">
                 <span class="representative-lens-label">Lens</span>
                 <div id="representative-lens-group" class="representative-lens-group" role="group" aria-label="Representative lens">
-                  <button type="button" class="representative-lens-button active" data-lens="interface">Interface</button>
+                  <button type="button" class="representative-lens-button" data-lens="interface">Interface</button>
                   <button type="button" class="representative-lens-button" data-lens="conservedness">Conserved</button>
                   <button type="button" class="representative-lens-button" data-lens="column">Column</button>
                   <button type="button" class="representative-lens-button" data-lens="partners">Partners</button>
-                  <button type="button" class="representative-lens-button" data-lens="cluster">Cluster</button>
+                  <button type="button" class="representative-lens-button active" data-lens="cluster">Cluster</button>
                 </div>
               </div>
             </div>
