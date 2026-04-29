@@ -122,13 +122,70 @@ else:
     _fill_condensed_distances_numba = None
 
 
-def remap_non_negative_cluster_labels(labels: list[int]) -> list[int]:
-    unique_cluster_labels = sorted({label for label in labels if label >= 0})
+def rank_non_negative_cluster_labels_by_size(labels: list[int]) -> list[int]:
+    label_counts: dict[int, int] = {}
+    normalized_labels: list[int] = []
+    for label in labels:
+        numeric_label = int(label)
+        normalized_labels.append(numeric_label)
+        if numeric_label >= 0:
+            label_counts[numeric_label] = label_counts.get(numeric_label, 0) + 1
+    ordered_labels = sorted(label_counts, key=lambda label: (-label_counts[label], label))
     label_mapping = {
-        cluster_label: mapped_label
-        for mapped_label, cluster_label in enumerate(unique_cluster_labels)
+        cluster_label: ranked_label
+        for ranked_label, cluster_label in enumerate(ordered_labels)
     }
-    return [label_mapping.get(label, -1) if label >= 0 else -1 for label in labels]
+    return [label_mapping.get(label, -1) if label >= 0 else -1 for label in normalized_labels]
+
+
+def normalize_clustering_payload_cluster_labels(payload: dict[str, object]) -> dict[str, object]:
+    def payload_int(value: object, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    points = payload.get("points")
+    if not isinstance(points, list):
+        return payload
+    labels: list[int] = []
+    for point in points:
+        if not isinstance(point, dict):
+            labels.append(-1)
+            continue
+        try:
+            labels.append(int(point.get("cluster_label", -1)))
+        except (TypeError, ValueError):
+            labels.append(-1)
+    ranked_labels = rank_non_negative_cluster_labels_by_size(labels)
+    cluster_count = len({label for label in ranked_labels if label >= 0})
+    noise_count = sum(1 for label in ranked_labels if label < 0)
+    normalized_points: list[object] = []
+    changed = False
+    for point, ranked_label, original_label in zip(points, ranked_labels, labels, strict=True):
+        if isinstance(point, dict):
+            if ranked_label != original_label:
+                changed = True
+                normalized_points.append({**point, "cluster_label": ranked_label})
+            else:
+                normalized_points.append(point)
+        else:
+            normalized_points.append(point)
+    if payload_int(payload.get("cluster_count", cluster_count), cluster_count) != cluster_count:
+        changed = True
+    if payload_int(payload.get("noise_count", noise_count), noise_count) != noise_count:
+        changed = True
+    if payload.get("cluster_label_order") != "member_count_desc":
+        changed = True
+    if not changed:
+        return payload
+    return {
+        **payload,
+        "cluster_count": cluster_count,
+        "noise_count": noise_count,
+        "cluster_label_order": "member_count_desc",
+        "points": normalized_points,
+    }
 
 
 def parse_interface_row_key(row_key: str) -> dict[str, object]:
@@ -1660,9 +1717,10 @@ def compute_hdbscan_clustering_payload(distance_data: dict[str, object], setting
             labels = clusterer.fit_predict(distance_matrix)
     except Exception as exc:
         raise RuntimeError(f"HDBSCAN failed unexpectedly: {exc}") from exc
-    unique_cluster_labels = sorted({int(label) for label in labels if int(label) >= 0})
+    labels_list = rank_non_negative_cluster_labels_by_size([int(label) for label in labels.tolist()])
+    unique_cluster_labels = sorted({label for label in labels_list if label >= 0})
     cluster_count = len(unique_cluster_labels)
-    noise_count = int(sum(1 for label in labels if int(label) < 0))
+    noise_count = int(sum(1 for label in labels_list if label < 0))
     with timed_step(
         "clustering",
         "serialize HDBSCAN labels",
@@ -1674,9 +1732,9 @@ def compute_hdbscan_clustering_payload(distance_data: dict[str, object], setting
             {
                 "row_key": str(entry["row_key"]),
                 "partner_domain": str(entry["partner_domain"]),
-                "cluster_label": int(label),
+                "cluster_label": label,
             }
-            for entry, label in zip(entries, labels.tolist(), strict=True)
+            for entry, label in zip(entries, labels_list, strict=True)
         ]
     return {
         "clustering": "hdbscan",
@@ -2468,8 +2526,8 @@ def compute_hierarchical_clustering_payload_from_hierarchy(
                     for label in compressed_labels
                 ]
             timer.set(removed_clusters=len(too_small_labels))
-    compressed_labels = remap_non_negative_cluster_labels(compressed_labels)
     labels_list = [compressed_labels[int(group_index)] for group_index in group_index_by_entry]
+    labels_list = rank_non_negative_cluster_labels_by_size(labels_list)
     unique_cluster_labels = sorted({label for label in labels_list if label >= 0})
     cluster_count = len(unique_cluster_labels)
     noise_count = int(sum(1 for label in labels_list if label < 0))
@@ -2849,7 +2907,7 @@ def load_or_compute_clustering_payload(
                     file=cache_path.name,
                     hierarchy_source=cached_hierarchy_source,
                 )
-                return cached_payload
+                return normalize_clustering_payload_cluster_labels(cached_payload)
             log_event(
                 "clustering",
                 "cached hierarchical clustering invalid",
@@ -2906,7 +2964,7 @@ def load_or_compute_clustering_payload(
                     file=cache_path.name,
                     method=clustering_settings["method"],
                 )
-                return cached_payload
+                return normalize_clustering_payload_cluster_labels(cached_payload)
             log_event("clustering", "cached clustering invalid", file=cache_path.name)
         clustering_payload = compute_hdbscan_clustering_payload(distance_data, clustering_settings)
     response_payload = {
@@ -2915,6 +2973,7 @@ def load_or_compute_clustering_payload(
         "filter_settings": interface_filter_settings or {"min_interface_size": DEFAULT_MIN_INTERFACE_SIZE},
         **clustering_payload,
     }
+    response_payload = normalize_clustering_payload_cluster_labels(response_payload)
     with timed_step(
         "clustering",
         "write clustering cache",

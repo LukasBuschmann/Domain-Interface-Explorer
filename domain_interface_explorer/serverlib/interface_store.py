@@ -421,6 +421,54 @@ class InterfaceStore:
             raise ValueError(f"missing source_id {source_id}")
         return str(row[0]), str(row[1]), int(row[2])
 
+    def get_interface_summary(
+        self,
+        connection: sqlite3.Connection,
+        source_id: int,
+        where_sql: str,
+        where_args: tuple[int, int],
+        total_rows: int,
+    ) -> dict[str, object]:
+        dataset_domains = int(
+            connection.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM (
+                    SELECT 1
+                    FROM interface_rows
+                    WHERE source_id = ? AND {where_sql}
+                    GROUP BY protein_id, fragment_key
+                )
+                """,
+                (source_id, *where_args),
+            ).fetchone()[0]
+        )
+        unique_interfaces: set[tuple[str, tuple[int, ...]]] = set()
+        histogram: dict[int, int] = {}
+        for row in connection.execute(
+            f"""
+            SELECT partner_domain, interface_msa_columns_a, interface_residues_a
+            FROM interface_rows
+            WHERE source_id = ? AND {where_sql}
+            """,
+            (source_id, *where_args),
+        ):
+            columns = sorted(set(unpack_uints(row[1]) or unpack_uints(row[2])))
+            interface_size = len(columns)
+            if interface_size <= 0:
+                continue
+            unique_interfaces.add((str(row[0]), tuple(columns)))
+            histogram[interface_size] = histogram.get(interface_size, 0) + 1
+        return {
+            "dataset_domains": dataset_domains,
+            "dataset_interfaces": total_rows,
+            "unique_interfaces": len(unique_interfaces),
+            "interface_size_histogram": [
+                {"size": size, "count": count}
+                for size, count in sorted(histogram.items())
+            ],
+        }
+
     def get_interface_page(
         self,
         path: Path,
@@ -475,6 +523,13 @@ class InterfaceStore:
                         (source_id, *where_args),
                     )
                 }
+                interface_summary = self.get_interface_summary(
+                    connection,
+                    source_id,
+                    where_sql,
+                    where_args,
+                    total_rows,
+                )
                 raw_rows = (
                     self.query_alignment_rows(
                         connection,
@@ -520,6 +575,7 @@ class InterfaceStore:
                 "row_count": total_rows,
                 "interface_partner_domains": list(partner_counts),
                 "interface_partner_counts": partner_counts,
+                "interface_summary": interface_summary,
                 "row_offset": row_offset,
                 "row_limit": row_limit,
                 "rows_loaded": rows_loaded,

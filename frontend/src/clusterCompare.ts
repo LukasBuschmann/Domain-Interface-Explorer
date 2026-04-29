@@ -14,6 +14,15 @@ export function createClusterCompareController({
   embeddingDistanceLabel,
   nextBrowserPaint,
   openStructureForEntry,
+  openClusterResidueMembers,
+  representativeClusterCompareSummaries = () => [],
+  representativeClusterCompareUrl = () => "",
+  normalizeRepresentativeRow = (row) => row,
+  representativeClusterSummaryFromPayload = (_payload, _clusterLabel, fallbackSummary) => fallbackSummary,
+  representativeClusterCompareTileStyles = () => ({
+    residueStyles: [],
+    clusterLensData: null,
+  }),
 }) {
   const CLUSTER_COMPARE_CACHE_LIMIT = 8;
 
@@ -56,8 +65,66 @@ export function createClusterCompareController({
     `;
   }
 
+  function representativeMethodLabel(method) {
+    return method === "residue" ? "Residue" : "Balanced";
+  }
+
+  function normalizedRepresentativeMethod(method = state.representativeClusterCompareMethod) {
+    return String(method || "") === "residue" ? "residue" : "balanced";
+  }
+
+  function setClusterCompareRepresentativeMethodMenuOpen(open) {
+    if (!elements.clusterCompareRepresentativeMethodMenu || !elements.clusterCompareRepresentativeMethodButton) {
+      return;
+    }
+    elements.clusterCompareRepresentativeMethodMenu.classList.toggle("hidden", !open);
+    elements.clusterCompareRepresentativeMethodButton.setAttribute(
+      "aria-expanded",
+      open ? "true" : "false"
+    );
+  }
+
+  function syncClusterCompareHeaderControls() {
+    const isRepresentativeClusterMode = state.clusterCompareMode === "representative-clusters";
+    elements.clusterCompareRepresentativeMethodControl?.classList.toggle(
+      "hidden",
+      !isRepresentativeClusterMode
+    );
+    elements.clusterCompareRerollButton?.classList.toggle(
+      "hidden",
+      isRepresentativeClusterMode
+    );
+    if (!isRepresentativeClusterMode) {
+      setClusterCompareRepresentativeMethodMenuOpen(false);
+      return;
+    }
+    const method = normalizedRepresentativeMethod();
+    if (elements.clusterCompareRepresentativeMethodLabel) {
+      elements.clusterCompareRepresentativeMethodLabel.textContent = representativeMethodLabel(method);
+    }
+    if (elements.clusterCompareRepresentativeMethodMenu) {
+      [
+        ...elements.clusterCompareRepresentativeMethodMenu.querySelectorAll(
+          "[data-cluster-compare-representative-method]"
+        ),
+      ].forEach((button) => {
+        const isActive = button.dataset.clusterCompareRepresentativeMethod === method;
+        button.classList.toggle("active", isActive);
+        button.setAttribute("aria-checked", isActive ? "true" : "false");
+      });
+    }
+  }
+
   function clusterCompareCacheKey(clusterLabel) {
     return currentClusterCompareQuery(clusterLabel);
+  }
+
+  function representativeClusterCompareCacheKey(method, clusters) {
+    return [
+      "representative-clusters",
+      normalizedRepresentativeMethod(method),
+      ...clusters.map((cluster) => representativeClusterCompareUrl(cluster.clusterLabel, method)),
+    ].join("|");
   }
 
   function clusterCompareFetchUrl(cacheKey, reroll) {
@@ -115,13 +182,7 @@ export function createClusterCompareController({
   function renderedClusterCompareRecord(record) {
     return {
       ...record,
-      results: state.clusterCompareTiles.map((tile) => ({
-        entry: tile.entry,
-        payload: tile.payload,
-        modelText: tile.modelText,
-        previewUrl: tile.previewUrl,
-        error: tile.error,
-      })),
+      results: currentRenderedClusterCompareResults(),
     };
   }
 
@@ -231,10 +292,12 @@ export function createClusterCompareController({
   function openClusterCompareModal() {
     elements.clusterCompareModal?.classList.remove("hidden");
     elements.clusterCompareModal?.setAttribute("aria-hidden", "false");
+    syncClusterCompareHeaderControls();
   }
 
   function closeClusterCompareModal() {
     state.clusterCompareRequestId += 1;
+    state.clusterCompareMode = "cluster";
     state.clusterCompareClusterLabel = null;
     state.clusterCompareAlignmentAnchorRowKey = null;
     clearClusterCompareTiles();
@@ -245,6 +308,7 @@ export function createClusterCompareController({
       elements.clusterCompareModalSubtitle.textContent = "No cluster selected.";
     }
     setClusterCompareLoading(false);
+    syncClusterCompareHeaderControls();
     elements.clusterCompareModal?.classList.add("hidden");
     elements.clusterCompareModal?.setAttribute("aria-hidden", "true");
   }
@@ -365,6 +429,68 @@ export function createClusterCompareController({
     return tileWithView?.viewer ? copyView(tileWithView.viewer.getView()) : null;
   }
 
+  function cloneCameraView(view) {
+    if (!view) {
+      return null;
+    }
+    if (typeof structuredClone === "function") {
+      try {
+        return structuredClone(view);
+      } catch (_error) {
+        // Fall through to JSON cloning.
+      }
+    }
+    try {
+      return JSON.parse(JSON.stringify(view));
+    } catch (_error) {
+      return copyView(view);
+    }
+  }
+
+  function nudgeCameraView(view) {
+    const nudged = cloneCameraView(view);
+    const position = nudged?.position;
+    if (!position || position.length < 3) {
+      return null;
+    }
+    const target = nudged?.target || [0, 0, 0];
+    const dx = Number(position[0]) - Number(target[0] || 0);
+    const dy = Number(position[1]) - Number(target[1] || 0);
+    const dz = Number(position[2]) - Number(target[2] || 0);
+    const distance = Math.hypot(dx, dy, dz);
+    const amount = Math.max(0.01, distance * 0.0025);
+    position[0] = Number(position[0]) + amount;
+    position[1] = Number(position[1]) + amount * 0.35;
+    return nudged;
+  }
+
+  function applyClusterCompareView(view) {
+    if (!view) {
+      return;
+    }
+    for (const tile of state.clusterCompareTiles) {
+      if (!tile?.viewer || tile.error || typeof tile.viewer.setView !== "function") {
+        continue;
+      }
+      tile.viewer.setView(view);
+      tile.viewer.resize();
+      tile.viewer.render();
+    }
+  }
+
+  function nudgeClusterCompareCameras() {
+    const originalView = currentClusterCompareView();
+    const nudgedView = nudgeCameraView(originalView);
+    if (!originalView || !nudgedView) {
+      resizeClusterCompareViewers();
+      return;
+    }
+    applyClusterCompareView(nudgedView);
+    window.requestAnimationFrame(() => {
+      applyClusterCompareView(originalView);
+    });
+  }
+
   async function openClusterCompareTileStructure(tileIndex) {
     const tile = state.clusterCompareTiles[Number(tileIndex)];
     const entry = tile?.entry;
@@ -393,6 +519,51 @@ export function createClusterCompareController({
     void openClusterCompareTileStructure(button.dataset.clusterCompareOpen);
   });
 
+  elements.clusterCompareGrid?.addEventListener("dblclick", (event) => {
+    if (
+      state.clusterCompareMode !== "representative-clusters" ||
+      typeof openClusterResidueMembers !== "function" ||
+      event.target.closest("[data-cluster-compare-open]")
+    ) {
+      return;
+    }
+    const tileElement = event.target.closest("[data-cluster-compare-index]");
+    if (!tileElement || !elements.clusterCompareGrid.contains(tileElement)) {
+      return;
+    }
+    const tileIndex = Number(tileElement.dataset.clusterCompareIndex);
+    const tile = state.clusterCompareTiles[tileIndex];
+    const residueId = Number(tile?.hoverResidue?.residueId);
+    const residueCluster = tile?.clusterLensData?.clusterByResidueId?.get?.(residueId);
+    const columnIndex = Number(residueCluster?.columnIndex);
+    if (!tile || !Number.isFinite(residueId) || !Number.isInteger(columnIndex)) {
+      if (elements.clusterCompareModalSubtitle) {
+        elements.clusterCompareModalSubtitle.textContent =
+          "Double-click a colored cluster residue to open matching interfaces.";
+      }
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    void openClusterResidueMembers({
+      tile,
+      entry: tile.entry,
+      clusterLabel: residueCluster.clusterLabel ?? tile.entry?.clusterLabel,
+      columnIndex,
+      residueId,
+      residueName: tile.hoverResidue?.residueName || "",
+    }).catch((error) => {
+      if (elements.clusterCompareModalSubtitle) {
+        elements.clusterCompareModalSubtitle.textContent =
+          error.message || "Unable to open matching cluster interfaces.";
+      }
+    });
+  });
+
+  elements.clusterCompareRecenterButton?.addEventListener("click", () => {
+    centerClusterCompareDomains();
+  });
+
   function clusterCompareDomainSelection(payload) {
     return {
       resi:
@@ -403,6 +574,32 @@ export function createClusterCompareController({
               (_value, index) => payload.fragment_start + index
             ),
     };
+  }
+
+  function centerClusterCompareDomains(options = {}) {
+    const anchorTile = state.clusterCompareTiles.find(
+      (tile) => tile?.viewer && tile?.payload && !tile.error
+    );
+    if (!anchorTile?.viewer) {
+      return;
+    }
+    const domainSelection = clusterCompareDomainSelection(anchorTile.payload);
+    if (typeof anchorTile.viewer.focusResiduesStable === "function") {
+      anchorTile.viewer.focusResiduesStable(domainSelection.resi, 8);
+    } else if (typeof anchorTile.viewer.focusResidues === "function") {
+      anchorTile.viewer.focusResidues(domainSelection.resi, 8);
+    }
+    anchorTile.viewer.resize();
+    anchorTile.viewer.render();
+    window.requestAnimationFrame(() => {
+      if (typeof anchorTile.viewer.getView === "function") {
+        state.clusterCompareSharedView = copyView(anchorTile.viewer.getView());
+      }
+      applyClusterCompareView(state.clusterCompareSharedView);
+      if (options.nudge !== false) {
+        window.requestAnimationFrame(nudgeClusterCompareCameras);
+      }
+    });
   }
 
   function retryModelUrl(modelUrl) {
@@ -429,55 +626,62 @@ export function createClusterCompareController({
       modelText,
       payload: tile.payload,
       format: tile.payload.model_format || "pdb",
-      label: tile.entry?.rowKey || "Cluster comparison structure",
-      mode: "compare",
+      label: tile.entry?.title || tile.entry?.rowKey || "Cluster comparison structure",
+      mode: tile.residueStyles?.length ? "representative" : "compare",
       columnView: false,
       contactsVisible: false,
       residueLookup: new Map(),
-      residueStyles: [],
+      residueStyles: tile.residueStyles || [],
+      clusterLensData: tile.clusterLensData || null,
+      representativeLens: tile.residueStyles?.length ? "cluster" : "",
       displaySettings: state.structureDisplaySettings,
+      onHover: (hover) => {
+        tile.hoverResidue = hover;
+      },
+      onHoverEnd: () => {
+        tile.hoverResidue = null;
+      },
     });
   }
 
-  function initializeClusterCompareSharedView() {
-    if (state.clusterCompareSharedView) {
-      for (const tile of state.clusterCompareTiles) {
-        if (!tile?.viewer || typeof tile.viewer.setView !== "function") {
-          continue;
+  function ensureClusterCompareTileViewer(tileIndex) {
+    const tile = state.clusterCompareTiles[tileIndex];
+    if (!tile || tile.error || !tile.viewerRoot) {
+      return null;
+    }
+    tile.viewerRoot.classList.remove("cluster-compare-tile-viewer-error");
+    if (!tile.viewer) {
+      tile.viewer = createDomainMolstarViewer(tile.viewerRoot, {
+        kind: "cluster-compare",
+      });
+      tile.cleanupSync = bindClusterCompareViewerSync(tileIndex, tile.viewerRoot);
+    }
+    return tile.viewer;
+  }
+
+  function initializeClusterCompareTileViewers() {
+    return Promise.allSettled(
+      state.clusterCompareTiles.map(async (_tile, tileIndex) => {
+        const viewer = ensureClusterCompareTileViewer(tileIndex);
+        if (!viewer || typeof viewer.ensureViewer !== "function") {
+          return;
         }
-        tile.viewer.setView(state.clusterCompareSharedView);
-        tile.viewer.render();
-      }
-      return;
-    }
-    const anchorTile = state.clusterCompareTiles.find(
-      (tile) => tile?.viewer && tile?.payload && !tile.error
+        await viewer.ensureViewer(state.structureDisplaySettings);
+        viewer.resize();
+        viewer.render();
+      })
     );
-    if (!anchorTile?.viewer) {
-      return;
-    }
-    const viewer = anchorTile.viewer;
-    const domainSelection = clusterCompareDomainSelection(anchorTile.payload);
-    if (typeof viewer.center === "function") {
-      viewer.center(domainSelection);
-    }
-    if (typeof viewer.zoomTo === "function") {
-      viewer.zoomTo(domainSelection, 8);
-    }
-    viewer.render();
-    if (typeof viewer.getView === "function") {
-      state.clusterCompareSharedView = viewer.getView();
-    }
-    if (!state.clusterCompareSharedView) {
-      return;
-    }
-    for (const tile of state.clusterCompareTiles) {
-      if (!tile?.viewer || tile === anchorTile || typeof tile.viewer.setView !== "function") {
-        continue;
+  }
+
+  function initializeClusterCompareSharedView(options = {}) {
+    if (state.clusterCompareSharedView) {
+      applyClusterCompareView(state.clusterCompareSharedView);
+      if (options.nudge) {
+        window.requestAnimationFrame(nudgeClusterCompareCameras);
       }
-      tile.viewer.setView(state.clusterCompareSharedView);
-      tile.viewer.render();
+      return;
     }
+    centerClusterCompareDomains({ nudge: Boolean(options.nudge) });
   }
 
   async function renderClusterCompareTile(tileIndex) {
@@ -485,16 +689,7 @@ export function createClusterCompareController({
     if (!tile || tile.error || !tile.viewerRoot) {
       return;
     }
-    tile.viewerRoot.classList.remove("cluster-compare-tile-viewer-error");
-
-    if (!tile.viewer) {
-      tile.viewer = createDomainMolstarViewer(tile.viewerRoot, {
-        kind: "cluster-compare",
-      });
-      tile.cleanupSync = bindClusterCompareViewerSync(tileIndex, tile.viewerRoot);
-    }
-
-    const viewer = tile.viewer;
+    const viewer = ensureClusterCompareTileViewer(tileIndex);
     const { payload, modelText } = tile;
     if (!payload || typeof modelText !== "string" || modelText.length === 0) {
       throw new Error("Structure preview is missing model data.");
@@ -519,9 +714,31 @@ export function createClusterCompareController({
     if (state.clusterCompareSharedView && typeof viewer.setView === "function") {
       viewer.setView(state.clusterCompareSharedView);
     } else {
-      viewer.focusResidues(domainSelection.resi, 8);
+      if (typeof viewer.focusResiduesStable === "function") {
+        viewer.focusResiduesStable(domainSelection.resi, 8);
+      } else {
+        viewer.focusResidues(domainSelection.resi, 8);
+      }
     }
     viewer.render();
+  }
+
+  async function applyClusterCompareTileResult(tileIndex, result) {
+    const tile = state.clusterCompareTiles[tileIndex];
+    if (!tile) {
+      return;
+    }
+    Object.assign(tile, result);
+    if (tile.error) {
+      renderClusterCompareTileError(tileIndex);
+      return;
+    }
+    try {
+      await renderClusterCompareTile(tileIndex);
+    } catch (error) {
+      tile.error = error.message || "Unknown structure render error.";
+      renderClusterCompareTileError(tileIndex);
+    }
   }
 
   function resizeClusterCompareViewers() {
@@ -580,6 +797,9 @@ export function createClusterCompareController({
   }
 
   function clusterCompareSubtitle(record) {
+    if (record?.subtitle) {
+      return record.subtitle;
+    }
     return (
       `Showing ${record.selectedEntries.length} of ${record.clusterEntryCount} cluster entries, ` +
       `selected by greedy max-min ${embeddingDistanceLabel(record.distanceMetric)} distance ` +
@@ -596,37 +816,51 @@ export function createClusterCompareController({
     applyClusterCompareGridLayout(selectedEntries.length);
     elements.clusterCompareGrid.innerHTML = selectedEntries
       .map((entry, index) => {
-        const rowLabel = escapeHtml(entry.rowKey);
+        const rowLabel = escapeHtml(entry.title || entry.rowKey);
+        const openLabel = escapeHtml(entry.openLabel || entry.rowKey);
         const partnerLabel = escapeHtml(entry.partnerDomain);
+        const subtitle = escapeHtml(entry.subtitle || `Partner ${entry.partnerDomain}`);
+        const swatch =
+          entry.color
+            ? `<span class="cluster-compare-tile-swatch" style="background: ${entry.color};"></span>`
+            : "";
+        const coverageTitle = escapeHtml(
+          entry.coverageTitle ||
+            `${entry.coverageCount}/${remainingEntryCount} nearest cluster members`
+        );
+        const coverageFillColor = entry.color || coverageColor(entry.coveragePercent);
+        const coverageLabel = escapeHtml(
+          entry.coverageLabel || `${roundedPercent(entry.coveragePercent)}%`
+        );
         return `
           <article class="cluster-compare-tile" data-cluster-compare-index="${index}">
             <div class="cluster-compare-tile-viewer" data-cluster-compare-viewer="${index}"></div>
             <div class="cluster-compare-tile-meta">
               <div class="cluster-compare-tile-title-row">
-                <span class="cluster-compare-tile-title">${rowLabel}</span>
+                <span class="cluster-compare-tile-title">${swatch}${rowLabel}</span>
                 <button
                   class="cluster-compare-open-structure"
                   type="button"
                   data-cluster-compare-open="${index}"
                   title="Open in structure viewer"
-                  aria-label="Open ${rowLabel} in structure viewer"
+                  aria-label="Open ${openLabel} in structure viewer"
                 >
                   ${fullScreenIconSvg()}
                 </button>
                 <span
                   class="cluster-compare-coverage"
-                  title="${entry.coverageCount}/${remainingEntryCount} nearest cluster members"
+                  title="${coverageTitle}"
                 >
                   <span class="cluster-compare-coverage-track">
                     <span
                       class="cluster-compare-coverage-fill"
-                      style="width: ${clampPercent(entry.coveragePercent)}%; background: ${coverageColor(entry.coveragePercent)};"
+                      style="width: ${clampPercent(entry.coveragePercent)}%; background: ${coverageFillColor};"
                     ></span>
                   </span>
-                  <span class="cluster-compare-coverage-value">${roundedPercent(entry.coveragePercent)}%</span>
+                  <span class="cluster-compare-coverage-value">${coverageLabel}</span>
                 </span>
               </div>
-              <span class="cluster-compare-tile-subtitle">Partner ${partnerLabel}</span>
+              <span class="cluster-compare-tile-subtitle">${subtitle}</span>
             </div>
           </article>
         `;
@@ -645,7 +879,33 @@ export function createClusterCompareController({
     }));
   }
 
+  function prepareClusterCompareTiles(record) {
+    renderClusterCompareGridShell(record);
+    setClusterCompareTilesFromResults(
+      (record.selectedEntries || []).map((entry) => ({ entry }))
+    );
+    void initializeClusterCompareTileViewers();
+  }
+
+  function currentRenderedClusterCompareResults() {
+    return state.clusterCompareTiles.map((tile) => ({
+      entry: tile.entry,
+      row: tile.row,
+      representativePayload: tile.representativePayload,
+      payload: tile.payload,
+      modelText: tile.modelText,
+      previewUrl: tile.previewUrl,
+      residueStyles: tile.residueStyles || [],
+      clusterLensData: tile.clusterLensData || null,
+      error: tile.error,
+      hoverResidue: null,
+    }));
+  }
+
   async function renderClusterCompareResults(record) {
+    state.clusterCompareMode =
+      record?.kind === "representative-clusters" ? "representative-clusters" : "cluster";
+    syncClusterCompareHeaderControls();
     if (elements.clusterCompareModalTitle) {
       elements.clusterCompareModalTitle.textContent = record.title;
     }
@@ -655,6 +915,7 @@ export function createClusterCompareController({
     state.clusterCompareAlignmentAnchorRowKey = record.alignmentAnchorRowKey || "";
     renderClusterCompareGridShell(record);
     setClusterCompareTilesFromResults(record.results || []);
+    await initializeClusterCompareTileViewers();
 
     for (let index = 0; index < state.clusterCompareTiles.length; index += 1) {
       const tile = state.clusterCompareTiles[index];
@@ -669,7 +930,7 @@ export function createClusterCompareController({
         renderClusterCompareTileError(index);
       }
     }
-    initializeClusterCompareSharedView();
+    initializeClusterCompareSharedView({ nudge: true });
   }
 
   async function openClusterCompareForLabel(clusterLabel, options = {}) {
@@ -679,11 +940,15 @@ export function createClusterCompareController({
     const reroll = Boolean(options.reroll);
     const targetClusterLabel = Number(clusterLabel);
     const previousClusterLabel = state.clusterCompareClusterLabel;
+    const previousMode = state.clusterCompareMode;
+    state.clusterCompareMode = "cluster";
     const requestId = state.clusterCompareRequestId + 1;
     state.clusterCompareRequestId = requestId;
     state.clusterCompareClusterLabel = targetClusterLabel;
+    syncClusterCompareHeaderControls();
     const preservedView = currentClusterCompareView();
     const keepExistingTilesDuringLoad = Boolean(
+      previousMode === "cluster" &&
       state.clusterCompareTiles.length > 0 &&
       elements.clusterCompareGrid?.children.length
     );
@@ -766,19 +1031,20 @@ export function createClusterCompareController({
         1
       );
       if (!keepExistingTilesDuringLoad) {
-        renderClusterCompareGridShell(record);
+        prepareClusterCompareTiles(record);
       }
 
       let completedStructures = 0;
       const results = await Promise.all(
-        selectedEntries.map(async (entry) => {
+        selectedEntries.map(async (entry, index) => {
+          let result;
           try {
-            return await fetchClusterCompareStructure(
+            result = await fetchClusterCompareStructure(
               entry,
               entry.rowKey === anchorRowKey ? "" : anchorRowKey
             );
           } catch (error) {
-            return {
+            result = {
               entry,
               error: error.message,
             };
@@ -792,6 +1058,10 @@ export function createClusterCompareController({
               );
             }
           }
+          if (!keepExistingTilesDuringLoad && requestId === state.clusterCompareRequestId) {
+            await applyClusterCompareTileResult(index, result);
+          }
+          return result;
         })
       );
 
@@ -806,7 +1076,13 @@ export function createClusterCompareController({
         previewUrl: result.previewUrl,
         error: result.error,
       }));
-      await renderClusterCompareResults(record);
+      if (keepExistingTilesDuringLoad) {
+        await renderClusterCompareResults(record);
+      } else {
+        record.results = currentRenderedClusterCompareResults();
+        state.clusterCompareAlignmentAnchorRowKey = record.alignmentAnchorRowKey || "";
+        initializeClusterCompareSharedView({ nudge: true });
+      }
       writeClusterCompareCache(cacheKey, renderedClusterCompareRecord(record));
     } catch (error) {
       if (requestId === state.clusterCompareRequestId) {
@@ -828,9 +1104,280 @@ export function createClusterCompareController({
     }
   }
 
+  async function fetchRepresentativeClusterSelection(cluster, method) {
+    const payload = await fetchJson(
+      representativeClusterCompareUrl(cluster.clusterLabel, method)
+    );
+    const row = normalizeRepresentativeRow(payload.row || null, payload.alignment_length);
+    if (!row?.row_key && !row?.interface_row_key) {
+      throw new Error(`${cluster.label || embeddingClusterLabel(cluster.clusterLabel)} has no representative row.`);
+    }
+    const clusterSummary = representativeClusterSummaryFromPayload(
+      payload,
+      cluster.clusterLabel,
+      cluster
+    );
+    const memberCount = Number(cluster.compareMemberCount ?? cluster.memberCount ?? 0);
+    return {
+      key: `representative-cluster:${cluster.clusterLabel}`,
+      rowKey: String(row.interface_row_key || row.row_key),
+      openLabel: row.display_row_key || row.row_key || row.interface_row_key || "",
+      partnerDomain: String(row.partner_domain || ""),
+      clusterLabel: Number(cluster.clusterLabel),
+      title: cluster.label || embeddingClusterLabel(cluster.clusterLabel),
+      subtitle: `${memberCount} members · ${row.display_row_key || row.row_key || row.interface_row_key || ""}`,
+      color: cluster.color,
+      coverageCount: memberCount,
+      coveragePercent: Number(cluster.coveragePercent || 0),
+      coverageFraction: Number(cluster.coverageFraction || 0),
+      coverageLabel: `${roundedPercent(cluster.coveragePercent || 0)}%`,
+      coverageTitle: `${memberCount}/${cluster.totalMemberCount || memberCount} clustered entries`,
+      selectionRank: Number(cluster.selectionRank || 0),
+      row,
+      clusterSummary,
+      representativePayload: payload,
+    };
+  }
+
+  async function openRepresentativeClusterCompare(options = {}) {
+    if (!interfaceSelect.value || typeof representativeClusterCompareSummaries !== "function") {
+      return;
+    }
+    const method = normalizedRepresentativeMethod(options.method);
+    const previousMode = state.clusterCompareMode;
+    state.representativeClusterCompareMethod = method;
+    state.clusterCompareMode = "representative-clusters";
+    state.clusterCompareClusterLabel = null;
+    syncClusterCompareHeaderControls();
+
+    const clusters = representativeClusterCompareSummaries()
+      .slice(0, 9)
+      .map((cluster, index) => ({
+        ...cluster,
+        selectionRank: index,
+      }));
+    if (clusters.length === 0) {
+      state.clusterCompareMode = previousMode;
+      syncClusterCompareHeaderControls();
+      return;
+    }
+
+    const requestId = state.clusterCompareRequestId + 1;
+    state.clusterCompareRequestId = requestId;
+    const preservedView = currentClusterCompareView();
+    const keepExistingTilesDuringLoad = Boolean(
+      previousMode === "representative-clusters" &&
+      state.clusterCompareTiles.length > 0 &&
+      elements.clusterCompareGrid?.children.length &&
+      state.clusterCompareMode === "representative-clusters"
+    );
+    if (preservedView) {
+      state.clusterCompareSharedView = preservedView;
+    } else if (!keepExistingTilesDuringLoad) {
+      state.clusterCompareSharedView = null;
+    }
+    if (!keepExistingTilesDuringLoad) {
+      clearClusterCompareTiles({ resetSharedView: !preservedView });
+    }
+
+    const title = "Cluster Overview";
+    const cacheKey = representativeClusterCompareCacheKey(method, clusters);
+    if (elements.clusterCompareModalTitle) {
+      elements.clusterCompareModalTitle.textContent = title;
+    }
+    if (elements.clusterCompareModalSubtitle) {
+      elements.clusterCompareModalSubtitle.textContent =
+        `Loading overview representatives selected by ${representativeMethodLabel(method)}...`;
+    }
+    openClusterCompareModal();
+    const cachedRecord = options.force ? null : readClusterCompareCache(cacheKey);
+    setClusterCompareLoading(
+      true,
+      cachedRecord ? "Restoring cached Cluster Overview..." : "Selecting cluster overview representatives...",
+      cachedRecord ? 80 : 10
+    );
+
+    try {
+      await nextBrowserPaint();
+      if (cachedRecord) {
+        if (requestId !== state.clusterCompareRequestId) {
+          return;
+        }
+        await renderClusterCompareResults(cachedRecord);
+        writeClusterCompareCache(cacheKey, renderedClusterCompareRecord(cachedRecord));
+        return;
+      }
+
+      let completedSelections = 0;
+      const selectedEntries = await Promise.all(
+        clusters.map(async (cluster) => {
+          try {
+            return await fetchRepresentativeClusterSelection(cluster, method);
+          } finally {
+            completedSelections += 1;
+            if (requestId === state.clusterCompareRequestId) {
+              setClusterCompareLoading(
+                true,
+                `Selecting overview representatives (${completedSelections}/${clusters.length})...`,
+                Math.round((completedSelections / clusters.length) * 35)
+              );
+            }
+          }
+        })
+      );
+      if (requestId !== state.clusterCompareRequestId) {
+        return;
+      }
+      const record = {
+        kind: "representative-clusters",
+        title,
+        subtitle:
+          `Showing the ${selectedEntries.length} largest clusters. Representatives selected by ${representativeMethodLabel(method)}.`,
+        representativeMethod: method,
+        selectedEntries,
+        clusterEntryCount: clusters.reduce(
+          (sum, cluster) => sum + Number(cluster.compareMemberCount ?? cluster.memberCount ?? 0),
+          0
+        ),
+        remainingEntryCount: clusters.reduce(
+          (sum, cluster) => sum + Number(cluster.compareMemberCount ?? cluster.memberCount ?? 0),
+          0
+        ),
+        distanceMetric: state.embeddingClusteringSettings.distance || "overlap",
+        alignmentAnchorRowKey: selectedEntries[0]?.rowKey || "",
+        results: [],
+      };
+      if (elements.clusterCompareModalSubtitle) {
+        elements.clusterCompareModalSubtitle.textContent = clusterCompareSubtitle(record);
+      }
+      if (!keepExistingTilesDuringLoad) {
+        prepareClusterCompareTiles(record);
+      }
+
+      const anchorRowKey = record.alignmentAnchorRowKey || selectedEntries[0]?.rowKey || "";
+      let completedStructures = 0;
+      const results = await Promise.all(
+        selectedEntries.map(async (entry, index) => {
+          let result;
+          try {
+            const structureResult = await fetchClusterCompareStructure(
+              entry,
+              entry.rowKey === anchorRowKey ? "" : anchorRowKey
+            );
+            const stylePayload = representativeClusterCompareTileStyles(
+              entry.row,
+              entry.clusterSummary
+            );
+            result = {
+              ...structureResult,
+              row: entry.row,
+              representativePayload: entry.representativePayload,
+              residueStyles: stylePayload.residueStyles || [],
+              clusterLensData: stylePayload.clusterLensData || null,
+            };
+          } catch (error) {
+            result = {
+              entry,
+              row: entry.row,
+              representativePayload: entry.representativePayload,
+              error: error.message,
+            };
+          } finally {
+            completedStructures += 1;
+            if (requestId === state.clusterCompareRequestId) {
+              setClusterCompareLoading(
+                true,
+                `Loading aligned structures (${completedStructures}/${selectedEntries.length})...`,
+                35 + Math.round((completedStructures / selectedEntries.length) * 65)
+              );
+            }
+          }
+          if (!keepExistingTilesDuringLoad && requestId === state.clusterCompareRequestId) {
+            await applyClusterCompareTileResult(index, result);
+          }
+          return result;
+        })
+      );
+      if (requestId !== state.clusterCompareRequestId) {
+        return;
+      }
+      record.results = results.map((result) => ({
+        entry: result.entry,
+        row: result.row,
+        representativePayload: result.representativePayload,
+        payload: result.payload,
+        modelText: result.modelText,
+        previewUrl: result.previewUrl,
+        residueStyles: result.residueStyles || [],
+        clusterLensData: result.clusterLensData || null,
+        error: result.error,
+      }));
+      if (keepExistingTilesDuringLoad) {
+        await renderClusterCompareResults(record);
+      } else {
+        record.results = currentRenderedClusterCompareResults();
+        state.clusterCompareAlignmentAnchorRowKey = record.alignmentAnchorRowKey || "";
+        initializeClusterCompareSharedView({ nudge: true });
+      }
+      writeClusterCompareCache(cacheKey, renderedClusterCompareRecord(record));
+    } catch (error) {
+      if (requestId === state.clusterCompareRequestId) {
+        if (elements.clusterCompareModalSubtitle) {
+          elements.clusterCompareModalSubtitle.textContent =
+            error.message || "Unable to load Cluster Overview.";
+        }
+        if (keepExistingTilesDuringLoad) {
+          setClusterCompareGridLoading(false);
+        } else {
+          clearClusterCompareTiles({ resetSharedView: !preservedView });
+          renderClusterCompareFatalError(error.message || "Unable to load Cluster Overview.");
+        }
+      }
+      throw error;
+    } finally {
+      if (requestId === state.clusterCompareRequestId) {
+        setClusterCompareLoading(false);
+      }
+    }
+  }
+
+  elements.clusterCompareRepresentativeMethodButton?.addEventListener("click", () => {
+    setClusterCompareRepresentativeMethodMenuOpen(
+      elements.clusterCompareRepresentativeMethodMenu?.classList.contains("hidden")
+    );
+  });
+
+  elements.clusterCompareRepresentativeMethodMenu?.addEventListener("click", (event) => {
+    if (event.target.closest(".representative-method-item-help")) {
+      return;
+    }
+    const button = event.target.closest("[data-cluster-compare-representative-method]");
+    if (!button) {
+      return;
+    }
+    setClusterCompareRepresentativeMethodMenuOpen(false);
+    const method = normalizedRepresentativeMethod(button.dataset.clusterCompareRepresentativeMethod);
+    if (state.representativeClusterCompareMethod === method) {
+      syncClusterCompareHeaderControls();
+      return;
+    }
+    state.representativeClusterCompareMethod = method;
+    syncClusterCompareHeaderControls();
+    if (state.clusterCompareMode === "representative-clusters") {
+      void openRepresentativeClusterCompare({ method, force: true });
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest("#cluster-compare-representative-method-control")) {
+      setClusterCompareRepresentativeMethodMenuOpen(false);
+    }
+  });
+
   return {
     closeClusterCompareModal,
     openClusterCompareForLabel,
+    openRepresentativeClusterCompare,
     resizeClusterCompareViewers,
   };
 }

@@ -678,16 +678,110 @@
           <section class="representative-shell representative-panel">
             <div class="representative-header">
               <h2>Representative</h2>
-              <label id="representative-scope-control" class="representative-scope-control hidden">
-                <span id="representative-scope-swatch" class="representative-scope-swatch"></span>
-                <select id="representative-scope-select" aria-label="Representative scope">
-                  <option value="overall">Overall</option>
-                </select>
-              </label>
+              <p id="representative-copy" class="structure-copy">No representative row loaded.</p>
+              <div class="representative-header-controls">
+                <div id="representative-scope-control" class="representative-scope-control hidden">
+                  <button
+                    id="representative-scope-button"
+                    class="representative-scope-button"
+                    type="button"
+                    aria-haspopup="menu"
+                    aria-expanded="false"
+                    aria-label="Representative population"
+                  >
+                    <span id="representative-scope-swatch" class="representative-scope-swatch"></span>
+                    <span id="representative-scope-label">Overall</span>
+                    <span class="picker-caret">▾</span>
+                  </button>
+                  <div
+                    id="representative-scope-menu"
+                    class="representative-scope-menu hidden"
+                    role="menu"
+                    aria-label="Representative population"
+                  >
+                    <button
+                      type="button"
+                      class="representative-scope-option active"
+                      data-representative-scope-value="overall"
+                      role="menuitemradio"
+                      aria-checked="true"
+                    >
+                      <span class="representative-scope-swatch representative-scope-option-swatch"></span>
+                      <span>Overall</span>
+                    </button>
+                  </div>
+                </div>
+                <div id="representative-method-control" class="representative-method-control">
+                  <button
+                    id="representative-method-button"
+                    class="representative-method-button"
+                    type="button"
+                    aria-haspopup="menu"
+                    aria-expanded="false"
+                    aria-label="Representative method"
+                  >
+                    <span id="representative-method-label">Balanced</span>
+                    <span class="picker-caret">▾</span>
+                  </button>
+                  <div
+                    id="representative-method-menu"
+                    class="representative-method-menu hidden"
+                    role="menu"
+                    aria-label="Representative method"
+                  >
+                    <button
+                      type="button"
+                      class="representative-method-option active"
+                      data-representative-method="balanced"
+                      role="menuitemradio"
+                      aria-checked="true"
+                    >
+                      <span>Balanced</span>
+                      <span
+                        class="embedding-settings-help representative-method-item-help"
+                        tabindex="0"
+                        title="Favors a row with typical alignment shape, so gap pattern and coverage stay representative of the selected population."
+                      >?</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="representative-method-option"
+                      data-representative-method="residue"
+                      role="menuitemradio"
+                      aria-checked="false"
+                    >
+                      <span>Residue</span>
+                      <span
+                        class="embedding-settings-help representative-method-item-help"
+                        tabindex="0"
+                        title="Favors amino-acid agreement only, so residue identity drives the choice while gap and coverage patterns matter less."
+                      >?</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
-            <p id="representative-copy" class="structure-copy">No representative row loaded.</p>
             <div class="representative-stage">
               <div id="representative-viewer" class="representative-viewer">
+                <button
+                  id="representative-cluster-grid-button"
+                  class="representative-cluster-grid-button hidden"
+                  type="button"
+                  title="Open Cluster Overview"
+                  aria-label="Open Cluster Overview"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <rect x="4" y="4" width="5" height="5" rx="1"></rect>
+                    <rect x="9.5" y="4" width="5" height="5" rx="1"></rect>
+                    <rect x="15" y="4" width="5" height="5" rx="1"></rect>
+                    <rect x="4" y="9.5" width="5" height="5" rx="1"></rect>
+                    <rect x="9.5" y="9.5" width="5" height="5" rx="1"></rect>
+                    <rect x="15" y="9.5" width="5" height="5" rx="1"></rect>
+                    <rect x="4" y="15" width="5" height="5" rx="1"></rect>
+                    <rect x="9.5" y="15" width="5" height="5" rx="1"></rect>
+                    <rect x="15" y="15" width="5" height="5" rx="1"></rect>
+                  </svg>
+                </button>
                 <div id="representative-partner-filter" class="representative-partner-filter hidden">
                   <div class="representative-partner-filter-header">
                     <span class="representative-partner-filter-title">Partners</span>
@@ -982,6 +1076,72 @@
             <p id="cluster-compare-modal-subtitle">No cluster selected.</p>
           </div>
           <div class="cluster-compare-header-actions">
+            <div
+              id="cluster-compare-representative-method-control"
+              class="representative-method-control cluster-compare-representative-method-control hidden"
+            >
+              <button
+                id="cluster-compare-representative-method-button"
+                class="representative-method-button"
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-label="Cluster representative selection method"
+              >
+                <span id="cluster-compare-representative-method-label">Balanced</span>
+                <span class="picker-caret">▾</span>
+              </button>
+              <div
+                id="cluster-compare-representative-method-menu"
+                class="representative-method-menu hidden"
+                role="menu"
+                aria-label="Cluster representative selection method"
+              >
+                <button
+                  type="button"
+                  class="representative-method-option active"
+                  data-cluster-compare-representative-method="balanced"
+                  role="menuitemradio"
+                  aria-checked="true"
+                >
+                  <span>Balanced</span>
+                  <span
+                    class="embedding-settings-help representative-method-item-help"
+                    tabindex="0"
+                    title="Favors a row with typical alignment shape, so gap pattern and coverage stay representative of the selected population."
+                  >?</span>
+                </button>
+                <button
+                  type="button"
+                  class="representative-method-option"
+                  data-cluster-compare-representative-method="residue"
+                  role="menuitemradio"
+                  aria-checked="false"
+                >
+                  <span>Residue</span>
+                  <span
+                    class="embedding-settings-help representative-method-item-help"
+                    tabindex="0"
+                    title="Favors amino-acid agreement only, so residue identity drives the choice while gap and coverage patterns matter less."
+                  >?</span>
+                </button>
+              </div>
+            </div>
+            <button
+              id="cluster-compare-recenter"
+              class="cluster-compare-icon-button"
+              type="button"
+              title="Center all domains"
+              aria-label="Center all domains"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <circle cx="12" cy="12" r="7"></circle>
+                <path d="M12 5v4"></path>
+                <path d="M12 15v4"></path>
+                <path d="M5 12h4"></path>
+                <path d="M15 12h4"></path>
+              </svg>
+            </button>
             <button
               id="cluster-compare-reroll"
               class="cluster-compare-icon-button"

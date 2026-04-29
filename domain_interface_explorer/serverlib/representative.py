@@ -3,6 +3,13 @@ from __future__ import annotations
 from .interface_embedding import build_interface_alignment_rows_from_metadata
 from .timing import timed_step
 
+REPRESENTATIVE_METHOD_BALANCED = "balanced"
+REPRESENTATIVE_METHOD_RESIDUE = "residue"
+REPRESENTATIVE_METHODS = {
+    REPRESENTATIVE_METHOD_BALANCED,
+    REPRESENTATIVE_METHOD_RESIDUE,
+}
+
 
 def interaction_row_key(interface_row_key: object, partner_domain: object) -> str:
     row_key = str(interface_row_key or "")
@@ -21,6 +28,117 @@ def interface_column_count(candidate: dict[str, object]) -> int:
         except (TypeError, ValueError):
             continue
     return len(columns)
+
+
+def _candidate_row_key(candidate: dict[str, object]) -> str:
+    return interaction_row_key(
+        candidate.get("interface_row_key"),
+        candidate.get("partner_domain"),
+    )
+
+
+def _select_balanced_representative(
+    normalized_candidates: list[dict[str, object]],
+    matrix: object,
+    alignment_length: int,
+) -> tuple[dict[str, object], dict[str, object]]:
+    import numpy as np
+
+    gap_code = 26
+    consensus_codes = np.empty(alignment_length, dtype=np.uint8)
+    for column_index in range(alignment_length):
+        consensus_codes[column_index] = int(
+            np.bincount(matrix[:, column_index], minlength=27).argmax()
+        )
+    matches_by_row = np.count_nonzero(matrix == consensus_codes, axis=1)
+    consensus_gap_columns = consensus_codes == gap_code
+    if bool(np.any(consensus_gap_columns)):
+        gap_matches_by_row = np.count_nonzero(
+            matrix[:, consensus_gap_columns] == gap_code,
+            axis=1,
+        )
+    else:
+        gap_matches_by_row = np.zeros(len(normalized_candidates), dtype=np.int64)
+    coverages = np.count_nonzero(matrix != gap_code, axis=1)
+    median_coverage = float(np.median(coverages)) if len(coverages) else 0.0
+    coverage_distances = np.abs(coverages.astype(np.float64) - median_coverage)
+    match_fractions = matches_by_row.astype(np.float64) / alignment_length
+    scores = match_fractions - (0.05 * (coverage_distances / max(1, alignment_length)))
+    interface_sizes = [interface_column_count(candidate) for candidate in normalized_candidates]
+    row_keys = [_candidate_row_key(candidate) for candidate in normalized_candidates]
+
+    selected_index = min(
+        range(len(normalized_candidates)),
+        key=lambda index: (
+            -float(scores[index]),
+            -float(match_fractions[index]),
+            float(coverage_distances[index]),
+            -int(interface_sizes[index]),
+            row_keys[index],
+        ),
+    )
+    selected = normalized_candidates[selected_index]
+    return selected, {
+        "method": REPRESENTATIVE_METHOD_BALANCED,
+        "score": float(scores[selected_index]),
+        "match_fraction": float(match_fractions[selected_index]),
+        "matches": int(matches_by_row[selected_index]),
+        "gap_matches": int(gap_matches_by_row[selected_index]),
+        "coverage": int(coverages[selected_index]),
+        "median_coverage": median_coverage,
+        "coverage_distance": float(coverage_distances[selected_index]),
+        "interface_column_count": int(interface_sizes[selected_index]),
+    }
+
+
+def _select_residue_consensus_representative(
+    normalized_candidates: list[dict[str, object]],
+    matrix: object,
+    alignment_length: int,
+) -> tuple[dict[str, object], dict[str, object]]:
+    import numpy as np
+
+    gap_code = 26
+    consensus_codes = np.full(alignment_length, gap_code, dtype=np.uint8)
+    for column_index in range(alignment_length):
+        column = matrix[:, column_index]
+        residue_codes = column[column != gap_code]
+        if residue_codes.size <= 0:
+            continue
+        consensus_codes[column_index] = int(np.bincount(residue_codes, minlength=26).argmax())
+
+    consensus_columns = consensus_codes != gap_code
+    consensus_column_count = int(np.count_nonzero(consensus_columns))
+    if consensus_column_count > 0:
+        consensus_view = consensus_codes[consensus_columns]
+        matrix_view = matrix[:, consensus_columns]
+        matches_by_row = np.count_nonzero(matrix_view == consensus_view, axis=1)
+        coverages = np.count_nonzero(matrix_view != gap_code, axis=1)
+    else:
+        matches_by_row = np.zeros(len(normalized_candidates), dtype=np.int64)
+        coverages = np.zeros(len(normalized_candidates), dtype=np.int64)
+
+    match_fractions = matches_by_row.astype(np.float64) / max(1, consensus_column_count)
+    interface_sizes = [interface_column_count(candidate) for candidate in normalized_candidates]
+    row_keys = [_candidate_row_key(candidate) for candidate in normalized_candidates]
+    selected_index = min(
+        range(len(normalized_candidates)),
+        key=lambda index: (
+            -int(matches_by_row[index]),
+            -int(coverages[index]),
+            row_keys[index],
+        ),
+    )
+    selected = normalized_candidates[selected_index]
+    return selected, {
+        "method": REPRESENTATIVE_METHOD_RESIDUE,
+        "score": float(match_fractions[selected_index]),
+        "match_fraction": float(match_fractions[selected_index]),
+        "matches": int(matches_by_row[selected_index]),
+        "coverage": int(coverages[selected_index]),
+        "consensus_columns": consensus_column_count,
+        "interface_column_count": int(interface_sizes[selected_index]),
+    }
 
 
 def compute_cluster_summary_payload(
@@ -107,7 +225,9 @@ def compute_representative_payload(
     *,
     scope: str = "overall",
     cluster_label: int | None = None,
+    method: str = REPRESENTATIVE_METHOD_BALANCED,
 ) -> dict[str, object]:
+    method = method if method in REPRESENTATIVE_METHODS else REPRESENTATIVE_METHOD_BALANCED
     normalized_candidates = [
         candidate
         for candidate in candidates
@@ -118,6 +238,7 @@ def compute_representative_payload(
         "select representative row",
         representative_scope=scope,
         cluster_label=cluster_label if cluster_label is not None else "",
+        representative_method=method,
         candidates=len(normalized_candidates),
         alignment_length=alignment_length,
     ) as timer:
@@ -126,6 +247,7 @@ def compute_representative_payload(
             return {
                 "scope": scope,
                 "cluster_label": cluster_label,
+                "representative_method": method,
                 "candidate_count": len(normalized_candidates),
                 "alignment_length": alignment_length,
                 "representative_row_key": None,
@@ -153,55 +275,19 @@ def compute_representative_payload(
             residue_mask = (values >= 65) & (values <= 90)
             row_view[residue_mask] = values[residue_mask] - 65
 
-        consensus_codes = np.empty(alignment_length, dtype=np.uint8)
-        for column_index in range(alignment_length):
-            consensus_codes[column_index] = int(
-                np.bincount(matrix[:, column_index], minlength=27).argmax()
-            )
-        matches_by_row = np.count_nonzero(matrix == consensus_codes, axis=1)
-        consensus_gap_columns = consensus_codes == gap_code
-        if bool(np.any(consensus_gap_columns)):
-            gap_matches_by_row = np.count_nonzero(
-                matrix[:, consensus_gap_columns] == gap_code,
-                axis=1,
+        if method == REPRESENTATIVE_METHOD_RESIDUE:
+            selected, score_payload = _select_residue_consensus_representative(
+                normalized_candidates,
+                matrix,
+                alignment_length,
             )
         else:
-            gap_matches_by_row = np.zeros(len(normalized_candidates), dtype=np.int64)
-        coverages = np.count_nonzero(matrix != gap_code, axis=1)
-        median_coverage = float(np.median(coverages)) if len(coverages) else 0.0
-        coverage_distances = np.abs(coverages.astype(np.float64) - median_coverage)
-        match_fractions = matches_by_row.astype(np.float64) / alignment_length
-        scores = match_fractions - (0.05 * (coverage_distances / max(1, alignment_length)))
-        interface_sizes = [interface_column_count(candidate) for candidate in normalized_candidates]
-        row_keys = [
-            interaction_row_key(
-                candidate.get("interface_row_key"),
-                candidate.get("partner_domain"),
+            selected, score_payload = _select_balanced_representative(
+                normalized_candidates,
+                matrix,
+                alignment_length,
             )
-            for candidate in normalized_candidates
-        ]
-
-        selected_index = min(
-            range(len(normalized_candidates)),
-            key=lambda index: (
-                -float(scores[index]),
-                -float(match_fractions[index]),
-                float(coverage_distances[index]),
-                -int(interface_sizes[index]),
-                row_keys[index],
-            ),
-        )
-        selected = normalized_candidates[selected_index]
-        selected["_representative_score"] = {
-            "score": float(scores[selected_index]),
-            "match_fraction": float(match_fractions[selected_index]),
-            "matches": int(matches_by_row[selected_index]),
-            "gap_matches": int(gap_matches_by_row[selected_index]),
-            "coverage": int(coverages[selected_index]),
-            "median_coverage": median_coverage,
-            "coverage_distance": float(coverage_distances[selected_index]),
-            "interface_column_count": int(interface_sizes[selected_index]),
-        }
+        selected["_representative_score"] = score_payload
 
         row_payload, _alignment_length = build_interface_alignment_rows_from_metadata(
             [selected],
@@ -222,6 +308,7 @@ def compute_representative_payload(
         return {
             "scope": scope,
             "cluster_label": cluster_label,
+            "representative_method": method,
             "candidate_count": len(normalized_candidates),
             "alignment_length": alignment_length,
             "representative_row_key": representative_row_key,

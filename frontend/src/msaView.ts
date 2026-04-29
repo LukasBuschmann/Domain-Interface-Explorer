@@ -122,6 +122,32 @@ export function createMsaViewController({
   const PFAM_METADATA_POLL_DELAY_MS = 30000;
   const PFAM_METADATA_POLL_MAX_ATTEMPTS = 12;
   const pfamNumberFormatter = new Intl.NumberFormat();
+  const pfamSelectorStatSpecs = [
+    {
+      metricKey: "alignment_length",
+      categoryKey: "alignment_length_category",
+      symbol: "↔",
+      label: "Alignment length",
+    },
+    {
+      metricKey: "interface_rows",
+      categoryKey: "interface_rows_category",
+      symbol: "≣",
+      label: "Interface rows",
+    },
+    {
+      metricKey: "interaction_partners",
+      categoryKey: "interaction_partners_category",
+      symbol: "⋈",
+      label: "Interaction partners",
+    },
+    {
+      metricKey: "avg_interface_residues_per_row",
+      categoryKey: "avg_interface_residues_per_row_category",
+      symbol: "◍",
+      label: "Interface residues per row",
+    },
+  ];
 
   function activeMsaPanelView() {
     return state.msaPanelView;
@@ -189,8 +215,7 @@ export function createMsaViewController({
 
     if (representativeShell) {
       const stage = representativeShell.querySelector(".representative-stage");
-      const title = representativeShell.querySelector("h2");
-      const copy = representativeShell.querySelector("#representative-copy");
+      const header = representativeShell.querySelector(".representative-header");
       const shellStyle = window.getComputedStyle(representativeShell);
       const shellChildren = [...representativeShell.children].filter(
         (child) =>
@@ -199,8 +224,7 @@ export function createMsaViewController({
       const shellGap =
         numericStyleValue(shellStyle, "rowGap") || numericStyleValue(shellStyle, "gap");
       const reservedHeight =
-        outerHeight(title) +
-        outerHeight(copy) +
+        outerHeight(header) +
         shellGap * Math.max(0, shellChildren.length - 1);
       const availableHeight =
         representativeShell.clientHeight -
@@ -334,34 +358,7 @@ export function createMsaViewController({
       return [];
     }
 
-    const specs = [
-      {
-        metricKey: "alignment_length",
-        categoryKey: "alignment_length_category",
-        symbol: "↔",
-        label: "Alignment length",
-      },
-      {
-        metricKey: "interface_rows",
-        categoryKey: "interface_rows_category",
-        symbol: "≣",
-        label: "Interface rows",
-      },
-      {
-        metricKey: "interaction_partners",
-        categoryKey: "interaction_partners_category",
-        symbol: "⋈",
-        label: "Interaction partners",
-      },
-      {
-        metricKey: "avg_interface_residues_per_row",
-        categoryKey: "avg_interface_residues_per_row_category",
-        symbol: "◍",
-        label: "Interface residues per row",
-      },
-    ];
-
-    return specs
+    return pfamSelectorStatSpecs
       .map((spec) => {
         const category = stats[spec.categoryKey];
         const className = badgeCategoryClass(category);
@@ -431,7 +428,7 @@ export function createMsaViewController({
     container.appendChild(item);
   }
 
-  function appendPfamInfoStat(container, label, value) {
+  function appendPfamInfoStat(container, label, value, formatter = formatPfamCount) {
     const numericValue = Number(value);
     if (!Number.isFinite(numericValue)) {
       return;
@@ -440,7 +437,7 @@ export function createMsaViewController({
     item.className = "pfam-info-stat";
     const valueElement = document.createElement("strong");
     valueElement.className = "pfam-info-stat-value";
-    valueElement.textContent = formatPfamCount(numericValue);
+    valueElement.textContent = formatter(numericValue);
     const labelElement = document.createElement("span");
     labelElement.className = "pfam-info-stat-label";
     labelElement.textContent = label;
@@ -460,6 +457,39 @@ export function createMsaViewController({
       }))
       .filter((entry) => Number.isFinite(entry.size) && entry.size > 0 && Number.isFinite(entry.count) && entry.count > 0)
       .sort((left, right) => left.size - right.size);
+  }
+
+  function normalizeInterfaceSummary(summary) {
+    if (!summary || typeof summary !== "object") {
+      return null;
+    }
+    const rawHistogram = summary.interface_size_histogram || summary.histogramEntries;
+    const histogramEntries = normalizeHistogramEntries(rawHistogram);
+    const datasetDomains = Number(summary.dataset_domains ?? summary.datasetDomains);
+    const datasetInterfaces = Number(summary.dataset_interfaces ?? summary.datasetInterfaces);
+    const uniqueInterfaces = Number(summary.unique_interfaces ?? summary.uniqueInterfaces);
+    if (
+      !Number.isFinite(datasetDomains) &&
+      !Number.isFinite(datasetInterfaces) &&
+      !Number.isFinite(uniqueInterfaces) &&
+      !Array.isArray(rawHistogram)
+    ) {
+      return null;
+    }
+    return {
+      datasetDomains,
+      datasetInterfaces,
+      uniqueInterfaces,
+      histogramAvailable: Array.isArray(rawHistogram),
+      histogramEntries,
+    };
+  }
+
+  function currentInterfaceSummary(selected = currentMsaOption()) {
+    const pfamId = currentPfamId();
+    const serverSummary =
+      state.interface?.pfam_id === pfamId ? state.interface?.interface_summary : null;
+    return normalizeInterfaceSummary(serverSummary) || normalizeInterfaceSummary(selected?.stats);
   }
 
   function interfaceSizeFromPayload(rowPayload) {
@@ -504,6 +534,7 @@ export function createMsaViewController({
   function localInterfaceSummary(interfacePayload, selectedPartner = state.selectedPartner) {
     const entries = filteredInterfaceEntries(interfacePayload, selectedPartner);
     const countsBySize = new Map();
+    const uniqueInterfaces = new Set();
     const datasetDomains = new Set();
     for (const entry of entries) {
       const rowKeyParts = String(entry.rowKey || "").split("_", 2);
@@ -514,11 +545,23 @@ export function createMsaViewController({
       if (interfaceSize <= 0) {
         continue;
       }
+      const sourceValues = Array.isArray(entry.rowPayload?.interface_msa_columns_a)
+        ? entry.rowPayload.interface_msa_columns_a
+        : Array.isArray(entry.rowPayload?.interface_residues_a)
+          ? entry.rowPayload.interface_residues_a
+          : [];
+      const columns = [...new Set(
+        sourceValues
+          .map((value) => Number(value))
+          .filter((value) => Number.isInteger(value))
+      )].sort((left, right) => left - right);
+      uniqueInterfaces.add(`${entry.partnerDomain}@@${columns.join(",")}`);
       countsBySize.set(interfaceSize, (countsBySize.get(interfaceSize) || 0) + 1);
     }
     return {
       datasetDomains: datasetDomains.size,
       datasetInterfaces: entries.length,
+      uniqueInterfaces: uniqueInterfaces.size,
       histogramEntries: normalizeHistogramEntries(
         [...countsBySize.entries()].map(([size, count]) => ({ size, count }))
       ),
@@ -721,7 +764,7 @@ export function createMsaViewController({
 
   async function showRandomInterfaceForHistogramBin(bin) {
     if (!state.interface?.data || !state.interface?.overlayComplete || !state.msa) {
-      appStatus.textContent = "Load a filtered interface selection before using the histogram.";
+      appStatus.textContent = "Open the MSA panel to load row data before sampling from the histogram.";
       return;
     }
     const candidates = histogramTargetsForBin(bin);
@@ -745,9 +788,8 @@ export function createMsaViewController({
   }
 
   function renderPfamInfoHistogram() {
-    const histogramEntries = state.interface?.overlayComplete
-      ? histogramEntriesFromInterfacePayload(state.interface?.data)
-      : [];
+    const interfaceSummary = currentInterfaceSummary();
+    const histogramEntries = interfaceSummary?.histogramEntries || [];
     const section = document.createElement("section");
     section.className = "pfam-info-histogram";
 
@@ -756,10 +798,10 @@ export function createMsaViewController({
     title.textContent = "Interface size";
     section.appendChild(title);
 
-    if (!state.interface?.data || !state.interface?.overlayComplete) {
+    if (!interfaceSummary?.histogramAvailable) {
       const empty = document.createElement("p");
       empty.className = "pfam-info-histogram-empty";
-      empty.textContent = "Loading filtered interface-size data…";
+      empty.textContent = "No server interface-size histogram available.";
       section.appendChild(empty);
       return section;
     }
@@ -847,12 +889,10 @@ export function createMsaViewController({
     const pfamId = currentPfamId();
     const cachedInfo = state.pfamInfoByPfamId?.[pfamId] || null;
     const info = state.pfamInfo?.pfam_id === pfamId ? state.pfamInfo : cachedInfo;
-    const localSummary =
-      state.interface?.data && state.interface?.overlayComplete
-        ? localInterfaceSummary(state.interface.data)
-        : null;
-    const datasetDomainCount = Number(localSummary?.datasetDomains ?? selected.stats?.dataset_domains);
-    const datasetInterfaceCount = Number(localSummary?.datasetInterfaces ?? selected.stats?.dataset_interfaces);
+    const interfaceSummary = currentInterfaceSummary(selected);
+    const datasetDomainCount = Number(interfaceSummary?.datasetDomains ?? selected.stats?.dataset_domains);
+    const datasetInterfaceCount = Number(interfaceSummary?.datasetInterfaces ?? selected.stats?.dataset_interfaces);
+    const uniqueInterfaceCount = Number(interfaceSummary?.uniqueInterfaces ?? selected.stats?.unique_interfaces);
     const pfamDomainCount = Number(info?.stats?.matches);
     const shell = document.createElement("div");
     shell.className = "pfam-info-shell";
@@ -956,6 +996,15 @@ export function createMsaViewController({
     const statsGrid = document.createElement("section");
     statsGrid.className = "pfam-info-stats-grid";
     appendPfamInfoStat(statsGrid, "Interfaces in dataset", datasetInterfaceCount);
+    appendPfamInfoStat(statsGrid, "Unique interfaces", uniqueInterfaceCount);
+    for (const spec of pfamSelectorStatSpecs) {
+      appendPfamInfoStat(
+        statsGrid,
+        spec.label,
+        selected.stats?.[spec.metricKey],
+        (value) => formatBadgeValue(spec.metricKey, value)
+      );
+    }
     appendPfamInfoStat(statsGrid, "Pfam domains", info?.stats?.matches);
     appendPfamInfoStat(statsGrid, "Pfam proteins", info?.stats?.proteins);
     appendPfamInfoStat(statsGrid, "Proteomes", info?.stats?.proteomes);
@@ -1963,13 +2012,14 @@ export function createMsaViewController({
   }
 
   function startMsaRowStreamIfNeeded() {
+    const panelView = activeMsaPanelView();
     if (
       !state.msa ||
       !currentMsaStreamFilename ||
       state.msaRowsLoading ||
       state.msaRowsComplete ||
       state.msaRowsLoaded >= state.msaRowsTotal ||
-      activeMsaPanelView() !== "msa"
+      panelView !== "msa"
     ) {
       return;
     }
@@ -2021,7 +2071,8 @@ export function createMsaViewController({
       requestId === state.msaRowsRequestId &&
       nextOffset < totalRows
     ) {
-      if (activeMsaPanelView() !== "msa") {
+      const panelView = activeMsaPanelView();
+      if (panelView !== "msa") {
         state.msaRowsLoading = false;
         return;
       }
@@ -2340,6 +2391,7 @@ export function createMsaViewController({
     state.representativeAnchorRowKey = null;
     state.representativeScope = "overall";
     state.representativeClusterLabel = null;
+    state.representativeMethod = "balanced";
     state.representativeClusterSummaries = null;
     state.representativeVisiblePartners = new Set();
     state.representativeVisibleClusters = new Set();
@@ -2348,7 +2400,12 @@ export function createMsaViewController({
     state.representativeStructure = null;
     state.representativeSelectionRequestId = 0;
     state.representativeRequestId = 0;
+    state.representativeRenderRequestId = 0;
+    state.representativeRenderedRequestId = 0;
     state.representativePointer = null;
+    state.representativeClusterCompareMethod = "balanced";
+    state.clusterCompareMode = "cluster";
+    state.clusterCompareClusterLabel = null;
     state.embeddingView = {
       yaw: -0.7,
       pitch: 0.45,

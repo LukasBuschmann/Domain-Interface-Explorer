@@ -13,6 +13,7 @@ export function createStructureViewController({
   hideLoading,
   buildStructureResidueLookup,
   columnResidueStyles,
+  structureMarkerResidueStyles = () => [],
   msaColumnMaxIndex,
   topResiduesForColumn,
   columnStateDistribution,
@@ -659,6 +660,7 @@ export function createStructureViewController({
     const previousView = initialView || (shouldPreserveView ? copyStructureView(viewer.getView()) : null);
     state.structureResidueLookup = buildStructureResidueLookup(row);
     const residueStyles = columnResidueStyles(state.structureResidueLookup);
+    const markerResidueStyles = structureMarkerResidueStyles(state.structureResidueLookup);
     await viewer.loadStructure({
       modelText,
       payload,
@@ -669,6 +671,7 @@ export function createStructureViewController({
       contactsVisible: state.structureContactsVisible,
       residueLookup: state.structureResidueLookup,
       residueStyles,
+      markerResidueStyles,
       displaySettings: state.structureDisplaySettings,
       onHover: handleStructureHover,
       onHoverEnd: clearStructureHover,
@@ -717,8 +720,14 @@ export function createStructureViewController({
     const lensNote = state.structureColumnView
       ? ` | Main domain hues follow MSA columns 0-${msaColumnMaxIndex()}.`
       : "";
+    const markerNote = markerResidueStyles.length > 0
+      ? " | Selected column residue is marked green."
+      : "";
+    const markerStatusNote = markerResidueStyles.length > 0
+      ? " Selected column residue is marked green."
+      : "";
     elements.structureStatus.textContent =
-      `Interactive structure ready for ${structureRowLabel(row)}. Partners: ${payload.matched_partners.join(", ") || "none"}${lensNote}${alignmentNote}`;
+      `Interactive structure ready for ${structureRowLabel(row)}. Partners: ${payload.matched_partners.join(", ") || "none"}${lensNote}${markerNote}${alignmentNote}`;
     renderStructureHeader(row, payload);
     const partnerRanges = payload.partner_fragment_ranges?.join(", ") || "none";
     elements.structureModalSubtitle.textContent =
@@ -727,13 +736,13 @@ export function createStructureViewController({
       `${payload.matched_partners.join(", ") ? ` | partners: ${payload.matched_partners.join(", ")}` : ""}` +
       `${alignmentNote}`;
     elements.structureModalStatus.textContent = state.structureColumnView
-      ? `Whole protein: gray transparent. Main domain: rainbow by MSA column 0-${msaColumnMaxIndex()}. Partner domain keeps the blue context layers.`
+      ? `Whole protein: gray transparent. Main domain: rainbow by MSA column 0-${msaColumnMaxIndex()}. Partner domain keeps the blue context layers.${markerStatusNote}`
       : `Main interface: ${payload.interface_residue_ids.length} | ` +
         `Main surface: ${payload.surface_residue_ids.length} | ` +
         `Partner interface: ${payload.partner_interface_residue_ids.length} | ` +
         `Partner surface: ${payload.partner_surface_residue_ids.length} | ` +
         `Contacts: ${residueContactPairs(payload).length} | ` +
-        `AlphaFold: ${payload.model_source || "unknown"}`;
+        `AlphaFold: ${payload.model_source || "unknown"}${markerNote}`;
     syncColumnLegends();
   }
 

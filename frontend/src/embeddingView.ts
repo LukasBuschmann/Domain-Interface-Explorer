@@ -653,6 +653,14 @@ export function createEmbeddingViewController({
   }
 
   function allRepresentativeClusterLabels() {
+    if (
+      !interfaceSelect.value ||
+      state.embeddingClustering?.file !== interfaceSelect.value ||
+      state.embeddingClustering?.settingsKey !== embeddingClusteringSettingsKey() ||
+      state.embeddingClustering?.error
+    ) {
+      return [];
+    }
     return Array.from(
       new Set(
         (state.embeddingClustering?.points || [])
@@ -1745,12 +1753,16 @@ export function createEmbeddingViewController({
       state.columnsChart = null;
       state.columnsChartKey = null;
       state.columnsVisibleClusters = new Set();
+      state.representativeClusterSummaries = null;
+      state.representativeVisibleClusters = new Set();
+      state.representativeHoveredClusterLabel = null;
       syncRepresentativeScopeControls();
       syncEmbeddingLoadingUi();
       renderEmbeddingLegend();
       renderEmbeddingPlot();
       renderColumnsClusterLegend();
       renderColumnsChart();
+      renderRepresentativeClusterLegend();
       return;
     }
     const settingsKey = embeddingClusteringSettingsKey();
@@ -1783,10 +1795,14 @@ export function createEmbeddingViewController({
     const requestId = ++state.embeddingClusteringRequestId;
     state.embeddingClusteringLoading = true;
     state.embeddingClusteringLoadingKey = requestKey;
+    state.representativeClusterSummaries = null;
+    state.representativeVisibleClusters = new Set();
+    state.representativeHoveredClusterLabel = null;
     syncRepresentativeScopeControls();
     syncEmbeddingLoadingUi();
     renderEmbeddingLegend();
     renderEmbeddingPlot();
+    renderRepresentativeClusterLegend();
     setEmbeddingInfo(
       `Loading ${clusteringMethodLabel(state.embeddingClusteringSettings.method)} clustering (${embeddingDistanceLabel(state.embeddingClusteringSettings.distance)} distance)...`
     );
@@ -1814,6 +1830,7 @@ export function createEmbeddingViewController({
         state.columnsChartKey = null;
         resetEmbeddingClusterSelection();
         resetColumnsClusterSelection();
+        state.representativeClusterSummaries = null;
         resetRepresentativeClusterSelection();
         state.representativeHoveredClusterLabel = null;
       } catch (error) {
@@ -1828,6 +1845,9 @@ export function createEmbeddingViewController({
         state.columnsChart = null;
         state.columnsChartKey = null;
         state.columnsVisibleClusters = new Set();
+        state.representativeClusterSummaries = null;
+        state.representativeVisibleClusters = new Set();
+        state.representativeHoveredClusterLabel = null;
       } finally {
         if (requestId === state.embeddingClusteringRequestId) {
           state.embeddingClusteringLoading = false;

@@ -2,7 +2,7 @@ import { fetchJson, fetchText } from "./api.js";
 import { interfaceFilePfamId } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams } from "./selectionSettings.js";
 import { createDomainMolstarViewer } from "./molstarView.js";
-export function createStructureViewController({ state, elements, THREE_TO_ONE, interfaceSelect, setLoading, hideLoading, buildStructureResidueLookup, columnResidueStyles, msaColumnMaxIndex, topResiduesForColumn, columnStateDistribution, syncColumnLegends, getSelectedRow, getStructurePreloadRows, clearEmbeddingMemberSelection, }) {
+export function createStructureViewController({ state, elements, THREE_TO_ONE, interfaceSelect, setLoading, hideLoading, buildStructureResidueLookup, columnResidueStyles, structureMarkerResidueStyles = () => [], msaColumnMaxIndex, topResiduesForColumn, columnStateDistribution, syncColumnLegends, getSelectedRow, getStructurePreloadRows, clearEmbeddingMemberSelection, }) {
     const STRUCTURE_PREVIEW_CACHE_LIMIT = 40;
     const STRUCTURE_MODEL_TEXT_CACHE_LIMIT = 24;
     const STRUCTURE_PRELOAD_CONCURRENCY = 1;
@@ -544,6 +544,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         const previousView = initialView || (shouldPreserveView ? copyStructureView(viewer.getView()) : null);
         state.structureResidueLookup = buildStructureResidueLookup(row);
         const residueStyles = columnResidueStyles(state.structureResidueLookup);
+        const markerResidueStyles = structureMarkerResidueStyles(state.structureResidueLookup);
         await viewer.loadStructure({
             modelText,
             payload,
@@ -554,6 +555,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             contactsVisible: state.structureContactsVisible,
             residueLookup: state.structureResidueLookup,
             residueStyles,
+            markerResidueStyles,
             displaySettings: state.structureDisplaySettings,
             onHover: handleStructureHover,
             onHoverEnd: clearStructureHover,
@@ -603,8 +605,14 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         const lensNote = state.structureColumnView
             ? ` | Main domain hues follow MSA columns 0-${msaColumnMaxIndex()}.`
             : "";
+        const markerNote = markerResidueStyles.length > 0
+            ? " | Selected column residue is marked green."
+            : "";
+        const markerStatusNote = markerResidueStyles.length > 0
+            ? " Selected column residue is marked green."
+            : "";
         elements.structureStatus.textContent =
-            `Interactive structure ready for ${structureRowLabel(row)}. Partners: ${payload.matched_partners.join(", ") || "none"}${lensNote}${alignmentNote}`;
+            `Interactive structure ready for ${structureRowLabel(row)}. Partners: ${payload.matched_partners.join(", ") || "none"}${lensNote}${markerNote}${alignmentNote}`;
         renderStructureHeader(row, payload);
         const partnerRanges = payload.partner_fragment_ranges?.join(", ") || "none";
         elements.structureModalSubtitle.textContent =
@@ -613,13 +621,13 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
                 `${payload.matched_partners.join(", ") ? ` | partners: ${payload.matched_partners.join(", ")}` : ""}` +
                 `${alignmentNote}`;
         elements.structureModalStatus.textContent = state.structureColumnView
-            ? `Whole protein: gray transparent. Main domain: rainbow by MSA column 0-${msaColumnMaxIndex()}. Partner domain keeps the blue context layers.`
+            ? `Whole protein: gray transparent. Main domain: rainbow by MSA column 0-${msaColumnMaxIndex()}. Partner domain keeps the blue context layers.${markerStatusNote}`
             : `Main interface: ${payload.interface_residue_ids.length} | ` +
                 `Main surface: ${payload.surface_residue_ids.length} | ` +
                 `Partner interface: ${payload.partner_interface_residue_ids.length} | ` +
                 `Partner surface: ${payload.partner_surface_residue_ids.length} | ` +
                 `Contacts: ${residueContactPairs(payload).length} | ` +
-                `AlphaFold: ${payload.model_source || "unknown"}`;
+                `AlphaFold: ${payload.model_source || "unknown"}${markerNote}`;
         syncColumnLegends();
     }
     async function renderLoadedStructure(row, payload, modelText, options = {}) {

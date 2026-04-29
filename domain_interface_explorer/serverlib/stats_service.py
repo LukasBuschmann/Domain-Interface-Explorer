@@ -382,9 +382,9 @@ def add_metric_categories(pfam_option_stats: dict[str, dict[str, object]], metri
         stats[f"{metric_key}_category"] = category
 
 
-def interface_size_from_payload(row_payload: object) -> int:
+def interface_columns_from_payload(row_payload: object) -> list[int]:
     if not isinstance(row_payload, dict):
-        return 0
+        return []
     source_values = row_payload.get("interface_msa_columns_a")
     if source_values is None:
         source_values = row_payload.get("interface_residues_a", [])
@@ -394,13 +394,59 @@ def interface_size_from_payload(row_payload: object) -> int:
             interface_columns.add(int(value))
         except (TypeError, ValueError):
             continue
-    return len(interface_columns)
+    return sorted(interface_columns)
+
+
+def interface_size_from_payload(row_payload: object) -> int:
+    return len(interface_columns_from_payload(row_payload))
+
+
+def interface_summary_from_payload(interface_payload: object) -> dict[str, object]:
+    dataset_domains: set[tuple[str, str]] = set()
+    unique_interfaces: set[tuple[str, tuple[int, ...]]] = set()
+    histogram: dict[int, int] = {}
+    dataset_interfaces = 0
+    if not isinstance(interface_payload, dict):
+        return {
+            "dataset_domains": 0,
+            "dataset_interfaces": 0,
+            "unique_interfaces": 0,
+            "interface_size_histogram": [],
+        }
+    for partner_domain, rows in interface_payload.items():
+        if not isinstance(rows, dict):
+            continue
+        for row_key, row_payload in rows.items():
+            if not isinstance(row_payload, dict):
+                continue
+            dataset_interfaces += 1
+            row_key_parts = str(row_key or "").split("_", 2)
+            protein_id = row_key_parts[0] if len(row_key_parts) > 0 else ""
+            fragment_key = row_key_parts[1] if len(row_key_parts) > 1 else ""
+            dataset_domains.add((protein_id, fragment_key))
+            columns = interface_columns_from_payload(row_payload)
+            interface_size = len(columns)
+            if interface_size <= 0:
+                continue
+            unique_interfaces.add((str(partner_domain), tuple(columns)))
+            histogram[interface_size] = histogram.get(interface_size, 0) + 1
+    return {
+        "dataset_domains": len(dataset_domains),
+        "dataset_interfaces": dataset_interfaces,
+        "unique_interfaces": len(unique_interfaces),
+        "interface_size_histogram": [
+            {"size": size, "count": count}
+            for size, count in sorted(histogram.items())
+        ],
+    }
 
 
 def compute_pfam_option_stat(task: tuple[str, list[str]]) -> tuple[str, dict[str, object]]:
     pfam_id, path_strings = task
     interface_columns_by_row: dict[str, set[int]] = {}
     dataset_domains: set[tuple[str, str]] = set()
+    unique_interfaces: set[tuple[str, str, tuple[int, ...]]] = set()
+    interface_size_histogram: dict[int, int] = {}
     interaction_partners: set[str] = set()
     alignment_length = 0
     dataset_interfaces = 0
@@ -410,7 +456,7 @@ def compute_pfam_option_stat(task: tuple[str, list[str]]) -> tuple[str, dict[str
         _rows, file_alignment_length = build_interface_alignment_rows(payload)
         alignment_length = max(alignment_length, file_alignment_length)
         interaction_partners.update(partner for partner in payload.keys() if isinstance(partner, str))
-        for rows in payload.values():
+        for partner_domain, rows in payload.items():
             if not isinstance(rows, dict):
                 continue
             for row_key, row_payload in rows.items():
@@ -421,17 +467,15 @@ def compute_pfam_option_stat(task: tuple[str, list[str]]) -> tuple[str, dict[str
                 fragment_key = row_key_parts[1] if len(row_key_parts) > 1 else ""
                 dataset_domains.add((protein_id, fragment_key))
                 row_columns = interface_columns_by_row.setdefault(row_key, set())
-                source_values = row_payload.get("interface_msa_columns_a")
-                if source_values is None:
-                    source_values = row_payload.get("interface_residues_a", [])
-                interface_size = interface_size_from_payload(row_payload)
-                for value in source_values or []:
-                    try:
-                        row_columns.add(int(value))
-                    except (TypeError, ValueError):
-                        continue
+                interface_columns = interface_columns_from_payload(row_payload)
+                row_columns.update(interface_columns)
+                interface_size = len(interface_columns)
                 if interface_size > 0:
                     dataset_interfaces += 1
+                    unique_interfaces.add((str(path.name), str(partner_domain), tuple(interface_columns)))
+                    interface_size_histogram[interface_size] = (
+                        interface_size_histogram.get(interface_size, 0) + 1
+                    )
     interface_rows = len(interface_columns_by_row)
     avg_interface_residues_per_row = 0.0
     if interface_rows:
@@ -441,6 +485,11 @@ def compute_pfam_option_stat(task: tuple[str, list[str]]) -> tuple[str, dict[str
         "dataset_domains": len(dataset_domains),
         "interface_rows": interface_rows,
         "dataset_interfaces": dataset_interfaces,
+        "unique_interfaces": len(unique_interfaces),
+        "interface_size_histogram": [
+            {"size": size, "count": count}
+            for size, count in sorted(interface_size_histogram.items())
+        ],
         "interaction_partners": len(interaction_partners),
         "avg_interface_residues_per_row": round(avg_interface_residues_per_row, 2),
     }

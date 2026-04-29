@@ -190,6 +190,8 @@ export function createRepresentativeViewController({
     state.representativeStructure = null;
     state.representativeHoveredClusterLabel = null;
     state.representativeRenderedRowKey = null;
+    state.representativeRenderRequestId += 1;
+    state.representativeRenderedRequestId = state.representativeRenderRequestId;
     hideRepresentativeHoverCard();
     renderRepresentativeClusterLegend();
     if (state.representativeViewer) {
@@ -333,6 +335,33 @@ export function createRepresentativeViewController({
     };
   }
 
+  function focusRepresentativeDomainStable(viewer, domainSelection, renderRequestId, representative) {
+    const residues = domainSelection?.resi || [];
+    const focus = () => {
+      if (
+        renderRequestId !== state.representativeRenderRequestId ||
+        state.representativeStructure !== representative
+      ) {
+        return;
+      }
+      viewer.resize();
+      if (typeof viewer.focusResidues === "function") {
+        viewer.focusResidues(residues, 12);
+      } else if (typeof viewer.focusResiduesStable === "function") {
+        viewer.focusResiduesStable(residues, 12);
+      }
+      viewer.render();
+    };
+    focus();
+    window.requestAnimationFrame(() => {
+      focus();
+      window.requestAnimationFrame(() => {
+        focus();
+        window.setTimeout(focus, 60);
+      });
+    });
+  }
+
   function formatRepresentativeHover(hover, residueLookup) {
     const residueId = Number(hover?.residueId);
     const mapped = residueLookup.get(residueId);
@@ -423,6 +452,8 @@ export function createRepresentativeViewController({
     if (!representative) {
       return;
     }
+    const renderRequestId = state.representativeRenderRequestId + 1;
+    state.representativeRenderRequestId = renderRequestId;
 
     if (representativeLens() === "cluster" && !state.embeddingClusteringLoading) {
       void ensureEmbeddingClusteringLoaded();
@@ -450,21 +481,35 @@ export function createRepresentativeViewController({
       clusterLensData,
       representativeLens: representativeLens(),
       displaySettings: state.structureDisplaySettings,
+      cameraView: previousView,
       onHover: (hover) => handleRepresentativeHover(hover, representative.row, clusterLensData),
       onHoverEnd: clearRepresentativeHover,
     });
+    if (
+      renderRequestId !== state.representativeRenderRequestId ||
+      state.representativeStructure !== representative
+    ) {
+      if (state.representativeStructure) {
+        const latestRenderFinished =
+          state.representativeRenderedRequestId === state.representativeRenderRequestId;
+        if (latestRenderFinished) {
+          void renderRepresentativeStructure();
+        }
+      } else {
+        viewer.clear();
+        viewer.render();
+      }
+      return;
+    }
     viewer.resize();
     if (previousView) {
-      viewer.setView(previousView);
+      viewer.setView(previousView, { poseOnly: true });
     } else {
-      if (typeof viewer.focusResiduesStable === "function") {
-        viewer.focusResiduesStable(domainSelection.resi, 8);
-      } else {
-        viewer.focusResidues(domainSelection.resi, 8);
-      }
+      focusRepresentativeDomainStable(viewer, domainSelection, renderRequestId, representative);
     }
     viewer.render();
     state.representativeRenderedRowKey = representative.row.row_key;
+    state.representativeRenderedRequestId = renderRequestId;
     renderRepresentativeClusterLegend(clusterLensData);
 
     renderRepresentativeCopyContent(representative.row, representative.payload);

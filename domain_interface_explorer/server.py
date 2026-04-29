@@ -44,11 +44,14 @@ from domain_interface_explorer.serverlib.interface_embedding import (
     parse_interface_filter_settings,
 )
 from domain_interface_explorer.serverlib.representative import (
+    REPRESENTATIVE_METHOD_BALANCED,
+    REPRESENTATIVE_METHODS,
     compute_cluster_summary_payload,
     compute_representative_payload,
     interaction_row_key as representative_interaction_row_key,
 )
 from domain_interface_explorer.serverlib.stats_service import (
+    interface_summary_from_payload,
     load_cached_pfam_option_stats,
     load_or_fetch_pfam_info,
     load_or_compute_clean_column_identity,
@@ -137,6 +140,7 @@ def representative_cache_key(
     filter_settings: dict[str, object],
     partner_filter: str,
     scope: str,
+    representative_method: str,
     cluster_label: int | None,
     clustering_settings: dict[str, object] | None,
 ) -> str:
@@ -149,6 +153,7 @@ def representative_cache_key(
             interface_filter_settings_key(filter_settings),
             str(partner_filter),
             str(scope),
+            str(representative_method),
             "" if cluster_label is None else str(cluster_label),
             json.dumps(clustering_settings or {}, sort_keys=True),
         )
@@ -515,6 +520,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 for partner_domain, rows_by_partner in sorted(filtered_payload.items())
                 if isinstance(rows_by_partner, dict)
             }
+            interface_summary = interface_summary_from_payload(filtered_payload)
             response_payload = {
                 "file": path.name,
                 "pfam_id": pfam_id,
@@ -523,6 +529,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 "row_count": total_rows,
                 "interface_partner_domains": list(interface_partner_counts),
                 "interface_partner_counts": interface_partner_counts,
+                "interface_summary": interface_summary,
                 "row_offset": row_offset,
                 "row_limit": row_limit,
                 "rows_loaded": returned_row_count,
@@ -925,10 +932,20 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         path, interface_filter_settings = resolved_file
         scope = query.get("representative_scope", query.get("scope", ["overall"]))[0].strip().lower()
+        representative_method = query.get(
+            "representative_method",
+            [""],
+        )[0].strip().lower() or REPRESENTATIVE_METHOD_BALANCED
         partner_filter = query.get("partner", ["__all__"])[0].strip() or "__all__"
         if scope not in {"overall", "cluster"}:
             self._send_json(
                 {"error": "representative_scope must be either 'overall' or 'cluster'"},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        if representative_method not in REPRESENTATIVE_METHODS:
+            self._send_json(
+                {"error": "representative_method must be either 'balanced' or 'residue'"},
                 status=HTTPStatus.BAD_REQUEST,
             )
             return
@@ -951,6 +968,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             interface_filter_settings,
             partner_filter,
             scope,
+            representative_method,
             cluster_label,
             clustering_settings,
         )
@@ -963,6 +981,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                     "reuse cached representative",
                     file=path.name,
                     representative_scope=scope,
+                    representative_method=representative_method,
                     partner=partner_filter,
                     cluster_label=cluster_label if cluster_label is not None else "",
                     row_key=cached_response.get("representative_row_key"),
@@ -1014,6 +1033,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                     alignment_length,
                     scope=scope,
                     cluster_label=cluster_label,
+                    method=representative_method,
                 ),
             }
             if cluster_summaries is not None:

@@ -146,6 +146,15 @@ function residueStyleIds(residueStyles) {
         ? residueStyles.map((style) => style?.residueId)
         : [];
 }
+function filterResidueStyles(residueStyles, excludedResidues) {
+    const excluded = new Set(numberList(excludedResidues));
+    return Array.isArray(residueStyles)
+        ? residueStyles.filter((style) => {
+            const residueId = Number.parseInt(style?.residueId, 10);
+            return !Number.isFinite(residueId) || !excluded.has(residueId);
+        })
+        : [];
+}
 function mainFragmentResidues(payload) {
     if (Array.isArray(payload?.fragment_residue_ids) && payload.fragment_residue_ids.length > 0) {
         return numberList(payload.fragment_residue_ids);
@@ -342,6 +351,34 @@ function multisampleLevel(settings) {
     }
     return Math.round(clamp(settings?.antialiasSampleLevel ?? 3, 0, 5));
 }
+function cameraVector(value) {
+    if (!value || typeof value.length !== "number") {
+        return value;
+    }
+    return [Number(value[0] || 0), Number(value[1] || 0), Number(value[2] || 0)];
+}
+function cameraPoseSnapshot(snapshot) {
+    if (!snapshot) {
+        return null;
+    }
+    const pose = {};
+    if (typeof snapshot.mode !== "undefined") {
+        pose.mode = snapshot.mode;
+    }
+    if (typeof snapshot.fov !== "undefined") {
+        pose.fov = snapshot.fov;
+    }
+    if (typeof snapshot.position !== "undefined") {
+        pose.position = cameraVector(snapshot.position);
+    }
+    if (typeof snapshot.up !== "undefined") {
+        pose.up = cameraVector(snapshot.up);
+    }
+    if (typeof snapshot.target !== "undefined") {
+        pose.target = cameraVector(snapshot.target);
+    }
+    return Object.keys(pose).length > 0 ? pose : null;
+}
 export function createDomainMolstarViewer(root, options = {}) {
     return new DomainMolstarViewer(root, options);
 }
@@ -429,7 +466,7 @@ class DomainMolstarViewer {
             this.readyPromise = null;
         }
     }
-    async loadStructure({ modelText, payload, format = "pdb", label = "Structure", mode = "structure", columnView = false, contactsVisible = false, residueLookup = new Map(), residueStyles = [], clusterLensData = null, representativeLens = "", onHover = null, onHoverEnd = null, displaySettings = {}, }) {
+    async loadStructure({ modelText, payload, format = "pdb", label = "Structure", mode = "structure", columnView = false, contactsVisible = false, residueLookup = new Map(), residueStyles = [], markerResidueStyles = [], clusterLensData = null, representativeLens = "", onHover = null, onHoverEnd = null, displaySettings = {}, cameraView = null, }) {
         const generation = this.loadGeneration + 1;
         this.loadGeneration = generation;
         const settings = displaySettingsWithPreset(displaySettings);
@@ -468,6 +505,7 @@ class DomainMolstarViewer {
             contactsVisible,
             residueLookup,
             residueStyles,
+            markerResidueStyles,
             clusterLensData,
             representativeLens,
             settings,
@@ -475,13 +513,16 @@ class DomainMolstarViewer {
         });
         this.attachHover(onHover, onHoverEnd);
         this.resize();
+        if (cameraView) {
+            this.setView(cameraView, { poseOnly: true });
+        }
         this.render();
     }
     async addRepresentations(options) {
-        const { mode, payload, settings, modelText, residueStyles } = options;
+        const { mode, payload, settings, modelText, residueStyles, markerResidueStyles } = options;
         const fragmentResidues = mainFragmentResidues(payload);
         const partnerResidues = payload?.partner_fragment_residue_ids || [];
-        const contextResidues = differenceResidues(pdbResidueIds(modelText), fragmentResidues, partnerResidues, residueStyleIds(residueStyles));
+        const contextResidues = differenceResidues(pdbResidueIds(modelText), fragmentResidues, partnerResidues, residueStyleIds(residueStyles), residueStyleIds(markerResidueStyles));
         await this.addContextCartoon(settings, contextResidues);
         if (mode === "representative") {
             await this.addRepresentativeRepresentations(options);
@@ -518,22 +559,25 @@ class DomainMolstarViewer {
         }
     }
     async addStructureRepresentations(options) {
-        const { payload, columnView, contactsVisible, residueStyles, settings, modelText, mode } = options;
+        const { payload, columnView, contactsVisible, residueStyles, markerResidueStyles = [], settings, modelText, mode, } = options;
         const fragmentResidues = mainFragmentResidues(payload);
         const interfaceResidues = payload?.interface_residue_ids || [];
-        const surfaceOnlyResidues = differenceResidues(payload?.surface_residue_ids, interfaceResidues);
-        const domainOnlyResidues = differenceResidues(fragmentResidues, payload?.surface_residue_ids, interfaceResidues);
+        const markerResidues = residueStyleIds(markerResidueStyles);
+        const surfaceOnlyResidues = differenceResidues(payload?.surface_residue_ids, interfaceResidues, markerResidues);
+        const domainOnlyResidues = differenceResidues(fragmentResidues, payload?.surface_residue_ids, interfaceResidues, markerResidues);
+        const visibleInterfaceResidues = differenceResidues(interfaceResidues, markerResidues);
         const partnerInterfaceResidues = payload?.partner_interface_residue_ids || [];
         const partnerSurfaceOnlyResidues = differenceResidues(payload?.partner_surface_residue_ids, partnerInterfaceResidues);
         const partnerDomainOnlyResidues = differenceResidues(payload?.partner_fragment_residue_ids, payload?.partner_surface_residue_ids, partnerInterfaceResidues);
         if (columnView) {
-            await this.addResiduesByColor(stylesToColorMap(residueStyles), settings, "column");
+            await this.addResiduesByColor(stylesToColorMap(filterResidueStyles(residueStyles, markerResidues)), settings, "column");
         }
         else {
             await this.addResidueCartoon(domainOnlyResidues, MAIN_DOMAIN_COLOR, settings, "main-domain", "Main domain");
             await this.addResidueCartoon(surfaceOnlyResidues, MAIN_SURFACE_COLOR, settings, "main-surface", "Main surface");
-            await this.addResidueCartoon(interfaceResidues, MAIN_INTERFACE_COLOR, settings, "main-interface", "Main interface");
+            await this.addResidueCartoon(visibleInterfaceResidues, MAIN_INTERFACE_COLOR, settings, "main-interface", "Main interface");
         }
+        await this.addResiduesByColor(stylesToColorMap(markerResidueStyles), settings, "structure-marker");
         await this.addResidueCartoon(partnerDomainOnlyResidues, PARTNER_DOMAIN_COLOR, settings, "partner-domain", "Partner domain");
         await this.addResidueCartoon(partnerSurfaceOnlyResidues, PARTNER_SURFACE_COLOR, settings, "partner-surface", "Partner surface");
         await this.addResidueCartoon(partnerInterfaceResidues, PARTNER_INTERFACE_COLOR, settings, "partner-interface", "Partner interface");
@@ -713,11 +757,15 @@ class DomainMolstarViewer {
     getView() {
         return this.plugin?.canvas3d?.camera?.getSnapshot?.() || null;
     }
-    setView(view) {
+    setView(view, options = {}) {
         if (!view || !this.plugin) {
             return;
         }
-        PluginCommands.Camera.SetSnapshot(this.plugin, { snapshot: view, durationMs: 0 });
+        const snapshot = options.poseOnly ? cameraPoseSnapshot(view) : view;
+        if (!snapshot) {
+            return;
+        }
+        PluginCommands.Camera.SetSnapshot(this.plugin, { snapshot, durationMs: 0 });
     }
     resize() {
         this.plugin?.handleResize?.();

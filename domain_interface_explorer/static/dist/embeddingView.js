@@ -508,6 +508,12 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         state.columnsVisibleClusters = new Set(allColumnsClusterLabels());
     }
     function allRepresentativeClusterLabels() {
+        if (!interfaceSelect.value ||
+            state.embeddingClustering?.file !== interfaceSelect.value ||
+            state.embeddingClustering?.settingsKey !== embeddingClusteringSettingsKey() ||
+            state.embeddingClustering?.error) {
+            return [];
+        }
         return Array.from(new Set((state.embeddingClustering?.points || [])
             .map((point) => String(point.cluster_label))
             .filter((clusterLabel) => Number(clusterLabel) >= 0))).sort((left, right) => Number(left) - Number(right));
@@ -1453,12 +1459,16 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             state.columnsChart = null;
             state.columnsChartKey = null;
             state.columnsVisibleClusters = new Set();
+            state.representativeClusterSummaries = null;
+            state.representativeVisibleClusters = new Set();
+            state.representativeHoveredClusterLabel = null;
             syncRepresentativeScopeControls();
             syncEmbeddingLoadingUi();
             renderEmbeddingLegend();
             renderEmbeddingPlot();
             renderColumnsClusterLegend();
             renderColumnsChart();
+            renderRepresentativeClusterLegend();
             return;
         }
         const settingsKey = embeddingClusteringSettingsKey();
@@ -1487,10 +1497,14 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         const requestId = ++state.embeddingClusteringRequestId;
         state.embeddingClusteringLoading = true;
         state.embeddingClusteringLoadingKey = requestKey;
+        state.representativeClusterSummaries = null;
+        state.representativeVisibleClusters = new Set();
+        state.representativeHoveredClusterLabel = null;
         syncRepresentativeScopeControls();
         syncEmbeddingLoadingUi();
         renderEmbeddingLegend();
         renderEmbeddingPlot();
+        renderRepresentativeClusterLegend();
         setEmbeddingInfo(`Loading ${clusteringMethodLabel(state.embeddingClusteringSettings.method)} clustering (${embeddingDistanceLabel(state.embeddingClusteringSettings.distance)} distance)...`);
         state.embeddingClusteringPromise = (async () => {
             try {
@@ -1516,6 +1530,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 state.columnsChartKey = null;
                 resetEmbeddingClusterSelection();
                 resetColumnsClusterSelection();
+                state.representativeClusterSummaries = null;
                 resetRepresentativeClusterSelection();
                 state.representativeHoveredClusterLabel = null;
             }
@@ -1531,6 +1546,9 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 state.columnsChart = null;
                 state.columnsChartKey = null;
                 state.columnsVisibleClusters = new Set();
+                state.representativeClusterSummaries = null;
+                state.representativeVisibleClusters = new Set();
+                state.representativeHoveredClusterLabel = null;
             }
             finally {
                 if (requestId === state.embeddingClusteringRequestId) {
