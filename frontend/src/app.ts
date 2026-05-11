@@ -19,6 +19,7 @@ import { state } from "./state.js";
 import { createStructureViewController } from "./structureView.js";
 import { createRepresentativeViewController } from "./representativeView.js";
 import { createEmbeddingViewController } from "./embeddingView.js";
+import { createDendrogramViewController } from "./dendrogramView.js";
 import { createMsaViewController } from "./msaView.js";
 import {
   buildPartnerColorMap,
@@ -49,6 +50,7 @@ const {
   clusterCompareModal,
   columnCount,
   columnsRoot,
+  clusteringSettingsToggle,
   detailsList,
   embeddingCanvas,
   embeddingRoot,
@@ -407,6 +409,34 @@ const {
   visibleColumnsClusters,
   visibleRepresentativeClusters,
 } = embeddingViewController;
+
+const dendrogramViewController = createDendrogramViewController({
+  state,
+  elements,
+  interfaceSelect,
+  appendClusteringSettingsToParams,
+  embeddingClusteringSettingsKey,
+  embeddingClusterColor,
+  embeddingClusterLabel,
+  partnerColor,
+});
+const {
+  allDendrogramClusterLabels,
+  clearDendrogram,
+  ensureDendrogramLoaded,
+  handleDendrogramPointerDown,
+  handleDendrogramPointerMove,
+  handleDendrogramPointerUp,
+  handleDendrogramWheel,
+  renderDendrogramLegend,
+  renderDendrogram,
+  requestDendrogramRender,
+  resetDendrogramClusterSelection,
+  resetDendrogramPartnerSelection,
+  resizeDendrogramCanvas,
+  scheduleDendrogramLoad,
+  syncDendrogramControls,
+} = dendrogramViewController;
 
 function representativeLens() {
   return state.representativeLens;
@@ -2037,14 +2067,20 @@ const msaViewController = createMsaViewController({
   syncEmbeddingSettingsUi,
   resizeEmbeddingCanvas,
   resizeColumnsCanvas,
+  resizeDendrogramCanvas,
   renderEmbeddingPlot,
   renderColumnsChart,
+  renderDendrogram,
+  renderDendrogramLegend,
   renderColumnsClusterLegend,
   setEmbeddingInfo,
   setColumnsInfo,
   ensureEmbeddingDataLoaded,
   ensureEmbeddingClusteringLoaded,
+  ensureDendrogramLoaded,
   resetColumnsClusterSelection,
+  resetDendrogramPartnerSelection,
+  resetDendrogramClusterSelection,
   resetEmbeddingPartnerSelection,
   resetEmbeddingClusterSelection,
   resetRepresentativePartnerSelection,
@@ -2066,6 +2102,7 @@ const msaViewController = createMsaViewController({
   allColumnsClusterLabels,
   visibleColumnsClusters,
   updatePartnerOptions,
+  syncDendrogramControls,
 });
 const {
   clearViewer,
@@ -2273,6 +2310,8 @@ msaPanelTabs.addEventListener("click", (event) => {
     void ensureEmbeddingClusteringLoaded();
   } else if (nextView === "columns") {
     void ensureEmbeddingClusteringLoaded();
+  } else if (nextView === "dendrogram") {
+    void ensureDendrogramLoaded();
   }
 });
 
@@ -2308,6 +2347,9 @@ function scheduleLiveHierarchicalClusteringUpdate() {
       ) {
         await ensureEmbeddingClusteringLoaded();
       }
+      if (activeMsaPanelView() === "dendrogram") {
+        await ensureDendrogramLoaded({ force: true });
+      }
       if (state.representativeScope === "cluster") {
         await refreshRepresentativeSelection("No representative row found for the selected scope.");
       }
@@ -2326,8 +2368,27 @@ function scheduleHierarchyStatusUpdate() {
   }, 250);
 }
 
-embeddingSettingsToggle.addEventListener("click", () => {
-  state.embeddingSettingsOpen = !state.embeddingSettingsOpen;
+function placeEmbeddingSettingsPanel() {
+  if (state.embeddingSettingsSection === "clustering") {
+    if (embeddingSettingsPanel.parentElement !== msaPanelTabs.parentElement) {
+      msaPanelTabs.insertAdjacentElement("afterend", embeddingSettingsPanel);
+    }
+    embeddingSettingsPanel.classList.remove("points-settings-panel");
+    embeddingSettingsPanel.classList.add("clustering-settings-panel");
+    return;
+  }
+  if (embeddingSettingsPanel.parentElement !== embeddingRoot) {
+    embeddingRoot.appendChild(embeddingSettingsPanel);
+  }
+  embeddingSettingsPanel.classList.remove("clustering-settings-panel");
+  embeddingSettingsPanel.classList.add("points-settings-panel");
+}
+
+function openEmbeddingSettingsSection(section) {
+  const wasOpenOnSection =
+    state.embeddingSettingsOpen && state.embeddingSettingsSection === section;
+  state.embeddingSettingsOpen = !wasOpenOnSection;
+  state.embeddingSettingsSection = section;
   state.embeddingSettingsDraft = {
     ...state.embeddingSettings,
   };
@@ -2348,10 +2409,19 @@ embeddingSettingsToggle.addEventListener("click", () => {
     ).trim();
   }
   state.embeddingClusteringSettingsDraft = normalizeHierarchicalDraft(state.embeddingClusteringSettingsDraft);
+  placeEmbeddingSettingsPanel();
   syncEmbeddingSettingsUi();
-  if (state.embeddingSettingsOpen) {
+  if (state.embeddingSettingsOpen && section === "clustering") {
     void ensureHierarchyStatusLoaded();
   }
+}
+
+embeddingSettingsToggle.addEventListener("click", () => {
+  openEmbeddingSettingsSection("points");
+});
+
+clusteringSettingsToggle?.addEventListener("click", () => {
+  openEmbeddingSettingsSection("clustering");
 });
 
 embeddingSettingsPanel.addEventListener("click", (event) => {
@@ -2450,6 +2520,32 @@ embeddingClusterHierarchicalMinSizeInput.addEventListener("input", () => {
   scheduleLiveHierarchicalClusteringUpdate();
 });
 
+elements.dendrogramDepthSlider?.addEventListener("input", () => {
+  state.dendrogramDepth = Number(elements.dendrogramDepthSlider.value || 5);
+  syncDendrogramControls();
+  scheduleDendrogramLoad();
+});
+
+elements.dendrogramRadiusMode?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-dendrogram-radius-mode]");
+  if (!button) {
+    return;
+  }
+  const nextMode = button.dataset.dendrogramRadiusMode;
+  if (!nextMode || nextMode === state.dendrogramRadiusMode) {
+    return;
+  }
+  state.dendrogramRadiusMode = nextMode;
+  syncDendrogramControls();
+  requestDendrogramRender();
+});
+
+elements.dendrogramCanvas?.addEventListener("pointerdown", handleDendrogramPointerDown);
+elements.dendrogramCanvas?.addEventListener("pointermove", handleDendrogramPointerMove);
+elements.dendrogramCanvas?.addEventListener("pointerup", handleDendrogramPointerUp);
+elements.dendrogramCanvas?.addEventListener("pointercancel", handleDendrogramPointerUp);
+elements.dendrogramCanvas?.addEventListener("wheel", handleDendrogramWheel, { passive: false });
+
 embeddingClusterDistanceInput.addEventListener("change", () => {
   state.embeddingClusteringSettingsDraft = readEmbeddingClusteringDraftInputs();
   void ensureHierarchyStatusLoaded();
@@ -2499,6 +2595,9 @@ embeddingClusteringApply.addEventListener("click", async () => {
       representativeDependsOnClustering
     ) {
       await ensureEmbeddingClusteringLoaded();
+    }
+    if (activeMsaPanelView() === "dendrogram") {
+      await ensureDendrogramLoaded({ force: true });
     }
     if (state.representativeScope === "cluster") {
       await refreshRepresentativeSelection("No representative row found for the selected scope.");
@@ -2572,6 +2671,71 @@ embeddingPartnerLegend.addEventListener("click", (event) => {
   }
   renderEmbeddingLegend();
   requestEmbeddingRender();
+});
+
+elements.dendrogramPartnerLegend?.addEventListener("click", (event) => {
+  const modeButton = event.target.closest("[data-legend-mode]");
+  if (modeButton) {
+    const nextMode = modeButton.dataset.legendMode;
+    if (!nextMode || nextMode === state.dendrogramColorMode) {
+      return;
+    }
+    state.dendrogramColorMode = nextMode;
+    renderDendrogramLegend();
+    requestDendrogramRender();
+    if (nextMode === "cluster") {
+      void ensureDendrogramLoaded();
+    }
+    return;
+  }
+
+  const clusterButton = event.target.closest("[data-cluster-label]");
+  if (clusterButton) {
+    const clusterLabel = clusterButton.dataset.clusterLabel;
+    if (!clusterLabel) {
+      return;
+    }
+    const allClusterLabels = allDendrogramClusterLabels();
+    if (event.ctrlKey || event.metaKey) {
+      const isIsolated =
+        state.dendrogramVisibleClusters.size === 1 &&
+        state.dendrogramVisibleClusters.has(clusterLabel);
+      state.dendrogramVisibleClusters = isIsolated
+        ? new Set(allClusterLabels)
+        : new Set([clusterLabel]);
+    } else if (state.dendrogramVisibleClusters.has(clusterLabel)) {
+      state.dendrogramVisibleClusters.delete(clusterLabel);
+    } else {
+      state.dendrogramVisibleClusters.add(clusterLabel);
+    }
+    renderDendrogramLegend();
+    requestDendrogramRender();
+    return;
+  }
+
+  const partnerButton = event.target.closest("[data-partner-domain]");
+  if (!partnerButton) {
+    return;
+  }
+  const partnerDomain = partnerButton.dataset.partnerDomain;
+  if (!partnerDomain) {
+    return;
+  }
+  const allPartners = state.interface?.partnerDomains || [];
+  if (event.ctrlKey || event.metaKey) {
+    const isIsolated =
+      state.dendrogramVisiblePartners.size === 1 &&
+      state.dendrogramVisiblePartners.has(partnerDomain);
+    state.dendrogramVisiblePartners = isIsolated
+      ? new Set(allPartners)
+      : new Set([partnerDomain]);
+  } else if (state.dendrogramVisiblePartners.has(partnerDomain)) {
+    state.dendrogramVisiblePartners.delete(partnerDomain);
+  } else {
+    state.dendrogramVisiblePartners.add(partnerDomain);
+  }
+  renderDendrogramLegend();
+  requestDendrogramRender();
 });
 
 representativeClusterLegend?.addEventListener("click", (event) => {
@@ -2963,7 +3127,8 @@ document.addEventListener("click", (event) => {
   if (
     state.embeddingSettingsOpen &&
     !event.target.closest("#embedding-settings-panel") &&
-    !event.target.closest("#embedding-settings-toggle")
+    !event.target.closest("#embedding-settings-toggle") &&
+    !event.target.closest("#clustering-settings-toggle")
   ) {
     state.embeddingSettingsOpen = false;
     syncEmbeddingSettingsUi();
@@ -3046,6 +3211,7 @@ if (window.ResizeObserver) {
   layoutObserver.observe(gridScroll);
   layoutObserver.observe(embeddingRoot);
   layoutObserver.observe(columnsRoot);
+  layoutObserver.observe(elements.dendrogramRoot);
   layoutObserver.observe(representativeViewerRoot);
 }
 

@@ -520,6 +520,7 @@ select,
 
 .viewer-panel {
   grid-area: msa;
+  position: relative;
   display: flex;
   flex-direction: column;
   padding: 14px;
@@ -539,7 +540,8 @@ select,
 .viewer-panel > .viewer-root,
 .viewer-panel > .info-root,
 .viewer-panel > .embedding-root,
-.viewer-panel > .columns-root {
+.viewer-panel > .columns-root,
+.viewer-panel > .dendrogram-root {
   flex: 1 1 auto;
   min-height: 0;
 }
@@ -854,9 +856,10 @@ select,
 }
 
 .msa-panel-tabs {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
   margin-bottom: 10px;
 }
 
@@ -875,6 +878,16 @@ select,
 }
 
 .msa-panel-tab.active {
+  background: #8d5b2c;
+  border-color: #8d5b2c;
+  color: #fff9ee;
+}
+
+.clustering-settings-tab {
+  margin-left: auto;
+}
+
+.clustering-settings-tab[aria-expanded="true"] {
   background: #8d5b2c;
   border-color: #8d5b2c;
   color: #fff9ee;
@@ -1118,14 +1131,76 @@ select,
   overflow: hidden;
 }
 
+.dendrogram-root {
+  position: relative;
+  min-height: 0;
+  background:
+    radial-gradient(circle at 14% 18%, rgba(141, 91, 44, 0.1), transparent 24%),
+    linear-gradient(180deg, #fffdf8 0%, #f4ede0 100%);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
 .columns-canvas {
   display: block;
   width: 100%;
   height: 100%;
 }
 
+.dendrogram-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+.dendrogram-canvas:active {
+  cursor: grabbing;
+}
+
 .columns-root .embedding-info {
   display: none;
+}
+
+.dendrogram-controls {
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  width: min(300px, calc(100% - 28px));
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(215, 204, 179, 0.9);
+  background: rgba(255, 252, 245, 0.94);
+  box-shadow: 0 10px 24px rgba(31, 23, 16, 0.08);
+  color: var(--muted);
+  font-size: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.dendrogram-controls label {
+  display: grid;
+  gap: 6px;
+}
+
+.dendrogram-radius-control {
+  display: grid;
+  gap: 6px;
+}
+
+.dendrogram-controls .embedding-legend-mode {
+  width: fit-content;
+}
+
+@media (max-width: 760px) {
+  .dendrogram-root .embedding-partner-legend {
+    top: 126px;
+    left: 14px;
+    right: auto;
+    max-height: calc(100% - 154px);
+  }
 }
 
 .embedding-canvas {
@@ -1209,13 +1284,9 @@ select,
 
 .embedding-settings-panel {
   position: absolute;
-  top: 56px;
-  left: 14px;
-  z-index: 2;
-  width: 248px;
+  z-index: 6;
   display: grid;
   gap: 10px;
-  max-height: calc(100vh - 84px);
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 12px;
@@ -1223,6 +1294,22 @@ select,
   border: 1px solid rgba(215, 204, 179, 0.92);
   background: rgba(255, 252, 245, 0.96);
   box-shadow: 0 10px 24px rgba(31, 23, 16, 0.1);
+}
+
+.embedding-settings-panel.points-settings-panel {
+  top: 56px;
+  left: 14px;
+  right: auto;
+  width: 248px;
+  max-height: calc(100% - 70px);
+}
+
+.embedding-settings-panel.clustering-settings-panel {
+  top: 58px;
+  right: 14px;
+  left: auto;
+  width: min(300px, calc(100% - 28px));
+  max-height: calc(100% - 72px);
 }
 
 .embedding-settings-panel.hidden {

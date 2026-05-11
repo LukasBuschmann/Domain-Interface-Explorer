@@ -145,6 +145,25 @@
               >
                 Columns
               </button>
+              <button
+                type="button"
+                class="msa-panel-tab"
+                data-panel-view="dendrogram"
+                role="tab"
+                aria-selected="false"
+              >
+                Dendrogram
+              </button>
+              <button
+                id="clustering-settings-toggle"
+                type="button"
+                class="msa-panel-tab clustering-settings-tab"
+                aria-expanded="false"
+                aria-controls="embedding-settings-panel"
+                title="Clustering settings"
+              >
+                Clustering
+              </button>
             </div>
             <div id="info-root" class="info-root">
               <div class="pfam-info-empty">
@@ -203,31 +222,11 @@
                 type="button"
                 aria-expanded="false"
                 aria-controls="embedding-settings-panel"
-                title="Embedding settings"
+                title="Point settings"
               >
                 &#9881;
               </button>
-              <div id="embedding-settings-panel" class="embedding-settings-panel hidden">
-                <div class="embedding-settings-header">
-                  <div class="embedding-settings-mode" role="tablist" aria-label="Embedding settings section">
-                    <button
-                      type="button"
-                      class="embedding-settings-mode-button active"
-                      data-settings-section="points"
-                      aria-pressed="true"
-                    >
-                      Points
-                    </button>
-                    <button
-                      type="button"
-                      class="embedding-settings-mode-button"
-                      data-settings-section="clustering"
-                      aria-pressed="false"
-                    >
-                      Clustering
-                    </button>
-                  </div>
-                </div>
+              <div id="embedding-settings-panel" class="embedding-settings-panel points-settings-panel hidden">
                 <section class="embedding-settings-section" data-settings-section-panel="points">
                   <h3 class="embedding-settings-section-title">Points</h3>
                   <div class="embedding-settings-mode" role="tablist" aria-label="Point layout method">
@@ -395,7 +394,7 @@
                   class="embedding-settings-section embedding-settings-section-hidden"
                   data-settings-section-panel="clustering"
                 >
-                  <h3 class="embedding-settings-section-title">Clustering</h3>
+                  <h3 class="embedding-settings-section-title">Clustering Method</h3>
                   <div class="embedding-settings-mode" role="tablist" aria-label="Clustering method">
                     <button
                       type="button"
@@ -686,6 +685,62 @@
               <div id="columns-cluster-legend" class="embedding-partner-legend"></div>
               <div id="columns-info" class="embedding-info">
                 Cluster-column interaction overview.
+              </div>
+            </div>
+            <div id="dendrogram-root" class="dendrogram-root panel-view-hidden">
+              <canvas id="dendrogram-canvas" class="dendrogram-canvas"></canvas>
+              <div id="dendrogram-loading" class="embedding-loading hidden">
+                <strong id="dendrogram-loading-label">Loading dendrogram</strong>
+                <div class="embedding-loading-track">
+                  <div class="embedding-loading-bar"></div>
+                </div>
+              </div>
+              <div class="dendrogram-controls">
+                <label>
+                  <span>Merge Depth</span>
+                  <div class="embedding-settings-range-row">
+                    <input
+                      id="dendrogram-depth-slider"
+                      class="embedding-settings-input embedding-settings-range"
+                      type="range"
+                      step="1"
+                      min="1"
+                      max="5"
+                      value="5"
+                    >
+                    <output
+                      id="dendrogram-depth-value"
+                      class="embedding-settings-range-value"
+                      for="dendrogram-depth-slider"
+                    >5 / 5</output>
+                  </div>
+                </label>
+                <div class="dendrogram-radius-control">
+                  <span>Radius</span>
+                  <div
+                    id="dendrogram-radius-mode"
+                    class="embedding-legend-mode"
+                    role="tablist"
+                    aria-label="Dendrogram radius mode"
+                  >
+                    <button
+                      type="button"
+                      class="embedding-legend-mode-button active"
+                      data-dendrogram-radius-mode="depth"
+                      aria-pressed="true"
+                    >Depth</button>
+                    <button
+                      type="button"
+                      class="embedding-legend-mode-button"
+                      data-dendrogram-radius-mode="distance"
+                      aria-pressed="false"
+                    >Distance</button>
+                  </div>
+                </div>
+              </div>
+              <div id="dendrogram-partner-legend" class="embedding-partner-legend"></div>
+              <div id="dendrogram-info" class="embedding-info">
+                Radial hierarchy.
               </div>
             </div>
             <section class="details-bar panel-view-hidden">

@@ -306,7 +306,12 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         });
     }
     function syncEmbeddingSettingsUi() {
-        elements.embeddingSettingsToggle.setAttribute("aria-expanded", String(state.embeddingSettingsOpen));
+        const pointsOpen = state.embeddingSettingsOpen && state.embeddingSettingsSection === "points";
+        const clusteringOpen = state.embeddingSettingsOpen && state.embeddingSettingsSection === "clustering";
+        elements.embeddingSettingsToggle.setAttribute("aria-expanded", String(pointsOpen));
+        elements.embeddingSettingsToggle.classList.toggle("active", pointsOpen);
+        elements.clusteringSettingsToggle?.setAttribute("aria-expanded", String(clusteringOpen));
+        elements.clusteringSettingsToggle?.classList.toggle("active", clusteringOpen);
         elements.embeddingSettingsPanel.classList.toggle("hidden", !state.embeddingSettingsOpen);
         [...elements.embeddingSettingsPanel.querySelectorAll("[data-settings-section]")].forEach((button) => {
             const isActive = button.dataset.settingsSection === state.embeddingSettingsSection;

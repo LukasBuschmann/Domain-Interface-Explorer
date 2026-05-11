@@ -3221,6 +3221,450 @@ def compute_columns_chart_payload(
     }
 
 
+def load_hierarchical_context(
+    cache_dir: Path,
+    interface_path: Path,
+    interface_payload: dict[str, dict[str, dict]],
+    clustering_settings: dict[str, object],
+    interface_filter_settings: dict[str, object] | None = None,
+    cache_workers: int = DEFAULT_CACHE_WORKERS,
+    hierarchy_dir: Path | None = None,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[int], dict[str, object]]:
+    if clustering_settings["method"] != "hierarchical":
+        raise ValueError("dendrogram view requires hierarchical clustering")
+    entries, compression = build_compressed_interface_data(
+        interface_payload,
+        interface_path=interface_path,
+        interface_filter_settings=interface_filter_settings,
+    )
+    distance_metric = str(clustering_settings["distance"])
+    linkage_method = str(clustering_settings["linkage"])
+    compressed_entries = compression["entries"]
+    group_index_by_entry = compression["group_index_by_entry"]
+    try:
+        hierarchy = load_precomputed_hierarchy(
+            hierarchy_dir,
+            interface_path,
+            distance_metric,
+            linkage_method,
+            compressed_entries,
+            compressed_signature_hash=str(compression.get("cache_signature_hash") or ""),
+        )
+    except ValueError as exc:
+        log_event(
+            "hierarchy",
+            "precalculated hierarchy rejected",
+            file=interface_path.name,
+            metric=distance_metric,
+            linkage=linkage_method,
+            error=exc,
+        )
+        hierarchy = None
+    if hierarchy is None:
+        distance_data = load_interface_distance_data(
+            cache_dir,
+            interface_path,
+            interface_payload,
+            distance_metric,
+            interface_filter_settings,
+            distance_scope="compressed",
+            cache_workers=cache_workers,
+        )
+        entries = distance_data["entries"]
+        compressed_entries = distance_data["compressed_entries"]
+        group_index_by_entry = distance_data["group_index_by_entry"]
+        hierarchy = load_or_compute_local_hierarchy(
+            cache_dir,
+            interface_path,
+            distance_data,
+            distance_metric,
+            linkage_method,
+            interface_filter_settings,
+        )
+    return entries, compressed_entries, group_index_by_entry, hierarchy
+
+
+def dendrogram_cluster_label_for_counts(
+    cluster_counts: dict[int, int],
+) -> tuple[int | None, float]:
+    total = sum(int(count) for count in cluster_counts.values())
+    if total <= 0:
+        return None, 0.0
+    label, count = max(cluster_counts.items(), key=lambda item: (item[1], -item[0]))
+    return int(label), float(count) / float(total)
+
+
+def dendrogram_domain_label_for_counts(
+    domain_counts: dict[str, int],
+) -> tuple[str | None, float]:
+    total = sum(int(count) for count in domain_counts.values())
+    if total <= 0:
+        return None, 0.0
+    label, count = max(domain_counts.items(), key=lambda item: (item[1], item[0]))
+    return str(label), float(count) / float(total)
+
+
+def hierarchy_child_nodes(leaf_count: int, children: object, node_id: int) -> tuple[int, int]:
+    child_index = int(node_id) - leaf_count
+    if child_index < 0 or child_index >= leaf_count - 1:
+        raise ValueError("hierarchy children are inconsistent")
+    return int(children[child_index][0]), int(children[child_index][1])
+
+
+def compute_radial_dendrogram_payload(
+    interface_path: Path,
+    distance_metric: str,
+    clustering_settings: dict[str, object],
+    entries: list[dict[str, object]],
+    compressed_entries: list[dict[str, object]],
+    hierarchy: dict[str, object],
+    clustering_payload: dict[str, object],
+    merge_depth: int,
+) -> dict[str, object]:
+    leaf_count = int(hierarchy["leaf_count"])
+    if leaf_count <= 0:
+        raise ValueError("hierarchy has no leaves")
+    children = hierarchy["children"]
+    total_node_count = (2 * leaf_count) - 1
+    root_node_id = total_node_count - 1
+    leaf_to_group_indices = hierarchy.get("leaf_to_group_indices")
+    leaf_to_group_index = hierarchy.get("leaf_to_group_index")
+    if leaf_to_group_indices is None:
+        if leaf_to_group_index is None:
+            raise ValueError("hierarchy leaf mapping is inconsistent")
+        leaf_to_group_indices = [[int(group_index)] for group_index in leaf_to_group_index]
+    if len(leaf_to_group_indices) != leaf_count:
+        raise ValueError("hierarchy leaf mapping is inconsistent")
+
+    point_labels: dict[tuple[str, str], int] = {}
+    cluster_labels: set[int] = set()
+    domain_labels: set[str] = set()
+    for point in clustering_payload.get("points", []):
+        if not isinstance(point, dict):
+            continue
+        partner_domain = str(point.get("partner_domain") or "")
+        try:
+            label = int(point.get("cluster_label", -1))
+        except (TypeError, ValueError):
+            label = -1
+        point_labels[(partner_domain, str(point.get("row_key") or ""))] = label
+        cluster_labels.add(label)
+        if partner_domain:
+            domain_labels.add(partner_domain)
+
+    group_cluster_counts: list[dict[int, int]] = []
+    group_domain_counts: list[dict[str, int]] = []
+    for entry in compressed_entries:
+        cluster_counts: dict[int, int] = {}
+        domain_counts: dict[str, int] = {}
+        members = entry.get("members")
+        if isinstance(members, list):
+            for member in members:
+                if not isinstance(member, dict):
+                    continue
+                partner_domain = str(member.get("partner_domain") or "")
+                label = point_labels.get(
+                    (partner_domain, str(member.get("row_key") or "")),
+                    -1,
+                )
+                cluster_counts[label] = cluster_counts.get(label, 0) + 1
+                cluster_labels.add(label)
+                if partner_domain:
+                    domain_counts[partner_domain] = domain_counts.get(partner_domain, 0) + 1
+                    domain_labels.add(partner_domain)
+        if not cluster_counts:
+            partner_domain = str(entry.get("partner_domain") or "")
+            label = point_labels.get(
+                (partner_domain, str(entry.get("row_key") or "")),
+                -1,
+            )
+            member_count = int(entry.get("member_count", 1) or 1)
+            cluster_counts[label] = member_count
+            cluster_labels.add(label)
+            if partner_domain:
+                domain_counts[partner_domain] = member_count
+                domain_labels.add(partner_domain)
+        group_cluster_counts.append(cluster_counts)
+        group_domain_counts.append(domain_counts)
+
+    node_cluster_counts: list[dict[int, int]] = [{} for _ in range(total_node_count)]
+    node_domain_counts: list[dict[str, int]] = [{} for _ in range(total_node_count)]
+    node_member_counts = [0] * total_node_count
+    node_subtree_leaf_counts = [1] * total_node_count
+    node_visible_leaf_counts = [0] * total_node_count
+    node_merge_distances = [0.0] * total_node_count
+    for leaf_index, raw_group_indices in enumerate(leaf_to_group_indices):
+        if isinstance(raw_group_indices, (str, bytes)):
+            raise ValueError("hierarchy leaf mapping is inconsistent")
+        cluster_counts: dict[int, int] = {}
+        domain_counts: dict[str, int] = {}
+        for raw_group_index in raw_group_indices:
+            group_index = int(raw_group_index)
+            if group_index < 0 or group_index >= len(group_cluster_counts):
+                raise ValueError("hierarchy leaf mapping points outside compressed entries")
+            for label, count in group_cluster_counts[group_index].items():
+                cluster_counts[label] = cluster_counts.get(label, 0) + int(count)
+            for domain_label, count in group_domain_counts[group_index].items():
+                domain_counts[domain_label] = domain_counts.get(domain_label, 0) + int(count)
+        node_cluster_counts[leaf_index] = cluster_counts
+        node_domain_counts[leaf_index] = domain_counts
+        node_member_counts[leaf_index] = sum(cluster_counts.values())
+        node_visible_leaf_counts[leaf_index] = 1 if node_member_counts[leaf_index] > 0 else 0
+
+    max_merge_depth_by_node = [0] * total_node_count
+    for merge_index in range(leaf_count - 1):
+        node_id = leaf_count + merge_index
+        left_child = int(children[merge_index][0])
+        right_child = int(children[merge_index][1])
+        if left_child >= node_id or right_child >= node_id:
+            raise ValueError("hierarchy children are not ordered like a scipy linkage matrix")
+        merge_distance = float(hierarchy["distances"][merge_index])
+        if math.isfinite(merge_distance):
+            node_merge_distances[node_id] = merge_distance
+        combined_counts: dict[int, int] = {}
+        for child_id in (left_child, right_child):
+            for label, count in node_cluster_counts[child_id].items():
+                combined_counts[label] = combined_counts.get(label, 0) + int(count)
+        combined_domain_counts: dict[str, int] = {}
+        for child_id in (left_child, right_child):
+            for domain_label, count in node_domain_counts[child_id].items():
+                combined_domain_counts[domain_label] = combined_domain_counts.get(domain_label, 0) + int(count)
+        node_cluster_counts[node_id] = combined_counts
+        node_domain_counts[node_id] = combined_domain_counts
+        node_member_counts[node_id] = node_member_counts[left_child] + node_member_counts[right_child]
+        node_subtree_leaf_counts[node_id] = (
+            node_subtree_leaf_counts[left_child] + node_subtree_leaf_counts[right_child]
+        )
+        node_visible_leaf_counts[node_id] = (
+            node_visible_leaf_counts[left_child] + node_visible_leaf_counts[right_child]
+        )
+        left_visible = node_visible_leaf_counts[left_child] > 0
+        right_visible = node_visible_leaf_counts[right_child] > 0
+        if left_visible and right_visible:
+            max_merge_depth_by_node[node_id] = 1 + max(
+                max_merge_depth_by_node[left_child],
+                max_merge_depth_by_node[right_child],
+            )
+        elif left_visible:
+            max_merge_depth_by_node[node_id] = max_merge_depth_by_node[left_child]
+        elif right_visible:
+            max_merge_depth_by_node[node_id] = max_merge_depth_by_node[right_child]
+
+    if node_visible_leaf_counts[root_node_id] <= 0:
+        raise ValueError("hierarchy has no leaves for the current interfaces")
+    max_merge_depth = max(1, int(max_merge_depth_by_node[root_node_id]))
+    visible_merge_distances = [
+        node_merge_distances[node_id]
+        for node_id in range(leaf_count, total_node_count)
+        if node_member_counts[node_id] > 0 and math.isfinite(node_merge_distances[node_id])
+    ]
+    max_merge_distance = max(visible_merge_distances) if visible_merge_distances else 0.0
+    requested_depth = int(merge_depth or 5)
+    normalized_depth = max(1, min(requested_depth, max_merge_depth))
+    cutoff_distance = clustering_settings.get("distance_threshold")
+    cutoff_radius_distance: float | None = None
+    if cutoff_distance is not None:
+        cutoff_distance_float = float(cutoff_distance)
+        cutoff_radius_distance = (
+            1.0 - (cutoff_distance_float / max_merge_distance)
+            if max_merge_distance > 0.0
+            else 0.0
+        )
+        cutoff_radius_distance = max(0.0, min(1.0, cutoff_radius_distance))
+
+    def count_frontier(node_id: int, depth: int) -> int:
+        if node_member_counts[node_id] <= 0:
+            return 0
+        if node_id < leaf_count:
+            return 1
+        left_child, right_child = hierarchy_child_nodes(leaf_count, children, node_id)
+        visible_children = [
+            child_id
+            for child_id in (left_child, right_child)
+            if node_member_counts[child_id] > 0
+        ]
+        if len(visible_children) == 1 and depth < normalized_depth:
+            return count_frontier(visible_children[0], depth)
+        if len(visible_children) < 2 or depth >= normalized_depth:
+            return 1
+        return sum(count_frontier(child_id, depth + 1) for child_id in visible_children)
+
+    nodes: list[dict[str, object]] = []
+    edges: list[dict[str, object]] = []
+    frontier_total = max(1, count_frontier(root_node_id, 0))
+    frontier_index = 0
+
+    def layout_node(node_id: int, depth: int, parent_id: int | None = None) -> float | None:
+        nonlocal frontier_index
+        if node_member_counts[node_id] <= 0:
+            return None
+        is_leaf = node_id < leaf_count
+        visible_children: list[int] = []
+        if not is_leaf:
+            left_child, right_child = hierarchy_child_nodes(leaf_count, children, node_id)
+            visible_children = [
+                child_id
+                for child_id in (left_child, right_child)
+                if node_member_counts[child_id] > 0
+            ]
+        if len(visible_children) == 1 and depth < normalized_depth:
+            return layout_node(visible_children[0], depth, parent_id)
+        collapsed = (not is_leaf) and len(visible_children) >= 2 and depth >= normalized_depth
+        terminal = is_leaf or collapsed or len(visible_children) < 2
+        if terminal:
+            angle = (2.0 * math.pi * (frontier_index + 0.5)) / frontier_total
+            frontier_index += 1
+        else:
+            child_angles = [
+                child_angle
+                for child_id in visible_children
+                for child_angle in [layout_node(child_id, depth + 1, node_id)]
+                if child_angle is not None
+            ]
+            if not child_angles:
+                return None
+            angle = sum(child_angles) / len(child_angles)
+        radius_depth = min(1.0, float(depth) / float(max(1, normalized_depth)))
+        merge_distance = node_merge_distances[node_id]
+        radius_distance = (
+            1.0 - (merge_distance / max_merge_distance)
+            if max_merge_distance > 0.0
+            else radius_depth
+        )
+        radius_distance = max(0.0, min(1.0, radius_distance))
+        label, purity = dendrogram_cluster_label_for_counts(node_cluster_counts[node_id])
+        domain_label, domain_purity = dendrogram_domain_label_for_counts(node_domain_counts[node_id])
+        nodes.append(
+            {
+                "id": f"n{node_id}",
+                "node_id": node_id,
+                "parent_id": None if parent_id is None else f"n{parent_id}",
+                "x": math.cos(angle) * radius_depth,
+                "y": math.sin(angle) * radius_depth,
+                "angle": angle,
+                "radius": radius_depth,
+                "x_depth": math.cos(angle) * radius_depth,
+                "y_depth": math.sin(angle) * radius_depth,
+                "radius_depth": radius_depth,
+                "x_distance": math.cos(angle) * radius_distance,
+                "y_distance": math.sin(angle) * radius_distance,
+                "radius_distance": radius_distance,
+                "merge_distance": merge_distance,
+                "depth": depth,
+                "collapsed": collapsed,
+                "is_leaf": is_leaf,
+                "subtree_leaf_count": int(node_visible_leaf_counts[node_id]),
+                "raw_subtree_leaf_count": int(node_subtree_leaf_counts[node_id]),
+                "member_count": int(node_member_counts[node_id]),
+                "cluster_label": label,
+                "cluster_purity": purity,
+                "cluster_counts": {
+                    str(cluster_label): int(count)
+                    for cluster_label, count in sorted(node_cluster_counts[node_id].items())
+                },
+                "domain_label": domain_label,
+                "domain_purity": domain_purity,
+                "domain_counts": {
+                    domain_key: int(count)
+                    for domain_key, count in sorted(node_domain_counts[node_id].items())
+                },
+            }
+        )
+        if parent_id is not None:
+            edge_label, edge_purity = dendrogram_cluster_label_for_counts(node_cluster_counts[node_id])
+            edge_domain_label, edge_domain_purity = dendrogram_domain_label_for_counts(
+                node_domain_counts[node_id]
+            )
+            edges.append(
+                {
+                    "source": f"n{parent_id}",
+                    "target": f"n{node_id}",
+                    "cluster_label": edge_label,
+                    "cluster_purity": edge_purity,
+                    "cluster_counts": {
+                        str(cluster_label): int(count)
+                        for cluster_label, count in sorted(node_cluster_counts[node_id].items())
+                    },
+                    "domain_label": edge_domain_label,
+                    "domain_purity": edge_domain_purity,
+                    "domain_counts": {
+                        domain_key: int(count)
+                        for domain_key, count in sorted(node_domain_counts[node_id].items())
+                    },
+                }
+            )
+        return angle
+
+    layout_node(root_node_id, 0, None)
+    return {
+        "file": interface_path.name,
+        "pfam_id": interface_file_pfam_id(interface_path),
+        "method": "hierarchical",
+        "distance": distance_metric,
+        "linkage": str(clustering_settings["linkage"]),
+        "hierarchical_target": str(clustering_settings.get("hierarchical_target", "")),
+        "hierarchy_source": str(hierarchy.get("source", "local_computed")),
+        "leaf_count": leaf_count,
+        "current_interface_count": len(entries),
+        "compressed_sample_count": len(compressed_entries),
+        "merge_depth": normalized_depth,
+        "requested_merge_depth": requested_depth,
+        "max_merge_depth": max_merge_depth,
+        "max_merge_distance": max_merge_distance,
+        "cutoff_distance": None if cutoff_distance is None else float(cutoff_distance),
+        "cutoff_radius_distance": cutoff_radius_distance,
+        "frontier_count": frontier_total,
+        "cluster_count": int(clustering_payload.get("cluster_count", 0) or 0),
+        "noise_count": int(clustering_payload.get("noise_count", 0) or 0),
+        "cluster_labels": sorted(cluster_labels),
+        "domain_labels": sorted(domain_labels),
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+def load_or_compute_dendrogram_payload(
+    cache_dir: Path,
+    interface_path: Path,
+    interface_payload: dict[str, dict[str, dict]],
+    clustering_settings: dict[str, object],
+    interface_filter_settings: dict[str, object] | None = None,
+    cache_workers: int = DEFAULT_CACHE_WORKERS,
+    hierarchy_dir: Path | None = None,
+    merge_depth: int = 5,
+) -> dict[str, object]:
+    if clustering_settings["method"] != "hierarchical":
+        raise ValueError("dendrogram view requires hierarchical clustering")
+    clustering_payload = load_or_compute_clustering_payload(
+        cache_dir,
+        interface_path,
+        interface_payload,
+        clustering_settings,
+        interface_filter_settings,
+        cache_workers=cache_workers,
+        hierarchy_dir=hierarchy_dir,
+    )
+    entries, compressed_entries, _group_index_by_entry, hierarchy = load_hierarchical_context(
+        cache_dir,
+        interface_path,
+        interface_payload,
+        clustering_settings,
+        interface_filter_settings,
+        cache_workers=cache_workers,
+        hierarchy_dir=hierarchy_dir,
+    )
+    return compute_radial_dendrogram_payload(
+        interface_path,
+        str(clustering_settings["distance"]),
+        clustering_settings,
+        entries,
+        compressed_entries,
+        hierarchy,
+        clustering_payload,
+        merge_depth=merge_depth,
+    )
+
+
 def build_compressed_interface_data(
     interface_payload: dict[str, dict[str, dict]],
     interface_path: Path | None = None,

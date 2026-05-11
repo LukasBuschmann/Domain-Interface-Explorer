@@ -2,8 +2,8 @@ import { CELL_WIDTH, DEFAULT_CLUSTERING_SETTINGS, DEFAULT_EMBEDDING_SETTINGS, HE
 import { fetchJson } from "./api.js";
 import { interactionRowKey, interfaceFileStem, parseInteractionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams, normalizeSelectionSettings, } from "./selectionSettings.js";
-export function createMsaViewController({ state, elements, buildPairs, activeConservationVector, conservationColor, overlayStateForRow, representativeLens, embeddingDistanceLabel, syncColumnLegends, syncRepresentativeLensControls, syncRepresentativeScopeControls, syncEmbeddingLoadingUi, syncEmbeddingMemberControls, syncEmbeddingSettingsUi, resizeEmbeddingCanvas, resizeColumnsCanvas, renderEmbeddingPlot, renderColumnsChart, renderColumnsClusterLegend, setEmbeddingInfo, setColumnsInfo, ensureEmbeddingDataLoaded, ensureEmbeddingClusteringLoaded, resetColumnsClusterSelection, resetEmbeddingPartnerSelection, resetEmbeddingClusterSelection, resetRepresentativePartnerSelection, resetRepresentativeClusterSelection, renderRepresentativePartnerFilter, renderEmbeddingLegend, refreshRepresentativeSelection, loadInteractiveStructure, handleStructureLoadFailure, resetRepresentativePanel, resetStructurePanel, closeClusterCompareModal, closeStructureModal, resizeClusterCompareViewers, buildOverlayMaps, buildPartnerColorMap, embeddingClusterColor, embeddingClusterLabel, allColumnsClusterLabels, visibleColumnsClusters, updatePartnerOptions, }) {
-    const { appStatus, cellDetailsPanel, columnCount, columnsClusterLegend, detailsList, detailsBar, embeddingRoot, columnsRoot, gridCanvas, gridScroll, gridSpacer, headerCanvas, infoRoot, interfaceSelect, labelsCanvas, loadingDetail, loadingLabel, loadingPanel, loadStructureButton, msaLegend, msaPanelTabs, msaClusterLegend, msaPickerButton, msaPickerFilters, msaPickerMenu, msaPickerOptions, msaPickerSearch, msaPickerSelection, msaSelect, selectionSettingsPanel, selectionSettingsToggle, selectionMinInterfaceSizeInput, partnerSelect, progressBar, representativeShell, representativeViewerRoot, rowCount, selectedRowCopy, statsPanel, structureModal, viewerPanel, viewerRoot, } = elements;
+export function createMsaViewController({ state, elements, buildPairs, activeConservationVector, conservationColor, overlayStateForRow, representativeLens, embeddingDistanceLabel, syncColumnLegends, syncRepresentativeLensControls, syncRepresentativeScopeControls, syncEmbeddingLoadingUi, syncEmbeddingMemberControls, syncEmbeddingSettingsUi, resizeEmbeddingCanvas, resizeColumnsCanvas, resizeDendrogramCanvas, renderEmbeddingPlot, renderColumnsChart, renderDendrogram, renderDendrogramLegend, renderColumnsClusterLegend, setEmbeddingInfo, setColumnsInfo, ensureEmbeddingDataLoaded, ensureEmbeddingClusteringLoaded, ensureDendrogramLoaded, resetColumnsClusterSelection, resetDendrogramPartnerSelection, resetDendrogramClusterSelection, resetEmbeddingPartnerSelection, resetEmbeddingClusterSelection, resetRepresentativePartnerSelection, resetRepresentativeClusterSelection, renderRepresentativePartnerFilter, renderEmbeddingLegend, refreshRepresentativeSelection, loadInteractiveStructure, handleStructureLoadFailure, resetRepresentativePanel, resetStructurePanel, closeClusterCompareModal, closeStructureModal, resizeClusterCompareViewers, buildOverlayMaps, buildPartnerColorMap, embeddingClusterColor, embeddingClusterLabel, allColumnsClusterLabels, visibleColumnsClusters, updatePartnerOptions, syncDendrogramControls, }) {
+    const { appStatus, cellDetailsPanel, columnCount, columnsClusterLegend, dendrogramRoot, detailsList, detailsBar, embeddingRoot, columnsRoot, gridCanvas, gridScroll, gridSpacer, headerCanvas, infoRoot, interfaceSelect, labelsCanvas, loadingDetail, loadingLabel, loadingPanel, loadStructureButton, msaLegend, msaPanelTabs, msaClusterLegend, msaPickerButton, msaPickerFilters, msaPickerMenu, msaPickerOptions, msaPickerSearch, msaPickerSelection, msaSelect, selectionSettingsPanel, selectionSettingsToggle, selectionMinInterfaceSizeInput, partnerSelect, progressBar, representativeShell, representativeViewerRoot, rowCount, selectedRowCopy, statsPanel, structureModal, viewerPanel, viewerRoot, } = elements;
     let layoutSyncScheduled = false;
     let cachedMsaClusterSource = null;
     let cachedMsaRowClusterAssignments = new Map();
@@ -78,10 +78,13 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         if (activeMsaPanelView() === "embeddings") {
             return embeddingRoot;
         }
-        return columnsRoot;
+        if (activeMsaPanelView() === "columns") {
+            return columnsRoot;
+        }
+        return dendrogramRoot;
     }
     function syncPaneHeights() {
-        const panelRoots = [infoRoot, viewerRoot, embeddingRoot, columnsRoot];
+        const panelRoots = [infoRoot, viewerRoot, embeddingRoot, columnsRoot, dendrogramRoot];
         panelRoots.forEach((root) => {
             if (root) {
                 root.style.height = "";
@@ -119,6 +122,7 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         const isMsaView = activeMsaPanelView() === "msa";
         const isEmbeddingView = activeMsaPanelView() === "embeddings";
         const isColumnsView = activeMsaPanelView() === "columns";
+        const isDendrogramView = activeMsaPanelView() === "dendrogram";
         [...msaPanelTabs.querySelectorAll("[data-panel-view]")].forEach((button) => {
             const isActive = button.dataset.panelView === state.msaPanelView;
             button.classList.toggle("active", isActive);
@@ -132,6 +136,9 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         viewerRoot.classList.toggle("panel-view-hidden", !isMsaView);
         embeddingRoot.classList.toggle("panel-view-hidden", !isEmbeddingView);
         columnsRoot.classList.toggle("panel-view-hidden", !isColumnsView);
+        dendrogramRoot.classList.toggle("panel-view-hidden", !isDendrogramView);
+        syncDendrogramControls();
+        renderDendrogramLegend();
     }
     function setOptions(select, options, value = null) {
         select.innerHTML = "";
@@ -1781,6 +1788,14 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         state.embeddingClustering = null;
         state.columnsChart = null;
         state.columnsChartKey = null;
+        state.dendrogram = null;
+        state.dendrogramRequestId += 1;
+        state.dendrogramLoading = false;
+        state.dendrogramLoadingKey = null;
+        state.dendrogramPromise = null;
+        state.dendrogramVisiblePartners = new Set();
+        state.dendrogramVisibleClusters = new Set();
+        state.dendrogramClusterSelectionKey = null;
         closeClusterCompareModal();
         state.embeddingHoverRowKey = null;
         state.embeddingMemberSelection = null;
@@ -1847,12 +1862,15 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         resetEmbeddingPartnerSelection();
         resetEmbeddingClusterSelection();
         resetColumnsClusterSelection();
+        resetDendrogramPartnerSelection();
+        resetDendrogramClusterSelection();
         resetRepresentativePartnerSelection();
         resetRepresentativeClusterSelection();
         renderRepresentativePartnerFilter();
         syncRepresentativeScopeControls();
         renderEmbeddingLegend();
         renderColumnsClusterLegend();
+        renderDendrogramLegend();
         startMsaRowStreamIfNeeded();
     }
     async function refreshData() {
@@ -1883,6 +1901,9 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
                     render();
                 }
             });
+        }
+        else if (activeMsaPanelView() === "dendrogram") {
+            void ensureDendrogramLoaded();
         }
         render();
         await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
@@ -1933,9 +1954,13 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
             resizeEmbeddingCanvas();
             renderEmbeddingPlot();
         }
-        else {
+        else if (activeMsaPanelView() === "columns") {
             resizeColumnsCanvas();
             renderColumnsChart();
+        }
+        else if (activeMsaPanelView() === "dendrogram") {
+            resizeDendrogramCanvas();
+            renderDendrogram();
         }
         setDetails(null);
         startMsaRowStreamIfNeeded();
@@ -1953,6 +1978,10 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         if (activeMsaPanelView() === "columns") {
             resizeColumnsCanvas();
             renderColumnsChart();
+        }
+        if (activeMsaPanelView() === "dendrogram") {
+            resizeDendrogramCanvas();
+            renderDendrogram();
         }
         if (state.representativeViewer) {
             state.representativeViewer.resize();
@@ -1992,6 +2021,11 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         state.columnsChartKey = null;
         state.embeddingClustering = null;
         state.embeddingHoverRowKey = null;
+        state.dendrogram = null;
+        state.dendrogramRequestId += 1;
+        state.dendrogramLoading = false;
+        state.dendrogramLoadingKey = null;
+        state.dendrogramPromise = null;
         state.embeddingMemberSelection = null;
         state.embeddingProjectedPoints = [];
         state.embeddingDrag = null;
@@ -2012,6 +2046,11 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         state.embeddingColorMode = "cluster";
         state.embeddingVisiblePartners = new Set();
         state.embeddingVisibleClusters = new Set();
+        state.dendrogramRadiusMode = "depth";
+        state.dendrogramColorMode = "cluster";
+        state.dendrogramVisiblePartners = new Set();
+        state.dendrogramVisibleClusters = new Set();
+        state.dendrogramClusterSelectionKey = null;
         state.columnsVisibleClusters = new Set();
         state.msaVisibleClusters = new Set();
         state.embeddingSettings = { ...DEFAULT_EMBEDDING_SETTINGS };
@@ -2021,6 +2060,7 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         state.embeddingHierarchicalTargetMemory = {
             nClusters: String(DEFAULT_CLUSTERING_SETTINGS.nClusters),
             distanceThreshold: String(DEFAULT_CLUSTERING_SETTINGS.distanceThreshold),
+            persistenceMinLifetime: String(DEFAULT_CLUSTERING_SETTINGS.persistenceMinLifetime),
         };
         state.selectedPartner = "__all__";
         state.selectedRowKey = null;
@@ -2050,6 +2090,12 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
             pitch: 0.45,
             zoom: 1.0,
         };
+        state.dendrogramView = {
+            x: 0,
+            y: 0,
+            scale: 1,
+        };
+        state.dendrogramDrag = null;
         state.structureData = null;
         state.structureAnchorRowKey = null;
         state.structureRenderedRowKey = null;

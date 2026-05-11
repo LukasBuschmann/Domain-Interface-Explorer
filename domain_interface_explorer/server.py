@@ -40,6 +40,7 @@ from domain_interface_explorer.serverlib.interface_embedding import (
     load_interface_distance_data,
     load_interface_point_data,
     load_or_compute_clustering_payload,
+    load_or_compute_dendrogram_payload,
     parse_clustering_settings,
     parse_embedding_settings,
     parse_interface_filter_settings,
@@ -336,6 +337,9 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/clustering":
             self._handle_clustering(parse_qs(parsed.query))
+            return
+        if parsed.path == "/api/dendrogram":
+            self._handle_dendrogram(parse_qs(parsed.query))
             return
         if parsed.path == "/api/hierarchy-status":
             self._handle_hierarchy_status(parse_qs(parsed.query))
@@ -794,6 +798,47 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": f"Unexpected clustering error: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
         self._send_json(response_payload)
+
+    def _handle_dendrogram(self, query: dict[str, list[str]]) -> None:
+        filename = query.get("file", [""])[0]
+        resolved = self._resolve_interface_file_and_filter(filename, query)
+        if resolved is None:
+            return
+        path, interface_filter_settings = resolved
+        try:
+            clustering_settings = parse_clustering_settings(query)
+            merge_depth = query_positive_int_or_none(query, "merge_depth") or 5
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            interface_payload = self._load_interface_columns_payload(
+                path,
+                interface_filter_settings,
+                fallback_context="dendrogram columns payload fallback",
+            )
+            response_payload = load_or_compute_dendrogram_payload(
+                self.cache_dir,
+                path,
+                interface_payload,
+                clustering_settings,
+                interface_filter_settings,
+                cache_workers=self.cache_workers,
+                hierarchy_dir=self.hierarchy_dir,
+                merge_depth=merge_depth,
+            )
+        except (RuntimeError, ValueError) as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as exc:  # pragma: no cover
+            self._send_json({"error": f"Unexpected dendrogram error: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._send_json(
+            {
+                "filter_settings": interface_filter_settings,
+                **response_payload,
+            }
+        )
 
     def _handle_hierarchy_status(self, query: dict[str, list[str]]) -> None:
         filename = query.get("file", [""])[0]
