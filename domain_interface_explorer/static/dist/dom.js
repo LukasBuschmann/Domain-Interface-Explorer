@@ -58,6 +58,8 @@ export const elements = {
     embeddingClusterNClustersInput: document.getElementById("embedding-cluster-n-clusters"),
     embeddingClusterDistanceThresholdInput: document.getElementById("embedding-cluster-distance-threshold"),
     embeddingClusterDistanceThresholdValue: document.getElementById("embedding-cluster-distance-threshold-value"),
+    embeddingClusterLifetimeThresholdInput: document.getElementById("embedding-cluster-lifetime-threshold"),
+    embeddingClusterLifetimeThresholdValue: document.getElementById("embedding-cluster-lifetime-threshold-value"),
     embeddingClusterHierarchicalMinSizeInput: document.getElementById("embedding-cluster-hierarchical-min-size"),
     embeddingTsneApply: document.getElementById("embedding-tsne-apply"),
     embeddingClusteringApply: document.getElementById("embedding-clustering-apply"),

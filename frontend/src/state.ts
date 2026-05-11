@@ -69,6 +69,7 @@ export const state = {
   embeddingHierarchicalTargetMemory: {
     nClusters: String(DEFAULT_CLUSTERING_SETTINGS.nClusters),
     distanceThreshold: String(DEFAULT_CLUSTERING_SETTINGS.distanceThreshold),
+    persistenceMinLifetime: String(DEFAULT_CLUSTERING_SETTINGS.persistenceMinLifetime),
   },
   embeddingView: {
     yaw: -0.7,

@@ -11,7 +11,7 @@ import { buildPartnerColorMap, clusterHoverColor as clusterHoverColorForLabel, c
 import { activeConservationVector as getActiveConservationVector, buildStructureResidueLookup as buildStructureResidueLookupFromModel, columnStateDistribution as getColumnStateDistribution, topResiduesForColumn as getTopResiduesForColumn, } from "./msaModel.js";
 import { buildOverlayMaps, buildPairs, interactionRowKey, parseInteractionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams, parseSelectionSettingsDraft } from "./selectionSettings.js";
-const { appStatus, closeClusterCompareModalButton, closeStructureModalButton, clusterCompareGrid, clusterCompareModal, columnCount, columnsRoot, detailsList, embeddingCanvas, embeddingRoot, embeddingClusterDistanceInput, embeddingClusterDistanceThresholdInput, embeddingClusterEpsilonInput, embeddingClusterHierarchicalMinSizeInput, embeddingClusterLinkageInput, embeddingClusterMinSamplesInput, embeddingClusterMinSizeInput, embeddingClusterNClustersInput, embeddingClusteringApply, embeddingEarlyExaggerationInput, embeddingDistanceInput, embeddingInfo, embeddingLearningRateInput, embeddingLoading, embeddingLoadingLabel, embeddingMemberNext, embeddingMemberPrev, embeddingMaxIterInput, embeddingPartnerLegend, embeddingPerplexityInput, embeddingSettingsPanel, embeddingSettingsToggle, embeddingTsneApply, gridCanvas, gridScroll, gridSpacer, headerCanvas, interfaceSelect, labelsCanvas, loadingDetail, loadingLabel, loadingPanel, loadStructureButton, msaLegend, msaPanelTabs, msaPickerButton, msaPickerFilters, msaPickerMenu, msaPickerOptions, msaPickerSearch, msaPickerSelection, msaSelect, selectionSettingsApply, selectionSettingsPanel, selectionSettingsToggle, selectionMinInterfaceSizeInput, partnerSelect, progressBar, representativeClusterLegend, representativeColumnLegend, representativeColumnLegendEnd, representativeColumnLegendMid, representativeColumnLegendStart, representativeCopy, representativeHoverAccentLabel, representativeHoverCard, representativeHoverDetails, representativeHoverDistributionChart, representativeHoverDistributionLayout, representativeHoverDistributionLegend, representativeHoverDistributionPieLegend, representativeHoverDistributionTitle, representativeHoverTitle, representativeClusterGridButton, representativeLensGroup, representativeMethodButton, representativeMethodLabel, representativeMethodMenu, representativePartnerFilterList, representativeScopeControl, representativeScopeButton, representativeScopeLabel, representativeScopeMenu, representativeScopeSwatch, representativeViewerRoot, rowCount, rowSearchInput, selectedRowCopy, structureColumnLegend, structureColumnLegendEnd, structureColumnLegendMid, structureColumnLegendStart, structureColumnViewToggle, structureHoverCard, structureHoverDetails, structureHoverDistributionChart, structureHoverDistributionLegend, structureHoverHistogram, structureModal, structureMemberNext, structureMemberPrev, structureContactViewToggle, structureDisplaySettingsClose, structureDisplaySettingsPanel, structureRecenterDomainButton, structureModalStatus, structureModalSubtitle, structureModalTitle, structureStatus, structureViewerRoot, clusterCompareRerollButton, viewerRoot, } = elements;
+const { appStatus, closeClusterCompareModalButton, closeStructureModalButton, clusterCompareGrid, clusterCompareModal, columnCount, columnsRoot, detailsList, embeddingCanvas, embeddingRoot, embeddingClusterDistanceInput, embeddingClusterDistanceThresholdInput, embeddingClusterEpsilonInput, embeddingClusterHierarchicalMinSizeInput, embeddingClusterLifetimeThresholdInput, embeddingClusterLinkageInput, embeddingClusterMinSamplesInput, embeddingClusterMinSizeInput, embeddingClusterNClustersInput, embeddingClusteringApply, embeddingEarlyExaggerationInput, embeddingDistanceInput, embeddingInfo, embeddingLearningRateInput, embeddingLoading, embeddingLoadingLabel, embeddingMemberNext, embeddingMemberPrev, embeddingMaxIterInput, embeddingPartnerLegend, embeddingPerplexityInput, embeddingSettingsPanel, embeddingSettingsToggle, embeddingTsneApply, gridCanvas, gridScroll, gridSpacer, headerCanvas, interfaceSelect, labelsCanvas, loadingDetail, loadingLabel, loadingPanel, loadStructureButton, msaLegend, msaPanelTabs, msaPickerButton, msaPickerFilters, msaPickerMenu, msaPickerOptions, msaPickerSearch, msaPickerSelection, msaSelect, selectionSettingsApply, selectionSettingsPanel, selectionSettingsToggle, selectionMinInterfaceSizeInput, partnerSelect, progressBar, representativeClusterLegend, representativeColumnLegend, representativeColumnLegendEnd, representativeColumnLegendMid, representativeColumnLegendStart, representativeCopy, representativeHoverAccentLabel, representativeHoverCard, representativeHoverDetails, representativeHoverDistributionChart, representativeHoverDistributionLayout, representativeHoverDistributionLegend, representativeHoverDistributionPieLegend, representativeHoverDistributionTitle, representativeHoverTitle, representativeClusterGridButton, representativeLensGroup, representativeMethodButton, representativeMethodLabel, representativeMethodMenu, representativePartnerFilterList, representativeScopeControl, representativeScopeButton, representativeScopeLabel, representativeScopeMenu, representativeScopeSwatch, representativeViewerRoot, rowCount, rowSearchInput, selectedRowCopy, structureColumnLegend, structureColumnLegendEnd, structureColumnLegendMid, structureColumnLegendStart, structureColumnViewToggle, structureHoverCard, structureHoverDetails, structureHoverDistributionChart, structureHoverDistributionLegend, structureHoverHistogram, structureModal, structureMemberNext, structureMemberPrev, structureContactViewToggle, structureDisplaySettingsClose, structureDisplaySettingsPanel, structureRecenterDomainButton, structureModalStatus, structureModalSubtitle, structureModalTitle, structureStatus, structureViewerRoot, clusterCompareRerollButton, viewerRoot, } = elements;
 function activeConservationVector() {
     return getActiveConservationVector(state.msa);
 }
@@ -199,7 +199,7 @@ const embeddingViewController = createEmbeddingViewController({
     syncRepresentativeScopeControls,
     representativeLens,
 });
-const { allEmbeddingClusterLabels, allColumnsClusterLabels, allRepresentativeClusterLabels, clusteringMethodLabel, currentClusterCompareQuery, currentEmbeddingClusteringQuery, currentEmbeddingClusteringRequestKey, currentEmbeddingQuery, currentEmbeddingRequestKey, currentHierarchicalTarget, embeddingClusterColor, embeddingClusterLabel, embeddingClusteringSettingsKey, embeddingDistanceLabel, embeddingLegendMode, embeddingPointAt, embeddingSettingsKey, ensureEmbeddingClusteringLoaded, ensureEmbeddingDataLoaded, ensureHierarchyStatusLoaded, normalizeHierarchicalDraft, parseEmbeddingClusteringSettingsDraft, parseEmbeddingSettingsDraft, readEmbeddingClusteringDraftInputs, renderEmbeddingLegend, renderEmbeddingPlot, requestEmbeddingRender, renderColumnsChart, renderColumnsClusterLegend, resetColumnsClusterSelection, resetEmbeddingClusterSelection, resetEmbeddingPartnerSelection, resetRepresentativeClusterSelection, resizeColumnsCanvas, resizeEmbeddingCanvas, setEmbeddingInfo, setColumnsInfo, syncEmbeddingLoadingUi, syncEmbeddingMemberControls, syncDistanceThresholdValueUi, syncEmbeddingSettingsUi, syncHierarchicalTargetMemoryFromDraft, syncHierarchicalTargetUi, visibleColumnsClusters, visibleRepresentativeClusters, } = embeddingViewController;
+const { allEmbeddingClusterLabels, allColumnsClusterLabels, allRepresentativeClusterLabels, clusteringMethodLabel, currentClusterCompareQuery, currentEmbeddingClusteringQuery, currentEmbeddingClusteringRequestKey, currentEmbeddingQuery, currentEmbeddingRequestKey, currentHierarchicalTarget, embeddingClusterColor, embeddingClusterLabel, embeddingClusteringSettingsKey, embeddingDistanceLabel, embeddingLegendMode, embeddingPointAt, embeddingSettingsKey, ensureEmbeddingClusteringLoaded, ensureEmbeddingDataLoaded, ensureHierarchyStatusLoaded, normalizeHierarchicalDraft, parseEmbeddingClusteringSettingsDraft, parseEmbeddingSettingsDraft, readEmbeddingClusteringDraftInputs, renderEmbeddingLegend, renderEmbeddingPlot, requestEmbeddingRender, renderColumnsChart, renderColumnsClusterLegend, resetColumnsClusterSelection, resetEmbeddingClusterSelection, resetEmbeddingPartnerSelection, resetRepresentativeClusterSelection, resizeColumnsCanvas, resizeEmbeddingCanvas, setEmbeddingInfo, setColumnsInfo, syncEmbeddingLoadingUi, syncEmbeddingMemberControls, syncDistanceThresholdValueUi, syncPersistenceMinLifetimeValueUi, syncEmbeddingSettingsUi, syncHierarchicalTargetMemoryFromDraft, syncHierarchicalTargetUi, visibleColumnsClusters, visibleRepresentativeClusters, } = embeddingViewController;
 function representativeLens() {
     return state.representativeLens;
 }
@@ -485,6 +485,12 @@ function appendClusteringSettingsToParams(params) {
     if (state.embeddingClusteringSettings.method === "hierarchical") {
         const hierarchicalTarget = currentHierarchicalTarget(state.embeddingClusteringSettings);
         params.set("linkage", String(state.embeddingClusteringSettings.linkage));
+        params.set("hierarchical_target", hierarchicalTarget);
+        const minClusterSize = String(state.embeddingClusteringSettings.hierarchicalMinClusterSize ??
+            DEFAULT_CLUSTERING_SETTINGS.hierarchicalMinClusterSize).trim();
+        if (minClusterSize !== "") {
+            params.set("hierarchical_min_cluster_size", minClusterSize);
+        }
         if (hierarchicalTarget === "n_clusters" &&
             String(state.embeddingClusteringSettings.nClusters).trim() !== "") {
             params.set("n_clusters", String(state.embeddingClusteringSettings.nClusters));
@@ -492,7 +498,10 @@ function appendClusteringSettingsToParams(params) {
         if (hierarchicalTarget === "distance_threshold" &&
             String(state.embeddingClusteringSettings.distanceThreshold).trim() !== "") {
             params.set("distance_threshold", String(state.embeddingClusteringSettings.distanceThreshold));
-            params.set("hierarchical_min_cluster_size", String(state.embeddingClusteringSettings.hierarchicalMinClusterSize));
+        }
+        if (hierarchicalTarget === "persistence") {
+            const minLifetime = String(state.embeddingClusteringSettings.persistenceMinLifetime ?? "").trim();
+            params.set("persistence_min_lifetime", minLifetime || String(DEFAULT_CLUSTERING_SETTINGS.persistenceMinLifetime));
         }
     }
     else {
@@ -1822,6 +1831,9 @@ embeddingSettingsToggle.addEventListener("click", () => {
     if (String(state.embeddingClusteringSettings.distanceThreshold).trim() !== "") {
         state.embeddingHierarchicalTargetMemory.distanceThreshold = String(state.embeddingClusteringSettings.distanceThreshold).trim();
     }
+    if (String(state.embeddingClusteringSettings.persistenceMinLifetime).trim() !== "") {
+        state.embeddingHierarchicalTargetMemory.persistenceMinLifetime = String(state.embeddingClusteringSettings.persistenceMinLifetime).trim();
+    }
     state.embeddingClusteringSettingsDraft = normalizeHierarchicalDraft(state.embeddingClusteringSettingsDraft);
     syncEmbeddingSettingsUi();
     if (state.embeddingSettingsOpen) {
@@ -1899,6 +1911,15 @@ embeddingClusterDistanceThresholdInput.addEventListener("input", () => {
     const value = embeddingClusterDistanceThresholdInput.value.trim();
     if (value !== "") {
         state.embeddingHierarchicalTargetMemory.distanceThreshold = value;
+    }
+    scheduleHierarchyStatusUpdate();
+    scheduleLiveHierarchicalClusteringUpdate();
+});
+embeddingClusterLifetimeThresholdInput.addEventListener("input", () => {
+    syncPersistenceMinLifetimeValueUi();
+    const value = embeddingClusterLifetimeThresholdInput.value.trim();
+    if (value !== "") {
+        state.embeddingHierarchicalTargetMemory.persistenceMinLifetime = value;
     }
     scheduleHierarchyStatusUpdate();
     scheduleLiveHierarchicalClusteringUpdate();

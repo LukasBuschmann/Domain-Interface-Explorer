@@ -27,9 +27,39 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         if (settings?.hierarchicalTarget === "n_clusters") {
             return "n_clusters";
         }
+        if (settings?.hierarchicalTarget === "persistence") {
+            return "persistence";
+        }
         const distanceThresholdValue = String(settings?.distanceThreshold ?? "").trim();
         const nClustersValue = String(settings?.nClusters ?? "").trim();
-        return distanceThresholdValue !== "" && nClustersValue === "" ? "distance_threshold" : "n_clusters";
+        const persistenceMinLifetimeValue = String(settings?.persistenceMinLifetime ?? "").trim();
+        if (distanceThresholdValue !== "" && nClustersValue === "") {
+            return "distance_threshold";
+        }
+        if (nClustersValue !== "") {
+            return "n_clusters";
+        }
+        return persistenceMinLifetimeValue !== "" ? "persistence" : "distance_threshold";
+    }
+    function appendHierarchicalClusteringParams(params, settings) {
+        const hierarchicalTarget = currentHierarchicalTarget(settings);
+        params.set("linkage", String(settings.linkage));
+        params.set("hierarchical_target", hierarchicalTarget);
+        const minClusterSize = String(settings.hierarchicalMinClusterSize ?? DEFAULT_CLUSTERING_SETTINGS.hierarchicalMinClusterSize).trim();
+        if (minClusterSize !== "") {
+            params.set("hierarchical_min_cluster_size", minClusterSize);
+        }
+        if (hierarchicalTarget === "n_clusters" && String(settings.nClusters).trim() !== "") {
+            params.set("n_clusters", String(settings.nClusters));
+        }
+        if (hierarchicalTarget === "distance_threshold" &&
+            String(settings.distanceThreshold).trim() !== "") {
+            params.set("distance_threshold", String(settings.distanceThreshold));
+        }
+        if (hierarchicalTarget === "persistence") {
+            const minLifetime = String(settings.persistenceMinLifetime ?? "").trim();
+            params.set("persistence_min_lifetime", minLifetime || String(DEFAULT_CLUSTERING_SETTINGS.persistenceMinLifetime));
+        }
     }
     function currentEmbeddingQuery() {
         const params = new URLSearchParams({
@@ -60,17 +90,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         });
         appendSelectionSettingsToParams(params, state.selectionSettings);
         if (state.embeddingClusteringSettings.method === "hierarchical") {
-            const hierarchicalTarget = currentHierarchicalTarget(state.embeddingClusteringSettings);
-            params.set("linkage", String(state.embeddingClusteringSettings.linkage));
-            if (hierarchicalTarget === "n_clusters" &&
-                String(state.embeddingClusteringSettings.nClusters).trim() !== "") {
-                params.set("n_clusters", String(state.embeddingClusteringSettings.nClusters));
-            }
-            if (hierarchicalTarget === "distance_threshold" &&
-                String(state.embeddingClusteringSettings.distanceThreshold).trim() !== "") {
-                params.set("distance_threshold", String(state.embeddingClusteringSettings.distanceThreshold));
-                params.set("hierarchical_min_cluster_size", String(state.embeddingClusteringSettings.hierarchicalMinClusterSize));
-            }
+            appendHierarchicalClusteringParams(params, state.embeddingClusteringSettings);
         }
         else {
             params.set("min_cluster_size", String(state.embeddingClusteringSettings.minClusterSize));
@@ -90,17 +110,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         });
         appendSelectionSettingsToParams(params, state.selectionSettings);
         if (state.embeddingClusteringSettings.method === "hierarchical") {
-            const hierarchicalTarget = currentHierarchicalTarget(state.embeddingClusteringSettings);
-            params.set("linkage", String(state.embeddingClusteringSettings.linkage));
-            if (hierarchicalTarget === "n_clusters" &&
-                String(state.embeddingClusteringSettings.nClusters).trim() !== "") {
-                params.set("n_clusters", String(state.embeddingClusteringSettings.nClusters));
-            }
-            if (hierarchicalTarget === "distance_threshold" &&
-                String(state.embeddingClusteringSettings.distanceThreshold).trim() !== "") {
-                params.set("distance_threshold", String(state.embeddingClusteringSettings.distanceThreshold));
-                params.set("hierarchical_min_cluster_size", String(state.embeddingClusteringSettings.hierarchicalMinClusterSize));
-            }
+            appendHierarchicalClusteringParams(params, state.embeddingClusteringSettings);
         }
         else {
             params.set("min_cluster_size", String(state.embeddingClusteringSettings.minClusterSize));
@@ -123,16 +133,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         });
         appendSelectionSettingsToParams(params, state.selectionSettings);
         if (settings.method === "hierarchical") {
-            const hierarchicalTarget = currentHierarchicalTarget(settings);
-            params.set("linkage", String(settings.linkage));
-            if (hierarchicalTarget === "n_clusters" && String(settings.nClusters).trim() !== "") {
-                params.set("n_clusters", String(settings.nClusters));
-            }
-            if (hierarchicalTarget === "distance_threshold" &&
-                String(settings.distanceThreshold).trim() !== "") {
-                params.set("distance_threshold", String(settings.distanceThreshold));
-                params.set("hierarchical_min_cluster_size", String(settings.hierarchicalMinClusterSize));
-            }
+            appendHierarchicalClusteringParams(params, settings);
         }
         return `/api/hierarchy-status?${params.toString()}`;
     }
@@ -147,6 +148,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             currentHierarchicalTarget(settings),
             settings.nClusters,
             settings.distanceThreshold,
+            settings.persistenceMinLifetime,
             settings.hierarchicalMinClusterSize,
         ].join("|");
     }
@@ -221,6 +223,15 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             ? value.toFixed(2)
             : "";
     }
+    function syncPersistenceMinLifetimeValueUi() {
+        if (!elements.embeddingClusterLifetimeThresholdValue) {
+            return;
+        }
+        const value = Number.parseFloat(elements.embeddingClusterLifetimeThresholdInput.value);
+        elements.embeddingClusterLifetimeThresholdValue.textContent = Number.isFinite(value)
+            ? value.toFixed(2)
+            : "";
+    }
     function readEmbeddingClusteringDraftInputs() {
         return {
             ...state.embeddingClusteringSettingsDraft,
@@ -233,23 +244,32 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 DEFAULT_CLUSTERING_SETTINGS.linkage,
             nClusters: elements.embeddingClusterNClustersInput.value.trim(),
             distanceThreshold: elements.embeddingClusterDistanceThresholdInput.value.trim(),
+            persistenceMinLifetime: elements.embeddingClusterLifetimeThresholdInput.value.trim(),
             hierarchicalMinClusterSize: elements.embeddingClusterHierarchicalMinSizeInput.value.trim(),
         };
     }
     function syncHierarchicalTargetMemoryFromDraft() {
         const nClustersValue = elements.embeddingClusterNClustersInput.value.trim();
         const distanceThresholdValue = elements.embeddingClusterDistanceThresholdInput.value.trim();
+        const persistenceMinLifetimeValue = elements.embeddingClusterLifetimeThresholdInput.value.trim();
         if (nClustersValue !== "") {
             state.embeddingHierarchicalTargetMemory.nClusters = nClustersValue;
         }
         if (distanceThresholdValue !== "") {
             state.embeddingHierarchicalTargetMemory.distanceThreshold = distanceThresholdValue;
         }
+        if (persistenceMinLifetimeValue !== "") {
+            state.embeddingHierarchicalTargetMemory.persistenceMinLifetime = persistenceMinLifetimeValue;
+        }
     }
     function hierarchicalTargetFallbackValue(target) {
         if (target === "distance_threshold") {
             return (state.embeddingHierarchicalTargetMemory.distanceThreshold ||
                 String(DEFAULT_CLUSTERING_SETTINGS.distanceThreshold));
+        }
+        if (target === "persistence") {
+            return (state.embeddingHierarchicalTargetMemory.persistenceMinLifetime ||
+                String(DEFAULT_CLUSTERING_SETTINGS.persistenceMinLifetime));
         }
         return (state.embeddingHierarchicalTargetMemory.nClusters ||
             String(DEFAULT_CLUSTERING_SETTINGS.nClusters));
@@ -258,6 +278,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         const target = currentHierarchicalTarget(settings);
         const nClustersValue = String(settings?.nClusters ?? "").trim();
         const distanceThresholdValue = String(settings?.distanceThreshold ?? "").trim();
+        const persistenceMinLifetimeValue = String(settings?.persistenceMinLifetime ?? "").trim();
         return {
             ...settings,
             hierarchicalTarget: target,
@@ -266,6 +287,9 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 : "",
             distanceThreshold: target === "distance_threshold"
                 ? distanceThresholdValue || hierarchicalTargetFallbackValue("distance_threshold")
+                : "",
+            persistenceMinLifetime: target === "persistence"
+                ? persistenceMinLifetimeValue || hierarchicalTargetFallbackValue("persistence")
                 : "",
         };
     }
@@ -314,8 +338,12 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         elements.embeddingClusterEpsilonInput.value = String(state.embeddingClusteringSettingsDraft.clusterSelectionEpsilon);
         elements.embeddingClusterLinkageInput.value = String(state.embeddingClusteringSettingsDraft.linkage);
         elements.embeddingClusterNClustersInput.value = String(state.embeddingClusteringSettingsDraft.nClusters);
-        elements.embeddingClusterDistanceThresholdInput.value = String(state.embeddingClusteringSettingsDraft.distanceThreshold);
+        elements.embeddingClusterDistanceThresholdInput.value = String(state.embeddingClusteringSettingsDraft.distanceThreshold ||
+            hierarchicalTargetFallbackValue("distance_threshold"));
         syncDistanceThresholdValueUi();
+        elements.embeddingClusterLifetimeThresholdInput.value = String(state.embeddingClusteringSettingsDraft.persistenceMinLifetime ||
+            hierarchicalTargetFallbackValue("persistence"));
+        syncPersistenceMinLifetimeValueUi();
         elements.embeddingClusterHierarchicalMinSizeInput.value = String(state.embeddingClusteringSettingsDraft.hierarchicalMinClusterSize);
         [...elements.embeddingSettingsPanel.querySelectorAll("[data-clustering-method]")].forEach((button) => {
             const isActive = button.dataset.clusteringMethod === state.embeddingClusteringSettingsDraft.method;
@@ -414,6 +442,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         }
         let nClusters = elements.embeddingClusterNClustersInput.value.trim();
         let distanceThreshold = elements.embeddingClusterDistanceThresholdInput.value.trim();
+        let persistenceMinLifetime = elements.embeddingClusterLifetimeThresholdInput.value.trim();
         const hierarchicalMinClusterSize = Number.parseInt(elements.embeddingClusterHierarchicalMinSizeInput.value.trim(), 10);
         if (!Number.isFinite(hierarchicalMinClusterSize) || hierarchicalMinClusterSize <= 0) {
             throw new Error("Minimal hierarchical cluster size must be a positive integer.");
@@ -428,6 +457,18 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                     throw new Error("Number of clusters must be a positive integer.");
                 }
                 distanceThreshold = "";
+                persistenceMinLifetime = "";
+            }
+            else if (hierarchicalTarget === "persistence") {
+                if (persistenceMinLifetime === "") {
+                    throw new Error("Persistent clustering needs a minimum lifetime.");
+                }
+                persistenceMinLifetime = Number.parseFloat(persistenceMinLifetime);
+                if (!Number.isFinite(persistenceMinLifetime) || persistenceMinLifetime < 0) {
+                    throw new Error("Minimum lifetime must be a non-negative number.");
+                }
+                nClusters = "";
+                distanceThreshold = "";
             }
             else {
                 if (distanceThreshold === "") {
@@ -438,6 +479,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                     throw new Error("Cutoff distance must be a non-negative number.");
                 }
                 nClusters = "";
+                persistenceMinLifetime = "";
             }
         }
         const parsedSettings = {
@@ -450,6 +492,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             hierarchicalTarget,
             nClusters: hierarchicalTarget === "n_clusters" ? nClusters : "",
             distanceThreshold: hierarchicalTarget === "distance_threshold" ? distanceThreshold : "",
+            persistenceMinLifetime: hierarchicalTarget === "persistence" ? persistenceMinLifetime : "",
             hierarchicalMinClusterSize,
         };
         if (options.preserveAppliedHierarchy &&
@@ -642,94 +685,60 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         });
     }
     function columnsChartCacheKey() {
+        const serverChart = state.embeddingClustering?.columns_chart;
         return [
             interfaceSelect.value || "",
             state.embeddingClustering?.settingsKey || "",
+            "server",
+            serverChart ? Number(serverChart.alignmentLength || 0) : "missing",
+            serverChart ? (serverChart.clusters || []).join(",") : "",
             Number(state.embeddingClustering?.points?.length || 0),
-            Number(state.msa?.alignment_length || 0),
         ].join("|");
     }
-    function rebuildColumnsChartIfNeeded() {
-        if (!state.msa ||
-            !state.interface ||
-            !(state.interface.overlayByRow instanceof Map) ||
-            !(state.embeddingClustering?.points || []).length) {
-            state.columnsChart = null;
-            state.columnsChartKey = null;
-            return;
+    function normalizedServerColumnsChart() {
+        const chart = state.embeddingClustering?.columns_chart;
+        if (!chart || !Array.isArray(chart.clusters)) {
+            return null;
         }
-        const nextKey = columnsChartCacheKey();
-        if (state.columnsChart && state.columnsChartKey === nextKey) {
-            return;
-        }
-        const alignmentLength = Math.max(1, Number(state.msa.alignment_length || 0));
-        const clusterSizes = new Map();
-        const clusterPoints = [];
-        for (const point of state.embeddingClustering?.points || []) {
-            const rowKey = String(point.row_key || "");
-            const partnerDomain = String(point.partner_domain || "");
-            const clusterLabel = String(point.cluster_label);
-            if (!rowKey || !partnerDomain) {
-                continue;
-            }
-            clusterPoints.push({
-                rowKey,
-                partnerDomain,
-                clusterLabel,
-            });
-            clusterSizes.set(clusterLabel, (clusterSizes.get(clusterLabel) || 0) + 1);
-        }
-        const clusterKeys = [...clusterSizes.keys()].sort((left, right) => Number(left) - Number(right));
-        const countsByCluster = new Map(clusterKeys.map((clusterLabel) => [clusterLabel, new Uint32Array(alignmentLength)]));
-        for (const point of clusterPoints) {
-            const rowState = state.interface.overlayByRow.get(point.rowKey);
-            const counts = countsByCluster.get(point.clusterLabel);
-            if (!counts) {
-                continue;
-            }
-            const interfaceColumns = rowState?.byPartner.get(point.partnerDomain)?.interface;
-            if (!(interfaceColumns instanceof Set) || interfaceColumns.size === 0) {
-                continue;
-            }
-            for (const column of interfaceColumns) {
-                const columnIndex = Number(column);
-                if (Number.isInteger(columnIndex) &&
-                    columnIndex >= 0 &&
-                    columnIndex < alignmentLength) {
-                    counts[columnIndex] += 1;
-                }
-            }
+        const alignmentLength = Math.max(0, Number(chart.alignmentLength || 0));
+        const clusters = chart.clusters.map((clusterLabel) => String(clusterLabel));
+        const clusterSizes = {};
+        const rawClusterSizes = chart.clusterSizes || {};
+        for (const clusterLabel of clusters) {
+            clusterSizes[clusterLabel] = Number(rawClusterSizes[clusterLabel] || 0);
         }
         const relativeByCluster = {};
-        let maxStackValue = 0;
-        const stackTotals = new Float64Array(alignmentLength);
-        for (const clusterLabel of clusterKeys) {
-            const size = Math.max(1, Number(clusterSizes.get(clusterLabel) || 0));
-            const counts = countsByCluster.get(clusterLabel) || new Uint32Array(alignmentLength);
-            const relative = new Float32Array(alignmentLength);
-            for (let columnIndex = 0; columnIndex < alignmentLength; columnIndex += 1) {
-                const value = counts[columnIndex] / size;
-                relative[columnIndex] = value;
-                stackTotals[columnIndex] += value;
-            }
-            relativeByCluster[clusterLabel] = Array.from(relative);
+        const rawRelativeByCluster = chart.relativeByCluster || {};
+        for (const clusterLabel of clusters) {
+            const values = rawRelativeByCluster[clusterLabel];
+            relativeByCluster[clusterLabel] = Array.isArray(values) ? values : [];
         }
-        for (let columnIndex = 0; columnIndex < alignmentLength; columnIndex += 1) {
-            if (stackTotals[columnIndex] > maxStackValue) {
-                maxStackValue = stackTotals[columnIndex];
-            }
-        }
-        state.columnsChart = {
+        return {
             file: interfaceSelect.value,
             alignmentLength,
-            clusters: clusterKeys,
-            clusterSizes: Object.fromEntries(clusterSizes),
+            clusters,
+            clusterSizes,
             relativeByCluster,
-            maxStackValue,
+            maxStackValue: Number(chart.maxStackValue || 0),
+            source: "server",
         };
+    }
+    function rebuildColumnsChartIfNeeded() {
+        const nextKey = columnsChartCacheKey();
+        if (state.columnsChartKey === nextKey) {
+            return;
+        }
+        const serverChart = normalizedServerColumnsChart();
+        if (!serverChart) {
+            state.columnsChart = null;
+            state.columnsChartKey = nextKey;
+            state.columnsVisibleClusters = new Set();
+            return;
+        }
+        state.columnsChart = serverChart;
         state.columnsChartKey = nextKey;
-        const stillVisible = clusterKeys.filter((clusterLabel) => state.columnsVisibleClusters.has(clusterLabel));
-        state.columnsVisibleClusters = new Set(stillVisible.length > 0 ? stillVisible : clusterKeys);
+        const stillVisible = serverChart.clusters.filter((clusterLabel) => state.columnsVisibleClusters.has(clusterLabel));
+        state.columnsVisibleClusters = new Set(stillVisible.length > 0 ? stillVisible : serverChart.clusters);
     }
     function renderColumnsClusterLegend() {
         if (!elements.columnsClusterLegend) {
@@ -814,7 +823,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         ctx.fillRect(0, 0, width, height);
         const centerX = width / 2;
         const centerY = height / 2;
-        if (!state.interface || !state.msa) {
+        if (!interfaceSelect.value) {
             ctx.fillStyle = "#6f6658";
             ctx.font = '13px "IBM Plex Sans", sans-serif';
             ctx.textAlign = "center";
@@ -828,6 +837,16 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             ctx.textAlign = "center";
             ctx.fillText(state.embeddingClustering.error, centerX, centerY);
             setColumnsInfo(state.embeddingClustering.error);
+            return;
+        }
+        if (state.embeddingClustering &&
+            !state.embeddingClusteringLoading &&
+            !state.embeddingClustering.columns_chart) {
+            ctx.fillStyle = "#6f6658";
+            ctx.font = '13px "IBM Plex Sans", sans-serif';
+            ctx.textAlign = "center";
+            ctx.fillText("Columns histogram unavailable.", centerX, centerY);
+            setColumnsInfo("Clustering response did not include server-side columns histogram data.");
             return;
         }
         if (!(state.columnsChart?.clusters || []).length) {
@@ -1474,14 +1493,15 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         const settingsKey = embeddingClusteringSettingsKey();
         const requestKey = currentEmbeddingClusteringRequestKey();
         if (state.embeddingClustering?.file === interfaceSelect.value &&
-            state.embeddingClustering?.settingsKey === settingsKey &&
-            !state.embeddingClustering?.error) {
+            state.embeddingClustering?.settingsKey === settingsKey) {
             state.embeddingClusteringLoading = false;
             state.embeddingClusteringLoadingKey = null;
             state.embeddingClusteringPromise = null;
             syncEmbeddingLoadingUi();
             renderEmbeddingLegend();
             renderEmbeddingPlot();
+            renderColumnsClusterLegend();
+            renderColumnsChart();
             syncRepresentativeScopeControls();
             return;
         }
@@ -1539,6 +1559,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                     return;
                 }
                 state.embeddingClustering = {
+                    file: interfaceSelect.value,
                     error: error.message,
                     points: [],
                     settingsKey,
@@ -1625,6 +1646,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         syncEmbeddingSettingsUi,
         syncHierarchyWarningUi,
         syncDistanceThresholdValueUi,
+        syncPersistenceMinLifetimeValueUi,
         syncHierarchicalTargetMemoryFromDraft,
         syncHierarchicalTargetUi,
         normalizeHierarchicalDraft,

@@ -1394,6 +1394,11 @@ select,
   line-height: 1;
 }
 
+.embedding-settings-warning-badge.hidden,
+.embedding-settings-warning.hidden {
+  display: none;
+}
+
 .embedding-settings-warning {
   margin: -2px 0 0;
   color: #7b5a10;

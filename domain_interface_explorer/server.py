@@ -28,6 +28,7 @@ from domain_interface_explorer.serverlib.interface_files import (
 from domain_interface_explorer.serverlib.interface_store import InterfaceStore
 from domain_interface_explorer.serverlib.interface_embedding import (
     build_interface_alignment_rows_from_metadata,
+    compute_columns_chart_payload,
     compute_cluster_compare_payload,
     compute_embedding_payload,
     clustering_cache_path,
@@ -682,6 +683,51 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             )
         return interface_payload
 
+    def _filtered_alignment_length(
+        self,
+        path: Path,
+        interface_filter_settings: dict[str, object],
+        interface_payload: dict[str, dict[str, dict]],
+    ) -> int | None:
+        if self.interface_store is not None:
+            try:
+                return self.interface_store.get_filtered_alignment_length(path, interface_filter_settings)
+            except Exception as exc:
+                log_event("store", "filtered alignment length fallback", file=path.name, error=exc)
+        try:
+            _raw_rows, alignment_length = collect_interface_alignment_row_metadata(interface_payload)
+            return int(alignment_length)
+        except Exception as exc:
+            log_event("columns", "alignment length fallback failed", file=path.name, error=exc)
+            return None
+
+    def _attach_columns_chart_payload(
+        self,
+        response_payload: dict[str, object],
+        path: Path,
+        interface_filter_settings: dict[str, object],
+    ) -> dict[str, object]:
+        if response_payload.get("columns_chart") is not None:
+            return response_payload
+        interface_payload = self._load_interface_columns_payload(
+            path,
+            interface_filter_settings,
+            fallback_context="clustering columns chart payload fallback",
+        )
+        alignment_length = self._filtered_alignment_length(
+            path,
+            interface_filter_settings,
+            interface_payload,
+        )
+        return {
+            **response_payload,
+            "columns_chart": compute_columns_chart_payload(
+                interface_payload,
+                response_payload,
+                alignment_length=alignment_length,
+            ),
+        }
+
     def _load_clustering_payload(
         self,
         path: Path,
@@ -735,6 +781,11 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 path,
                 interface_filter_settings,
                 clustering_settings,
+            )
+            response_payload = self._attach_columns_chart_payload(
+                response_payload,
+                path,
+                interface_filter_settings,
             )
         except (RuntimeError, ValueError) as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)

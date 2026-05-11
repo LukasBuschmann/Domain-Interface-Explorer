@@ -25,6 +25,7 @@ from .config import (
     DEFAULT_HIERARCHICAL_LINKAGE,
     DEFAULT_HIERARCHICAL_MIN_CLUSTER_SIZE,
     DEFAULT_HIERARCHICAL_N_CLUSTERS,
+    DEFAULT_HIERARCHICAL_PERSISTENCE_MIN_LIFETIME,
     DEFAULT_HIERARCHICAL_TARGET,
     DEFAULT_EMBEDDING_DISTANCE,
     DEFAULT_EMBEDDING_METHOD,
@@ -68,6 +69,11 @@ VALID_HIERARCHICAL_LINKAGES = {
     "average",
     "average_deduplicated",
     "weighted",
+}
+VALID_HIERARCHICAL_TARGETS = {
+    "distance_threshold",
+    "n_clusters",
+    "persistence",
 }
 
 try:
@@ -296,6 +302,17 @@ def rank_non_negative_cluster_labels_by_size(labels: list[int]) -> list[int]:
 
 def normalize_hierarchical_linkage(linkage: str) -> str:
     return linkage.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def normalize_hierarchical_target(target: str) -> str:
+    normalized = target.strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in {"cutoff", "threshold", "distance_cutoff"}:
+        return "distance_threshold"
+    if normalized in {"cluster_count", "clusters", "n_cluster"}:
+        return "n_clusters"
+    if normalized in {"lifetime", "cluster_lifetime", "persistent_clusters"}:
+        return "persistence"
+    return normalized
 
 
 def scipy_hierarchical_linkage_method(linkage: str) -> str:
@@ -1032,6 +1049,12 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
     linkage_raw = normalize_hierarchical_linkage(
         query.get("linkage", [DEFAULT_HIERARCHICAL_LINKAGE])[0]
     )
+    hierarchical_target_query = query.get("hierarchical_target")
+    hierarchical_target_raw = (
+        normalize_hierarchical_target(hierarchical_target_query[0])
+        if hierarchical_target_query
+        else ""
+    )
     default_n_clusters_raw = (
         str(DEFAULT_HIERARCHICAL_N_CLUSTERS)
         if DEFAULT_HIERARCHICAL_TARGET == "n_clusters"
@@ -1042,8 +1065,28 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
         if DEFAULT_HIERARCHICAL_TARGET == "distance_threshold"
         else ""
     )
-    n_clusters_raw = query.get("n_clusters", [default_n_clusters_raw])[0].strip()
-    distance_threshold_raw = query.get("distance_threshold", [default_distance_threshold_raw])[0].strip()
+    n_clusters_default_raw = default_n_clusters_raw
+    distance_threshold_default_raw = default_distance_threshold_raw
+    n_clusters_requested = "n_clusters" in query
+    distance_threshold_requested = "distance_threshold" in query
+    if hierarchical_target_raw == "n_clusters":
+        distance_threshold_default_raw = ""
+    elif hierarchical_target_raw == "distance_threshold":
+        n_clusters_default_raw = ""
+    elif hierarchical_target_raw == "persistence":
+        n_clusters_default_raw = ""
+        distance_threshold_default_raw = ""
+    elif n_clusters_requested and not distance_threshold_requested:
+        distance_threshold_default_raw = ""
+    elif distance_threshold_requested and not n_clusters_requested:
+        n_clusters_default_raw = ""
+    default_persistence_min_lifetime_raw = str(DEFAULT_HIERARCHICAL_PERSISTENCE_MIN_LIFETIME)
+    n_clusters_raw = query.get("n_clusters", [n_clusters_default_raw])[0].strip()
+    distance_threshold_raw = query.get("distance_threshold", [distance_threshold_default_raw])[0].strip()
+    persistence_min_lifetime_raw = query.get(
+        "persistence_min_lifetime",
+        [default_persistence_min_lifetime_raw],
+    )[0].strip()
     hierarchical_min_cluster_size_raw = query.get(
         "hierarchical_min_cluster_size",
         [str(DEFAULT_HIERARCHICAL_MIN_CLUSTER_SIZE)],
@@ -1056,6 +1099,10 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
         raise ValueError(
             "linkage must be one of 'single', 'complete', 'average', "
             "'average_deduplicated', or 'weighted'"
+        )
+    if hierarchical_target_raw and hierarchical_target_raw not in VALID_HIERARCHICAL_TARGETS:
+        raise ValueError(
+            "hierarchical target must be one of 'distance_threshold', 'n_clusters', or 'persistence'"
         )
     min_cluster_size = int(min_cluster_size_raw)
     if min_cluster_size <= 0:
@@ -1084,14 +1131,42 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
         distance_threshold = float(distance_threshold_raw)
         if distance_threshold < 0:
             raise ValueError("distance threshold must be non-negative")
+    persistence_min_lifetime = (
+        DEFAULT_HIERARCHICAL_PERSISTENCE_MIN_LIFETIME
+        if persistence_min_lifetime_raw == ""
+        else float(persistence_min_lifetime_raw)
+    )
+    if persistence_min_lifetime < 0:
+        raise ValueError("cluster lifetime must be non-negative")
     hierarchical_min_cluster_size = int(hierarchical_min_cluster_size_raw)
     if hierarchical_min_cluster_size <= 0:
         raise ValueError("hierarchical minimal cluster size must be positive")
-    if method_raw == "hierarchical":
-        if n_clusters is None and distance_threshold is None:
-            raise ValueError("hierarchical clustering requires n clusters or cutoff distance")
+    hierarchical_target = hierarchical_target_raw
+    if not hierarchical_target:
         if n_clusters is not None and distance_threshold is not None:
             raise ValueError("set either n clusters or cutoff distance for hierarchical clustering, not both")
+        if n_clusters is not None:
+            hierarchical_target = "n_clusters"
+        elif distance_threshold is not None:
+            hierarchical_target = "distance_threshold"
+        else:
+            hierarchical_target = DEFAULT_HIERARCHICAL_TARGET
+    if method_raw == "hierarchical":
+        if hierarchical_target == "n_clusters":
+            if n_clusters is None:
+                raise ValueError("n-cluster hierarchical cutthrough requires n clusters")
+            distance_threshold = None
+        elif hierarchical_target == "distance_threshold":
+            if distance_threshold is None:
+                raise ValueError("distance-threshold hierarchical cutthrough requires cutoff distance")
+            n_clusters = None
+        elif hierarchical_target == "persistence":
+            n_clusters = None
+            distance_threshold = None
+        else:
+            raise ValueError(
+                "hierarchical target must be one of 'distance_threshold', 'n_clusters', or 'persistence'"
+            )
     return {
         "method": method_raw,
         "distance": distance_raw,
@@ -1099,8 +1174,10 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
         "min_samples": min_samples,
         "cluster_selection_epsilon": cluster_selection_epsilon,
         "linkage": linkage_raw,
+        "hierarchical_target": hierarchical_target,
         "n_clusters": n_clusters,
         "distance_threshold": distance_threshold,
+        "persistence_min_lifetime": persistence_min_lifetime,
         "hierarchical_min_cluster_size": hierarchical_min_cluster_size,
     }
 
@@ -2262,6 +2339,11 @@ def load_hierarchy_linkage_file(
                     if "count" in data.files
                     else np.zeros((len(distances),), dtype=np.int64)
                 )
+                leaf_interface_counts = (
+                    data["leaf_interface_count"].astype(np.int64, copy=False)
+                    if "leaf_interface_count" in data.files
+                    else None
+                )
                 if "leaf_count" in data.files:
                     leaf_count = int(np.asarray(data["leaf_count"]).reshape(-1)[0])
                 else:
@@ -2283,14 +2365,17 @@ def load_hierarchy_linkage_file(
                 children = matrix[:, :2].astype(np.int64)
                 distances = matrix[:, 2].astype(np.float64)
                 counts = matrix[:, 3].astype(np.int64)
+                leaf_interface_counts = None
                 leaf_count = int(len(matrix) + 1)
 
         if children.ndim != 2 or children.shape[1] != 2:
             raise ValueError(f"{linkage_path} has invalid children shape")
         if len(children) != max(0, leaf_count - 1) or len(distances) != len(children):
             raise ValueError(f"{linkage_path} has inconsistent linkage dimensions")
+        if leaf_interface_counts is not None and len(leaf_interface_counts) != leaf_count:
+            raise ValueError(f"{linkage_path} has inconsistent leaf_interface_count length")
         timer.set(leaf_count=leaf_count, merges=len(children))
-        return {
+        hierarchy = {
             "children": children,
             "distances": distances,
             "counts": counts,
@@ -2298,6 +2383,9 @@ def load_hierarchy_linkage_file(
             "distance": expected_distance_metric,
             "linkage": expected_linkage_method,
         }
+        if leaf_interface_counts is not None:
+            hierarchy["leaf_interface_counts"] = leaf_interface_counts
+        return hierarchy
 
 
 def precomputed_hierarchy_paths(
@@ -2750,6 +2838,114 @@ def cut_hierarchy_leaf_labels(
     return labels
 
 
+def hierarchy_leaf_member_counts(
+    compressed_entries: list[dict[str, object]],
+    leaf_to_group_indices: object,
+    stored_leaf_member_counts: object | None = None,
+) -> np.ndarray:
+    if stored_leaf_member_counts is not None:
+        leaf_member_counts = np.asarray(stored_leaf_member_counts, dtype=np.int64)
+        if leaf_member_counts.shape[0] != len(leaf_to_group_indices):
+            raise ValueError("stored hierarchy leaf counts are inconsistent")
+        if np.any(leaf_member_counts < 0):
+            raise ValueError("stored hierarchy leaf counts must be non-negative")
+        return leaf_member_counts
+
+    group_member_counts = compressed_entry_member_counts(compressed_entries)
+    leaf_member_counts = np.empty(len(leaf_to_group_indices), dtype=np.int64)
+    for leaf_index, raw_group_indices in enumerate(leaf_to_group_indices):
+        if isinstance(raw_group_indices, (str, bytes)):
+            raise ValueError("hierarchy leaf mapping is inconsistent")
+        total = 0
+        for raw_group_index in raw_group_indices:
+            group_index = int(raw_group_index)
+            if group_index < 0 or group_index >= group_member_counts.shape[0]:
+                raise ValueError("hierarchy leaf mapping points outside compressed entries")
+            total += int(group_member_counts[group_index])
+        leaf_member_counts[leaf_index] = total
+    return leaf_member_counts
+
+
+def cut_hierarchy_leaf_labels_by_persistence(
+    leaf_count: int,
+    children: object,
+    distances: object,
+    leaf_member_counts: object,
+    min_lifetime: float,
+    min_cluster_size: int,
+) -> list[int]:
+    if leaf_count <= 1:
+        return [0] * leaf_count
+    leaf_member_counts = np.asarray(leaf_member_counts, dtype=np.int64)
+    if leaf_member_counts.shape[0] != leaf_count:
+        raise ValueError("hierarchy leaf counts are inconsistent")
+    if np.any(leaf_member_counts < 0):
+        raise ValueError("hierarchy leaf counts must be non-negative")
+
+    total_node_count = (2 * leaf_count) - 1
+    node_sizes = np.zeros(total_node_count, dtype=np.int64)
+    node_sizes[:leaf_count] = leaf_member_counts
+    parent_distance = np.full(total_node_count, np.nan, dtype=np.float64)
+
+    for merge_index in range(leaf_count - 1):
+        left_child = int(children[merge_index][0])
+        right_child = int(children[merge_index][1])
+        node_id = leaf_count + merge_index
+        if left_child >= node_id or right_child >= node_id:
+            raise ValueError("hierarchy children are not ordered like a scipy linkage matrix")
+        merge_distance = float(distances[merge_index])
+        node_sizes[node_id] = node_sizes[left_child] + node_sizes[right_child]
+        parent_distance[left_child] = merge_distance
+        parent_distance[right_child] = merge_distance
+
+    root_node_id = total_node_count - 1
+    candidates: list[tuple[float, int, int]] = []
+    for node_id in range(root_node_id):
+        birth_distance = 0.0 if node_id < leaf_count else float(distances[node_id - leaf_count])
+        death_distance = float(parent_distance[node_id])
+        if not math.isfinite(death_distance):
+            continue
+        lifetime = death_distance - birth_distance
+        if lifetime < min_lifetime:
+            continue
+        cluster_size = int(node_sizes[node_id])
+        if cluster_size < min_cluster_size:
+            continue
+        candidates.append((lifetime, cluster_size, node_id))
+    candidates.sort(key=lambda candidate: (-candidate[0], -candidate[1], candidate[2]))
+
+    def collect_leaf_indices(node_id: int) -> list[int]:
+        leaves: list[int] = []
+        stack = [node_id]
+        while stack:
+            node = stack.pop()
+            if node < leaf_count:
+                leaves.append(node)
+                continue
+            child_index = node - leaf_count
+            if child_index < 0 or child_index >= leaf_count - 1:
+                raise ValueError("hierarchy children are inconsistent")
+            left_child = int(children[child_index][0])
+            right_child = int(children[child_index][1])
+            stack.append(right_child)
+            stack.append(left_child)
+        return leaves
+
+    labels = [-1] * leaf_count
+    next_label = 0
+    for _, _, node_id in candidates:
+        leaves = collect_leaf_indices(node_id)
+        if any(labels[leaf_index] >= 0 for leaf_index in leaves):
+            continue
+        for leaf_index in leaves:
+            labels[leaf_index] = next_label
+        next_label += 1
+
+    if next_label == 0:
+        return [0] * leaf_count
+    return labels
+
+
 def compute_hierarchical_clustering_payload_from_hierarchy(
     entries: list[dict[str, object]],
     compressed_entries: list[dict[str, object]],
@@ -2759,8 +2955,15 @@ def compute_hierarchical_clustering_payload_from_hierarchy(
     hierarchy: dict[str, object],
 ) -> dict[str, object]:
     linkage = str(settings["linkage"])
+    hierarchical_target = str(settings.get("hierarchical_target", DEFAULT_HIERARCHICAL_TARGET))
     n_clusters = settings["n_clusters"]
     distance_threshold = settings["distance_threshold"]
+    persistence_min_lifetime = float(
+        settings.get(
+            "persistence_min_lifetime",
+            DEFAULT_HIERARCHICAL_PERSISTENCE_MIN_LIFETIME,
+        )
+    )
     hierarchical_min_cluster_size = int(
         settings.get("hierarchical_min_cluster_size", DEFAULT_HIERARCHICAL_MIN_CLUSTER_SIZE)
     )
@@ -2787,24 +2990,44 @@ def compute_hierarchical_clustering_payload_from_hierarchy(
             "apply hierarchy cutoff",
             source=hierarchy.get("source", "local_computed"),
             leaf_count=leaf_count,
+            target=hierarchical_target,
             n_clusters=n_clusters,
             distance_threshold=distance_threshold,
+            persistence_min_lifetime=persistence_min_lifetime,
         ) as timer:
-            leaf_labels = cut_hierarchy_leaf_labels(
-                leaf_count,
-                hierarchy["children"],
-                hierarchy["distances"],
-                n_clusters=int(n_clusters) if n_clusters is not None else None,
-                distance_threshold=float(distance_threshold) if distance_threshold is not None else None,
+            if hierarchical_target == "persistence":
+                leaf_member_counts = hierarchy_leaf_member_counts(
+                    compressed_entries,
+                    leaf_to_group_indices,
+                )
+                leaf_labels = cut_hierarchy_leaf_labels_by_persistence(
+                    leaf_count,
+                    hierarchy["children"],
+                    hierarchy["distances"],
+                    leaf_member_counts,
+                    min_lifetime=persistence_min_lifetime,
+                    min_cluster_size=hierarchical_min_cluster_size,
+                )
+            else:
+                leaf_labels = cut_hierarchy_leaf_labels(
+                    leaf_count,
+                    hierarchy["children"],
+                    hierarchy["distances"],
+                    n_clusters=int(n_clusters) if n_clusters is not None else None,
+                    distance_threshold=float(distance_threshold) if distance_threshold is not None else None,
+                )
+            timer.set(
+                cluster_labels=len({label for label in leaf_labels if label >= 0}),
+                noise_leaves=sum(1 for label in leaf_labels if label < 0),
             )
-            timer.set(cluster_labels=len(set(leaf_labels)))
         with timed_step(
             "hierarchy",
             "map hierarchy leaves to compressed entries",
             leaf_count=leaf_count,
             compressed_count=compressed_count,
         ):
-            compressed_labels = [-1] * compressed_count
+            unmapped_label = -10**12
+            compressed_labels = [unmapped_label] * compressed_count
             for leaf_index, label in enumerate(leaf_labels):
                 raw_group_indices = leaf_to_group_indices[leaf_index]
                 if isinstance(raw_group_indices, (str, bytes)):
@@ -2813,15 +3036,19 @@ def compute_hierarchical_clustering_payload_from_hierarchy(
                     group_index = int(raw_group_index)
                     if group_index < 0 or group_index >= compressed_count:
                         raise ValueError("hierarchy leaf mapping points outside compressed entries")
-                    if compressed_labels[group_index] >= 0 and compressed_labels[group_index] != int(label):
+                    if (
+                        compressed_labels[group_index] != unmapped_label
+                        and compressed_labels[group_index] != int(label)
+                    ):
                         raise ValueError("hierarchy leaf mapping assigns conflicting labels")
                     compressed_labels[group_index] = int(label)
-            if any(label < 0 for label in compressed_labels):
+            if any(label == unmapped_label for label in compressed_labels):
                 raise ValueError("hierarchy leaf mapping did not cover all compressed entries")
-    if distance_threshold is not None:
+    if hierarchical_target in {"distance_threshold", "n_clusters"}:
         with timed_step(
             "hierarchy",
             "apply hierarchical min cluster size",
+            target=hierarchical_target,
             min_cluster_size=hierarchical_min_cluster_size,
             compressed_count=compressed_count,
         ) as timer:
@@ -2875,11 +3102,122 @@ def compute_hierarchical_clustering_payload_from_hierarchy(
             "method": "hierarchical",
             "distance": distance_metric,
             "linkage": linkage,
+            "hierarchical_target": hierarchical_target,
             "n_clusters": n_clusters,
             "distance_threshold": distance_threshold,
+            "persistence_min_lifetime": persistence_min_lifetime,
             "hierarchical_min_cluster_size": hierarchical_min_cluster_size,
         },
         "points": points,
+    }
+
+
+def interface_payload_alignment_length_fallback(
+    interface_payload: dict[str, dict[str, dict]],
+) -> int:
+    max_column = -1
+    for rows in interface_payload.values():
+        if not isinstance(rows, dict):
+            continue
+        for row_payload in rows.values():
+            if not isinstance(row_payload, dict):
+                continue
+            aligned_sequence = row_payload.get("aligned_seq")
+            if isinstance(aligned_sequence, str) and aligned_sequence:
+                max_column = max(max_column, len(aligned_sequence) - 1)
+            for raw_column in row_payload.get("interface_msa_columns_a", []) or []:
+                try:
+                    max_column = max(max_column, int(raw_column))
+                except (TypeError, ValueError):
+                    continue
+    return max(0, max_column + 1)
+
+
+def numeric_cluster_sort_key(cluster_label: str) -> tuple[float, str]:
+    try:
+        numeric_label = float(cluster_label)
+    except ValueError:
+        numeric_label = math.inf
+    return numeric_label, cluster_label
+
+
+def compute_columns_chart_payload(
+    interface_payload: dict[str, dict[str, dict]],
+    clustering_payload: dict[str, object],
+    alignment_length: int | None = None,
+) -> dict[str, object]:
+    points = clustering_payload.get("points")
+    if not isinstance(points, list):
+        return {
+            "alignmentLength": int(alignment_length or 0),
+            "clusters": [],
+            "clusterSizes": {},
+            "relativeByCluster": {},
+            "maxStackValue": 0.0,
+        }
+    normalized_alignment_length = int(alignment_length or 0)
+    if normalized_alignment_length <= 0:
+        normalized_alignment_length = interface_payload_alignment_length_fallback(interface_payload)
+
+    with timed_step(
+        "columns",
+        "compute cluster column histogram",
+        samples=len(points),
+        alignment_length=normalized_alignment_length,
+    ) as timer:
+        cluster_sizes: dict[str, int] = {}
+        normalized_points: list[tuple[str, str, str]] = []
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            row_key = str(point.get("row_key") or "")
+            partner_domain = str(point.get("partner_domain") or "")
+            cluster_label = str(point.get("cluster_label"))
+            if not row_key or not partner_domain:
+                continue
+            normalized_points.append((partner_domain, row_key, cluster_label))
+            cluster_sizes[cluster_label] = cluster_sizes.get(cluster_label, 0) + 1
+
+        cluster_keys = sorted(cluster_sizes, key=numeric_cluster_sort_key)
+        counts_by_cluster = {
+            cluster_label: [0] * normalized_alignment_length
+            for cluster_label in cluster_keys
+        }
+
+        for partner_domain, row_key, cluster_label in normalized_points:
+            rows = interface_payload.get(partner_domain)
+            row_payload = rows.get(row_key) if isinstance(rows, dict) else None
+            if not isinstance(row_payload, dict):
+                continue
+            counts = counts_by_cluster.get(cluster_label)
+            if counts is None:
+                continue
+            for raw_column in row_payload.get("interface_msa_columns_a", []) or []:
+                try:
+                    column_index = int(raw_column)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= column_index < normalized_alignment_length:
+                    counts[column_index] += 1
+
+        relative_by_cluster: dict[str, list[float]] = {}
+        stack_totals = [0.0] * normalized_alignment_length
+        for cluster_label in cluster_keys:
+            cluster_size = max(1, int(cluster_sizes.get(cluster_label, 0)))
+            counts = counts_by_cluster.get(cluster_label) or [0] * normalized_alignment_length
+            relative = [float(count) / cluster_size for count in counts]
+            relative_by_cluster[cluster_label] = relative
+            for column_index, value in enumerate(relative):
+                stack_totals[column_index] += value
+        max_stack_value = max(stack_totals) if stack_totals else 0.0
+        timer.set(clusters=len(cluster_keys), max_stack_value=max_stack_value)
+
+    return {
+        "alignmentLength": normalized_alignment_length,
+        "clusters": cluster_keys,
+        "clusterSizes": cluster_sizes,
+        "relativeByCluster": relative_by_cluster,
+        "maxStackValue": max_stack_value,
     }
 
 

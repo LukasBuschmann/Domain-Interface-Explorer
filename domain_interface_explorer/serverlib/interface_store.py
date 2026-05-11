@@ -706,6 +706,29 @@ class InterfaceStore:
             timer.set(rows=row_count, partner_domains=len(payload))
             return payload
 
+    def get_filtered_alignment_length(
+        self,
+        path: Path,
+        filter_settings: dict[str, object],
+    ) -> int:
+        source_id = self.ensure_source_ready(path)
+        min_size = filter_min_interface_size(filter_settings)
+        where_sql, where_args = self.filtered_where(min_size)
+        with timed_step("store", "load filtered alignment length", file=path.name) as timer:
+            with self.connect() as connection:
+                alignment_length = int(
+                    connection.execute(
+                        f"""
+                        SELECT COALESCE(MAX(LENGTH(aligned_seq)), 0)
+                        FROM interface_rows
+                        WHERE source_id = ? AND {where_sql}
+                        """,
+                        (source_id, *where_args),
+                    ).fetchone()[0]
+                )
+            timer.set(alignment_length=alignment_length)
+            return alignment_length
+
     def get_representative_candidates(
         self,
         path: Path,

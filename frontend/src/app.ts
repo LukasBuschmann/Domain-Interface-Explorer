@@ -56,6 +56,7 @@ const {
   embeddingClusterDistanceThresholdInput,
   embeddingClusterEpsilonInput,
   embeddingClusterHierarchicalMinSizeInput,
+  embeddingClusterLifetimeThresholdInput,
   embeddingClusterLinkageInput,
   embeddingClusterMinSamplesInput,
   embeddingClusterMinSizeInput,
@@ -399,6 +400,7 @@ const {
   syncEmbeddingLoadingUi,
   syncEmbeddingMemberControls,
   syncDistanceThresholdValueUi,
+  syncPersistenceMinLifetimeValueUi,
   syncEmbeddingSettingsUi,
   syncHierarchicalTargetMemoryFromDraft,
   syncHierarchicalTargetUi,
@@ -751,6 +753,17 @@ function appendClusteringSettingsToParams(params) {
   if (state.embeddingClusteringSettings.method === "hierarchical") {
     const hierarchicalTarget = currentHierarchicalTarget(state.embeddingClusteringSettings);
     params.set("linkage", String(state.embeddingClusteringSettings.linkage));
+    params.set("hierarchical_target", hierarchicalTarget);
+    const minClusterSize = String(
+      state.embeddingClusteringSettings.hierarchicalMinClusterSize ??
+        DEFAULT_CLUSTERING_SETTINGS.hierarchicalMinClusterSize
+    ).trim();
+    if (minClusterSize !== "") {
+      params.set(
+        "hierarchical_min_cluster_size",
+        minClusterSize
+      );
+    }
     if (
       hierarchicalTarget === "n_clusters" &&
       String(state.embeddingClusteringSettings.nClusters).trim() !== ""
@@ -762,9 +775,12 @@ function appendClusteringSettingsToParams(params) {
       String(state.embeddingClusteringSettings.distanceThreshold).trim() !== ""
     ) {
       params.set("distance_threshold", String(state.embeddingClusteringSettings.distanceThreshold));
+    }
+    if (hierarchicalTarget === "persistence") {
+      const minLifetime = String(state.embeddingClusteringSettings.persistenceMinLifetime ?? "").trim();
       params.set(
-        "hierarchical_min_cluster_size",
-        String(state.embeddingClusteringSettings.hierarchicalMinClusterSize)
+        "persistence_min_lifetime",
+        minLifetime || String(DEFAULT_CLUSTERING_SETTINGS.persistenceMinLifetime)
       );
     }
   } else {
@@ -2326,6 +2342,11 @@ embeddingSettingsToggle.addEventListener("click", () => {
       state.embeddingClusteringSettings.distanceThreshold
     ).trim();
   }
+  if (String(state.embeddingClusteringSettings.persistenceMinLifetime).trim() !== "") {
+    state.embeddingHierarchicalTargetMemory.persistenceMinLifetime = String(
+      state.embeddingClusteringSettings.persistenceMinLifetime
+    ).trim();
+  }
   state.embeddingClusteringSettingsDraft = normalizeHierarchicalDraft(state.embeddingClusteringSettingsDraft);
   syncEmbeddingSettingsUi();
   if (state.embeddingSettingsOpen) {
@@ -2409,6 +2430,16 @@ embeddingClusterDistanceThresholdInput.addEventListener("input", () => {
   const value = embeddingClusterDistanceThresholdInput.value.trim();
   if (value !== "") {
     state.embeddingHierarchicalTargetMemory.distanceThreshold = value;
+  }
+  scheduleHierarchyStatusUpdate();
+  scheduleLiveHierarchicalClusteringUpdate();
+});
+
+embeddingClusterLifetimeThresholdInput.addEventListener("input", () => {
+  syncPersistenceMinLifetimeValueUi();
+  const value = embeddingClusterLifetimeThresholdInput.value.trim();
+  if (value !== "") {
+    state.embeddingHierarchicalTargetMemory.persistenceMinLifetime = value;
   }
   scheduleHierarchyStatusUpdate();
   scheduleLiveHierarchicalClusteringUpdate();

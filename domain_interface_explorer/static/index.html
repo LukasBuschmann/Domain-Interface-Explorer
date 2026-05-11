@@ -458,7 +458,7 @@
                     <p id="embedding-hierarchy-warning" class="embedding-settings-warning hidden"></p>
                   </div>
                   <div class="embedding-settings-subsection">
-                    <h4 class="embedding-settings-subsection-title">Clustering</h4>
+                    <h4 class="embedding-settings-subsection-title">Cutthrough</h4>
                     <label data-clustering-panel="hdbscan">
                       <span>
                         Min Cluster Size
@@ -533,7 +533,15 @@
                         data-hierarchical-target="n_clusters"
                         aria-pressed="false"
                       >
-                        N Clusters
+                        Number
+                      </button>
+                      <button
+                        type="button"
+                        class="embedding-clustering-mode-button"
+                        data-hierarchical-target="persistence"
+                        aria-pressed="false"
+                      >
+                        Persistence
                       </button>
                     </div>
                     <label
@@ -591,7 +599,36 @@
                     </label>
                     <label
                       data-clustering-panel="hierarchical"
-                      data-hierarchical-target-panel="distance_threshold"
+                      data-hierarchical-target-panel="persistence"
+                      class="embedding-settings-section-hidden"
+                    >
+                      <span>
+                        Minimum Lifetime
+                        <span
+                          class="embedding-settings-help"
+                          tabindex="0"
+                          title="Keeps hierarchy branches that persist across at least this dendrogram distance span. If no branch qualifies, the family remains one cluster."
+                        >?</span>
+                      </span>
+                      <div class="embedding-settings-range-row">
+                        <input
+                          id="embedding-cluster-lifetime-threshold"
+                          class="embedding-settings-input embedding-settings-range"
+                          type="range"
+                          step="0.01"
+                          min="0"
+                          max="1"
+                          value="0.05"
+                        >
+                        <output
+                          id="embedding-cluster-lifetime-threshold-value"
+                          class="embedding-settings-range-value"
+                          for="embedding-cluster-lifetime-threshold"
+                        >0.05</output>
+                      </div>
+                    </label>
+                    <label
+                      data-clustering-panel="hierarchical"
                       class="embedding-settings-section-hidden"
                     >
                       <span>

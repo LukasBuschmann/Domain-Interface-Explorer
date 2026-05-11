@@ -26,6 +26,7 @@ export const DEFAULT_CLUSTERING_SETTINGS = {
   hierarchicalTarget: "distance_threshold",
   nClusters: "",
   distanceThreshold: 0.5,
+  persistenceMinLifetime: 0.05,
   hierarchicalMinClusterSize: 10,
 };
 
