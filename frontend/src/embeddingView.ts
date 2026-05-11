@@ -514,8 +514,10 @@ export function createEmbeddingViewController({
       throw new Error("Clustering distance must be Jaccard, Dice, or Overlap.");
     }
     const linkage = elements.embeddingClusterLinkageInput.value.trim().toLowerCase();
-    if (!["single", "complete", "average"].includes(linkage)) {
-      throw new Error("Hierarchical linkage must be single, complete, or average.");
+    if (!["single", "complete", "average", "average_deduplicated", "weighted"].includes(linkage)) {
+      throw new Error(
+        "Hierarchical linkage must be single, complete, average, average deduplicated, or weighted."
+      );
     }
     const minClusterSize = Number.parseInt(
       elements.embeddingClusterMinSizeInput.value.trim(),

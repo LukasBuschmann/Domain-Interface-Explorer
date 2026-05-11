@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import csv
+import heapq
 import json
 import math
 import random
@@ -9,6 +10,8 @@ import threading
 from collections import OrderedDict
 from concurrent.futures import Future
 from pathlib import Path
+
+import numpy as np
 
 from .config import (
     CLUSTERING_CACHE_VERSION,
@@ -58,6 +61,13 @@ METRIC_CODES = {
     "jaccard": 0,
     "overlap": 1,
     "dice": 2,
+}
+VALID_HIERARCHICAL_LINKAGES = {
+    "single",
+    "complete",
+    "average",
+    "average_deduplicated",
+    "weighted",
 }
 
 try:
@@ -118,8 +128,154 @@ if njit is not None:
                 elif distance > 1.0:
                     distance = 1.0
                 out[base + (j - i - 1)] = distance
+
+    @njit(cache=True)
+    def _hierarchy_condensed_index(n: int, left: int, right: int) -> int:
+        if left > right:
+            left, right = right, left
+        return n * left - (left * (left + 1)) // 2 + (right - left - 1)
+
+    @njit(cache=True)
+    def _hierarchy_condensed_distance(
+        distances: object,
+        n: int,
+        left: int,
+        right: int,
+    ) -> float:
+        return distances[_hierarchy_condensed_index(n, left, right)]
+
+    @njit(cache=True)
+    def _set_hierarchy_condensed_distance(
+        distances: object,
+        n: int,
+        left: int,
+        right: int,
+        value: float,
+    ) -> None:
+        distances[_hierarchy_condensed_index(n, left, right)] = value
+
+    @njit(cache=True)
+    def _nearest_active_hierarchy_neighbor(
+        distances: object,
+        n: int,
+        active: object,
+        cluster_ids: object,
+        slot: int,
+    ) -> tuple[int, float]:
+        best_slot = -1
+        best_distance = math.inf
+        best_cluster_id = np.iinfo(np.int64).max
+        for other in range(n):
+            if other == slot or not active[other]:
+                continue
+            distance = _hierarchy_condensed_distance(distances, n, slot, other)
+            other_cluster_id = cluster_ids[other]
+            if (
+                distance < best_distance
+                or (distance == best_distance and other_cluster_id < best_cluster_id)
+            ):
+                best_slot = other
+                best_distance = distance
+                best_cluster_id = other_cluster_id
+        return best_slot, best_distance
+
+    @njit(cache=True)
+    def _weighted_average_linkage_numba(
+        distances: object,
+        leaf_interface_counts: object,
+    ) -> tuple[object, object, object]:
+        n = leaf_interface_counts.shape[0]
+        children = np.empty((n - 1, 2), dtype=np.int64)
+        merge_distances = np.empty(n - 1, dtype=np.float64)
+        counts = np.empty(n - 1, dtype=np.int64)
+
+        active = np.ones(n, dtype=np.bool_)
+        cluster_ids = np.empty(n, dtype=np.int64)
+        weights = np.empty(n, dtype=np.float64)
+        slot_counts = np.empty(n, dtype=np.int64)
+        chain = np.empty(n, dtype=np.int64)
+
+        for index in range(n):
+            count = np.int64(leaf_interface_counts[index])
+            if count <= 0:
+                raise ValueError("leaf interface counts must be positive")
+            cluster_ids[index] = index
+            weights[index] = float(count)
+            slot_counts[index] = count
+
+        for merge_index in range(n - 1):
+            first_slot = -1
+            first_cluster_id = np.iinfo(np.int64).max
+            for slot in range(n):
+                if active[slot] and cluster_ids[slot] < first_cluster_id:
+                    first_slot = slot
+                    first_cluster_id = cluster_ids[slot]
+
+            if first_slot < 0:
+                raise ValueError("could not find an active cluster pair to merge")
+
+            chain[0] = first_slot
+            chain_length = 1
+            best_distance = math.inf
+            left_slot = -1
+            right_slot = -1
+
+            while True:
+                current_slot = chain[chain_length - 1]
+                nearest_slot, nearest_distance = _nearest_active_hierarchy_neighbor(
+                    distances,
+                    n,
+                    active,
+                    cluster_ids,
+                    current_slot,
+                )
+                if nearest_slot < 0:
+                    raise ValueError("could not find a nearest active cluster")
+                if chain_length > 1 and nearest_slot == chain[chain_length - 2]:
+                    left_slot = current_slot
+                    right_slot = nearest_slot
+                    best_distance = nearest_distance
+                    break
+                if chain_length >= n:
+                    raise ValueError("nearest-neighbor chain did not converge")
+                chain[chain_length] = nearest_slot
+                chain_length += 1
+
+            left_cluster_id = cluster_ids[left_slot]
+            right_cluster_id = cluster_ids[right_slot]
+            if left_cluster_id <= right_cluster_id:
+                children[merge_index, 0] = left_cluster_id
+                children[merge_index, 1] = right_cluster_id
+            else:
+                children[merge_index, 0] = right_cluster_id
+                children[merge_index, 1] = left_cluster_id
+            merge_distances[merge_index] = best_distance
+
+            left_weight = weights[left_slot]
+            right_weight = weights[right_slot]
+            new_weight = left_weight + right_weight
+            new_count = slot_counts[left_slot] + slot_counts[right_slot]
+            counts[merge_index] = new_count
+
+            for other in range(n):
+                if not active[other] or other == left_slot or other == right_slot:
+                    continue
+                left_distance = _hierarchy_condensed_distance(distances, n, left_slot, other)
+                right_distance = _hierarchy_condensed_distance(distances, n, right_slot, other)
+                updated_distance = (
+                    (left_weight * left_distance) + (right_weight * right_distance)
+                ) / new_weight
+                _set_hierarchy_condensed_distance(distances, n, left_slot, other, updated_distance)
+
+            active[right_slot] = False
+            cluster_ids[left_slot] = n + merge_index
+            weights[left_slot] = new_weight
+            slot_counts[left_slot] = new_count
+
+        return children, merge_distances, counts
 else:
     _fill_condensed_distances_numba = None
+    _weighted_average_linkage_numba = None
 
 
 def rank_non_negative_cluster_labels_by_size(labels: list[int]) -> list[int]:
@@ -136,6 +292,116 @@ def rank_non_negative_cluster_labels_by_size(labels: list[int]) -> list[int]:
         for ranked_label, cluster_label in enumerate(ordered_labels)
     }
     return [label_mapping.get(label, -1) if label >= 0 else -1 for label in normalized_labels]
+
+
+def normalize_hierarchical_linkage(linkage: str) -> str:
+    return linkage.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def scipy_hierarchical_linkage_method(linkage: str) -> str:
+    if linkage == "average_deduplicated":
+        return "average"
+    return linkage
+
+
+def compressed_entry_member_counts(compressed_entries: object) -> np.ndarray:
+    if not isinstance(compressed_entries, list):
+        raise ValueError("compressed interface groups are unavailable")
+    counts = np.empty(len(compressed_entries), dtype=np.int64)
+    for index, entry in enumerate(compressed_entries):
+        member_count = 1
+        if isinstance(entry, dict):
+            try:
+                member_count = int(entry.get("member_count", 1))
+            except (TypeError, ValueError):
+                member_count = 1
+        if member_count <= 0:
+            raise ValueError("compressed interface groups must have positive member counts")
+        counts[index] = member_count
+    return counts
+
+
+def cluster_interface_counts_from_children(
+    children: object,
+    leaf_interface_counts: np.ndarray,
+) -> np.ndarray:
+    leaf_count = len(leaf_interface_counts)
+    if leaf_count <= 1:
+        return np.zeros((0,), dtype=np.int64)
+    children_array = np.asarray(children, dtype=np.int64)
+    node_counts = np.empty((2 * leaf_count) - 1, dtype=np.int64)
+    node_counts[:leaf_count] = leaf_interface_counts
+    counts = np.empty((len(children_array),), dtype=np.int64)
+    for merge_index, (left_child, right_child) in enumerate(children_array):
+        max_valid_child = leaf_count + merge_index
+        left = int(left_child)
+        right = int(right_child)
+        if left >= max_valid_child or right >= max_valid_child:
+            raise ValueError("hierarchy children are not ordered like a scipy linkage matrix")
+        merged_count = node_counts[left] + node_counts[right]
+        node_counts[max_valid_child] = merged_count
+        counts[merge_index] = merged_count
+    return counts
+
+
+def reorder_linkage_by_distance(
+    children: np.ndarray,
+    distances: np.ndarray,
+    counts: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    merge_count = len(children)
+    if merge_count <= 1:
+        return children, distances, counts
+
+    leaf_count = merge_count + 1
+    remaining_dependencies = np.zeros(merge_count, dtype=np.int32)
+    dependents: list[list[int]] = [[] for _index in range(merge_count)]
+    for merge_index, row in enumerate(children):
+        for child in row:
+            child_index = int(child) - leaf_count
+            if child_index >= 0:
+                remaining_dependencies[merge_index] += 1
+                dependents[child_index].append(merge_index)
+
+    heap: list[tuple[float, int]] = []
+    for merge_index, dependency_count in enumerate(remaining_dependencies):
+        if dependency_count == 0:
+            heapq.heappush(heap, (float(distances[merge_index]), merge_index))
+
+    reordered_children = np.empty_like(children)
+    reordered_distances = np.empty_like(distances)
+    reordered_counts = np.empty_like(counts)
+    old_merge_to_new_node = np.full(merge_count, -1, dtype=np.int64)
+
+    next_merge_index = 0
+    while heap:
+        _distance, old_merge_index = heapq.heappop(heap)
+        mapped_children: list[int] = []
+        for child in children[old_merge_index]:
+            raw_child = int(child)
+            if raw_child < leaf_count:
+                mapped_children.append(raw_child)
+            else:
+                mapped_child = int(old_merge_to_new_node[raw_child - leaf_count])
+                if mapped_child < 0:
+                    raise ValueError("hierarchy dependency was not processed before parent")
+                mapped_children.append(mapped_child)
+        mapped_children.sort()
+        reordered_children[next_merge_index, 0] = mapped_children[0]
+        reordered_children[next_merge_index, 1] = mapped_children[1]
+        reordered_distances[next_merge_index] = distances[old_merge_index]
+        reordered_counts[next_merge_index] = counts[old_merge_index]
+        old_merge_to_new_node[old_merge_index] = leaf_count + next_merge_index
+        next_merge_index += 1
+
+        for dependent in dependents[old_merge_index]:
+            remaining_dependencies[dependent] -= 1
+            if remaining_dependencies[dependent] == 0:
+                heapq.heappush(heap, (float(distances[dependent]), dependent))
+
+    if next_merge_index != merge_count:
+        raise ValueError("hierarchy rows contain cyclic dependencies")
+    return reordered_children, reordered_distances, reordered_counts
 
 
 def normalize_clustering_payload_cluster_labels(payload: dict[str, object]) -> dict[str, object]:
@@ -763,7 +1029,9 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
     cluster_selection_epsilon_raw = query.get(
         "cluster_selection_epsilon", [str(DEFAULT_CLUSTER_SELECTION_EPSILON)]
     )[0].strip()
-    linkage_raw = query.get("linkage", [DEFAULT_HIERARCHICAL_LINKAGE])[0].strip().lower()
+    linkage_raw = normalize_hierarchical_linkage(
+        query.get("linkage", [DEFAULT_HIERARCHICAL_LINKAGE])[0]
+    )
     default_n_clusters_raw = (
         str(DEFAULT_HIERARCHICAL_N_CLUSTERS)
         if DEFAULT_HIERARCHICAL_TARGET == "n_clusters"
@@ -784,8 +1052,11 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
         raise ValueError("clustering method must be either 'hdbscan' or 'hierarchical'")
     if distance_raw not in {"jaccard", "dice", "overlap"}:
         raise ValueError("distance must be one of 'jaccard', 'dice', or 'overlap'")
-    if linkage_raw not in {"single", "complete", "average"}:
-        raise ValueError("linkage must be one of 'single', 'complete', or 'average'")
+    if linkage_raw not in VALID_HIERARCHICAL_LINKAGES:
+        raise ValueError(
+            "linkage must be one of 'single', 'complete', 'average', "
+            "'average_deduplicated', or 'weighted'"
+        )
     min_cluster_size = int(min_cluster_size_raw)
     if min_cluster_size <= 0:
         raise ValueError("min cluster size must be positive")
@@ -1959,6 +2230,25 @@ def load_hierarchy_linkage_file(
                 raise ValueError(
                     f"precalculated hierarchy linkage is {linkage}, expected {expected_linkage_method}"
                 )
+            leaf_weighting = (
+                str(np_scalar(data["linkage_leaf_weighting"]))
+                if "linkage_leaf_weighting" in data.files
+                else ""
+            )
+            if expected_linkage_method == "average" and leaf_weighting != "interface_count":
+                raise ValueError(
+                    "precalculated average hierarchy is not interface-weighted; "
+                    "regenerate it with the current precompute script, or use "
+                    "average_deduplicated for old equal-leaf average linkage"
+                )
+            if expected_linkage_method == "average_deduplicated" and leaf_weighting not in {
+                "",
+                "unit_leaf",
+            }:
+                raise ValueError(
+                    "precalculated average_deduplicated hierarchy has incompatible "
+                    f"leaf weighting: {leaf_weighting}"
+                )
             if "children" in data.files and "distance" in data.files:
                 children = data["children"].astype(np.int64, copy=False)
                 raw_distances = data["distance"]
@@ -2294,18 +2584,41 @@ def compute_local_hierarchy(distance_data: dict[str, object], linkage_method: st
             condensed_distances = distance_data["compressed_distance_condensed"]
         else:
             condensed_distances = squareform(distance_data["compressed_distance_matrix"], checks=False)
+        leaf_interface_counts = compressed_entry_member_counts(distance_data["compressed_entries"])
     with timed_step(
         "hierarchy",
         "create local hierarchy",
         leaf_count=leaf_count,
         linkage=linkage_method,
     ):
-        linkage_matrix = scipy_linkage(condensed_distances, method=linkage_method)
+        if linkage_method == "average":
+            if _weighted_average_linkage_numba is None:
+                raise RuntimeError(
+                    "Interface-weighted average linkage requires numba when computing "
+                    "local hierarchies."
+                )
+            children, distances, counts = _weighted_average_linkage_numba(
+                np.asarray(condensed_distances, dtype=np.float64).copy(),
+                leaf_interface_counts,
+            )
+            children, distances, counts = reorder_linkage_by_distance(
+                children,
+                distances,
+                counts,
+            )
+        else:
+            linkage_matrix = scipy_linkage(
+                condensed_distances,
+                method=scipy_hierarchical_linkage_method(linkage_method),
+            )
+            children = linkage_matrix[:, :2].astype(np.int64)
+            distances = linkage_matrix[:, 2].astype(np.float64)
+            counts = cluster_interface_counts_from_children(children, leaf_interface_counts)
     return {
         "source": "local_computed",
-        "children": linkage_matrix[:, :2].astype(np.int64),
-        "distances": linkage_matrix[:, 2].astype(np.float64),
-        "counts": linkage_matrix[:, 3].astype(np.int64),
+        "children": children.astype(np.int64, copy=False),
+        "distances": distances.astype(np.float64, copy=False),
+        "counts": counts.astype(np.int64, copy=False),
         "leaf_count": leaf_count,
         "leaf_to_group_index": list(range(leaf_count)),
     }

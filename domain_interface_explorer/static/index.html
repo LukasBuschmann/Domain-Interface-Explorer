@@ -437,11 +437,12 @@
                         <span
                           class="embedding-settings-help"
                           tabindex="0"
-                          title="Defines how distances between groups are measured while merging. Single can chain clusters, complete favors tighter groups, and average is a balanced default."
+                          title="Defines how distances between groups are measured while merging. Average uses original interface counts for compressed leaves; average deduplicated treats each compressed leaf equally."
                         >?</span>
                       </span>
                       <select id="embedding-cluster-linkage" class="embedding-settings-input">
                         <option value="average">Average</option>
+                        <option value="average_deduplicated">Average deduplicated</option>
                         <option value="complete">Complete</option>
                         <option value="single">Single</option>
                       </select>
