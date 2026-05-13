@@ -27,6 +27,7 @@ from .config import (
     DEFAULT_HIERARCHICAL_N_CLUSTERS,
     DEFAULT_HIERARCHICAL_PERSISTENCE_LIFETIME_WEIGHT,
     DEFAULT_HIERARCHICAL_PERSISTENCE_MIN_LIFETIME,
+    DEFAULT_HIERARCHICAL_PERSISTENCE_SCORE_MODE,
     DEFAULT_HIERARCHICAL_TARGET,
     DEFAULT_EMBEDDING_DISTANCE,
     DEFAULT_EMBEDDING_METHOD,
@@ -75,6 +76,10 @@ VALID_HIERARCHICAL_TARGETS = {
     "distance_threshold",
     "n_clusters",
     "persistence",
+}
+VALID_HIERARCHICAL_PERSISTENCE_SCORE_MODES = {
+    "rectangle",
+    "integral",
 }
 
 try:
@@ -1085,6 +1090,7 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
     default_persistence_lifetime_weight_raw = str(
         DEFAULT_HIERARCHICAL_PERSISTENCE_LIFETIME_WEIGHT
     )
+    default_persistence_score_mode_raw = DEFAULT_HIERARCHICAL_PERSISTENCE_SCORE_MODE
     n_clusters_raw = query.get("n_clusters", [n_clusters_default_raw])[0].strip()
     distance_threshold_raw = query.get("distance_threshold", [distance_threshold_default_raw])[0].strip()
     persistence_min_lifetime_raw = query.get(
@@ -1095,6 +1101,10 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
         "persistence_lifetime_weight",
         [default_persistence_lifetime_weight_raw],
     )[0].strip()
+    persistence_score_mode_raw = query.get(
+        "persistence_score_mode",
+        [default_persistence_score_mode_raw],
+    )[0].strip().lower()
     hierarchical_min_cluster_size_raw = query.get(
         "hierarchical_min_cluster_size",
         [str(DEFAULT_HIERARCHICAL_MIN_CLUSTER_SIZE)],
@@ -1153,6 +1163,9 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
     )
     if persistence_lifetime_weight < 0 or persistence_lifetime_weight > 1:
         raise ValueError("persistence lifetime weight must be between 0 and 1")
+    persistence_score_mode = persistence_score_mode_raw or DEFAULT_HIERARCHICAL_PERSISTENCE_SCORE_MODE
+    if persistence_score_mode not in VALID_HIERARCHICAL_PERSISTENCE_SCORE_MODES:
+        raise ValueError("persistence score mode must be 'rectangle' or 'integral'")
     hierarchical_min_cluster_size = int(hierarchical_min_cluster_size_raw)
     if hierarchical_min_cluster_size <= 0:
         raise ValueError("hierarchical minimal cluster size must be positive")
@@ -1194,6 +1207,7 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
         "distance_threshold": distance_threshold,
         "persistence_min_lifetime": persistence_min_lifetime,
         "persistence_lifetime_weight": persistence_lifetime_weight,
+        "persistence_score_mode": persistence_score_mode,
         "hierarchical_min_cluster_size": hierarchical_min_cluster_size,
     }
 
@@ -2890,6 +2904,7 @@ def cut_hierarchy_leaf_labels_by_persistence(
     min_lifetime: float,
     min_cluster_size: int,
     lifetime_weight: float,
+    score_mode: str = DEFAULT_HIERARCHICAL_PERSISTENCE_SCORE_MODE,
 ) -> list[int]:
     if leaf_count <= 1:
         return [0] * leaf_count
@@ -2899,6 +2914,9 @@ def cut_hierarchy_leaf_labels_by_persistence(
         raise ValueError("hierarchical minimal cluster size must be positive")
     if lifetime_weight < 0 or lifetime_weight > 1:
         raise ValueError("persistence lifetime weight must be between 0 and 1")
+    score_mode = str(score_mode or DEFAULT_HIERARCHICAL_PERSISTENCE_SCORE_MODE).lower()
+    if score_mode not in VALID_HIERARCHICAL_PERSISTENCE_SCORE_MODES:
+        raise ValueError("persistence score mode must be 'rectangle' or 'integral'")
     leaf_member_counts = np.asarray(leaf_member_counts, dtype=np.int64)
     if leaf_member_counts.shape[0] != leaf_count:
         raise ValueError("hierarchy leaf counts are inconsistent")
@@ -2938,19 +2956,56 @@ def cut_hierarchy_leaf_labels_by_persistence(
             return 0.0
         return value ** exponent
 
-    def node_stability_score(node_id: int) -> float:
-        if node_id == root_node_id:
-            return 0.0
+    def rectangle_score_components(node_id: int) -> tuple[float, float]:
         death_distance = float(parent_distance[node_id])
         if not math.isfinite(death_distance):
-            return 0.0
+            return 0.0, 0.0
         lifetime = max(0.0, death_distance - float(birth_distance[node_id]))
-        if lifetime < min_lifetime:
+        size_fraction = int(node_sizes[node_id]) / root_size
+        return lifetime, size_fraction
+
+    def integral_score_components(node_id: int) -> tuple[float, float]:
+        top_distance = float(parent_distance[node_id])
+        if not math.isfinite(top_distance):
+            return 0.0, 0.0
+        cursor = node_id
+        duration = 0.0
+        area = 0.0
+        while True:
+            lower_distance = 0.0 if cursor < leaf_count else float(birth_distance[cursor])
+            interval = max(0.0, top_distance - lower_distance)
+            current_size_fraction = int(node_sizes[cursor]) / root_size
+            duration += interval
+            area += interval * current_size_fraction
+            child_pair = node_children[cursor]
+            if child_pair is None:
+                break
+            large_children = [
+                child_id
+                for child_id in child_pair
+                if int(node_sizes[child_id]) >= min_cluster_size
+            ]
+            if len(large_children) != 1:
+                break
+            cursor = large_children[0]
+            top_distance = lower_distance
+        if duration <= 0:
+            return 0.0, 0.0
+        return duration, area / duration
+
+    def node_stability_score(node_id: int) -> float:
+        if node_id == root_node_id:
             return 0.0
         cluster_size = int(node_sizes[node_id])
         if cluster_size < min_cluster_size:
             return 0.0
-        size_fraction = cluster_size / root_size
+        lifetime, size_fraction = (
+            integral_score_components(node_id)
+            if score_mode == "integral"
+            else rectangle_score_components(node_id)
+        )
+        if lifetime < min_lifetime:
+            return 0.0
         return score_component(lifetime, lifetime_exponent) * score_component(
             size_fraction,
             size_exponent,
@@ -3027,6 +3082,14 @@ def compute_hierarchical_clustering_payload_from_hierarchy(
             DEFAULT_HIERARCHICAL_PERSISTENCE_LIFETIME_WEIGHT,
         )
     )
+    persistence_score_mode = str(
+        settings.get(
+            "persistence_score_mode",
+            DEFAULT_HIERARCHICAL_PERSISTENCE_SCORE_MODE,
+        )
+    ).lower()
+    if persistence_score_mode not in VALID_HIERARCHICAL_PERSISTENCE_SCORE_MODES:
+        raise ValueError("persistence score mode must be 'rectangle' or 'integral'")
     hierarchical_min_cluster_size = int(
         settings.get("hierarchical_min_cluster_size", DEFAULT_HIERARCHICAL_MIN_CLUSTER_SIZE)
     )
@@ -3058,6 +3121,7 @@ def compute_hierarchical_clustering_payload_from_hierarchy(
             distance_threshold=distance_threshold,
             persistence_min_lifetime=persistence_min_lifetime,
             persistence_lifetime_weight=persistence_lifetime_weight,
+            persistence_score_mode=persistence_score_mode,
         ) as timer:
             if hierarchical_target == "persistence":
                 leaf_member_counts = hierarchy_leaf_member_counts(
@@ -3072,6 +3136,7 @@ def compute_hierarchical_clustering_payload_from_hierarchy(
                     min_lifetime=persistence_min_lifetime,
                     min_cluster_size=hierarchical_min_cluster_size,
                     lifetime_weight=persistence_lifetime_weight,
+                    score_mode=persistence_score_mode,
                 )
             else:
                 leaf_labels = cut_hierarchy_leaf_labels(
@@ -3172,6 +3237,7 @@ def compute_hierarchical_clustering_payload_from_hierarchy(
             "distance_threshold": distance_threshold,
             "persistence_min_lifetime": persistence_min_lifetime,
             "persistence_lifetime_weight": persistence_lifetime_weight,
+            "persistence_score_mode": persistence_score_mode,
             "hierarchical_min_cluster_size": hierarchical_min_cluster_size,
         },
         "points": points,

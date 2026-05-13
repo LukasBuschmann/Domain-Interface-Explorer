@@ -134,6 +134,14 @@ function normalizeClusteringSettings(rawSettings = {}, fallback = DEFAULT_CLUSTE
       hierarchicalTarget === "persistence"
         ? optionalUnitNumber(source.persistenceLifetimeWeight, fallback.persistenceLifetimeWeight)
         : "",
+    persistenceScoreMode:
+      hierarchicalTarget === "persistence"
+        ? enumValue(
+            source.persistenceScoreMode,
+            ["rectangle", "integral"],
+            fallback.persistenceScoreMode || DEFAULT_CLUSTERING_SETTINGS.persistenceScoreMode,
+          )
+        : "",
     hierarchicalMinClusterSize: positiveInteger(
       source.hierarchicalMinClusterSize,
       fallback.hierarchicalMinClusterSize,
@@ -147,6 +155,11 @@ function normalizeHierarchicalTargetMemory(rawMemory = {}) {
   const distanceThreshold = optionalNonNegativeNumber(source.distanceThreshold);
   const persistenceMinLifetime = optionalNonNegativeNumber(source.persistenceMinLifetime);
   const persistenceLifetimeWeight = optionalUnitNumber(source.persistenceLifetimeWeight);
+  const persistenceScoreMode = enumValue(
+    source.persistenceScoreMode,
+    ["rectangle", "integral"],
+    DEFAULT_CLUSTERING_SETTINGS.persistenceScoreMode,
+  );
   return {
     nClusters:
       nClusters === "" ? String(DEFAULT_CLUSTERING_SETTINGS.nClusters) : String(nClusters),
@@ -162,6 +175,7 @@ function normalizeHierarchicalTargetMemory(rawMemory = {}) {
       persistenceLifetimeWeight === ""
         ? String(DEFAULT_CLUSTERING_SETTINGS.persistenceLifetimeWeight)
         : String(persistenceLifetimeWeight),
+    persistenceScoreMode,
   };
 }
 

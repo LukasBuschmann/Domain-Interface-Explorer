@@ -836,6 +836,10 @@ function appendClusteringSettingsToParams(params) {
     if (hierarchicalTarget === "persistence") {
       const minLifetime = String(state.embeddingClusteringSettings.persistenceMinLifetime ?? "").trim();
       const lifetimeWeight = String(state.embeddingClusteringSettings.persistenceLifetimeWeight ?? "").trim();
+      const scoreMode = String(
+        state.embeddingClusteringSettings.persistenceScoreMode ||
+          DEFAULT_CLUSTERING_SETTINGS.persistenceScoreMode
+      ).trim().toLowerCase();
       params.set(
         "persistence_min_lifetime",
         minLifetime || String(DEFAULT_CLUSTERING_SETTINGS.persistenceMinLifetime)
@@ -843,6 +847,10 @@ function appendClusteringSettingsToParams(params) {
       params.set(
         "persistence_lifetime_weight",
         lifetimeWeight || String(DEFAULT_CLUSTERING_SETTINGS.persistenceLifetimeWeight)
+      );
+      params.set(
+        "persistence_score_mode",
+        scoreMode === "integral" ? "integral" : "rectangle"
       );
     }
   } else {
@@ -2416,6 +2424,7 @@ function distanceThresholdSettings(settings, distanceThreshold) {
     distanceThreshold,
     persistenceMinLifetime: "",
     persistenceLifetimeWeight: "",
+    persistenceScoreMode: "",
   };
 }
 
@@ -2528,6 +2537,11 @@ function openEmbeddingSettingsSection(section) {
       state.embeddingClusteringSettings.persistenceLifetimeWeight
     ).trim();
   }
+  if (String(state.embeddingClusteringSettings.persistenceScoreMode).trim() !== "") {
+    state.embeddingHierarchicalTargetMemory.persistenceScoreMode = String(
+      state.embeddingClusteringSettings.persistenceScoreMode
+    ).trim();
+  }
   state.embeddingClusteringSettingsDraft = normalizeHierarchicalDraft(state.embeddingClusteringSettingsDraft);
   placeEmbeddingSettingsPanel();
   syncEmbeddingSettingsUi();
@@ -2576,6 +2590,28 @@ embeddingSettingsPanel.addEventListener("click", (event) => {
     scheduleUiPreferencesSave();
     syncEmbeddingSettingsUi();
     void ensureHierarchyStatusLoaded();
+    return;
+  }
+
+  const persistenceScoreModeButton = event.target.closest("[data-persistence-score-mode]");
+  if (persistenceScoreModeButton) {
+    const nextMode = persistenceScoreModeButton.dataset.persistenceScoreMode;
+    if (
+      !["rectangle", "integral"].includes(nextMode) ||
+      nextMode === state.embeddingClusteringSettingsDraft.persistenceScoreMode
+    ) {
+      return;
+    }
+    state.embeddingHierarchicalTargetMemory.persistenceScoreMode = nextMode;
+    state.embeddingClusteringSettingsDraft = normalizeHierarchicalDraft({
+      ...readEmbeddingClusteringDraftInputs(),
+      hierarchicalTarget: "persistence",
+      persistenceScoreMode: nextMode,
+    });
+    scheduleUiPreferencesSave();
+    syncEmbeddingSettingsUi();
+    scheduleLiveHierarchicalClusteringUpdate();
+    scheduleHierarchyStatusUpdate();
     return;
   }
 

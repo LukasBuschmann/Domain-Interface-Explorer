@@ -596,6 +596,42 @@
                         >0.50</output>
                       </div>
                     </label>
+                    <div
+                      data-clustering-panel="hierarchical"
+                      data-hierarchical-target-panel="persistence"
+                      class="embedding-settings-section-hidden"
+                    >
+                      <span class="embedding-settings-inline-label">
+                        Stability Score
+                        <span
+                          class="embedding-settings-help"
+                          tabindex="0"
+                          title="Rectangle uses lifetime times size for each branch. Integral uses a simplified condensed-tree area where a cluster can continue through one large child; this is closer to HDBSCAN-style stability but still uses this hierarchy and raw distances."
+                        >?</span>
+                      </span>
+                      <div
+                        class="embedding-settings-mode"
+                        role="tablist"
+                        aria-label="Persistence stability score"
+                      >
+                        <button
+                          type="button"
+                          class="embedding-clustering-mode-button active"
+                          data-persistence-score-mode="rectangle"
+                          aria-pressed="true"
+                        >
+                          Rectangle
+                        </button>
+                        <button
+                          type="button"
+                          class="embedding-clustering-mode-button"
+                          data-persistence-score-mode="integral"
+                          aria-pressed="false"
+                        >
+                          Integral
+                        </button>
+                      </div>
+                    </div>
                     <label
                       data-clustering-panel="hierarchical"
                       data-hierarchical-target-panel="persistence"

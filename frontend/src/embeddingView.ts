@@ -63,6 +63,18 @@ export function createEmbeddingViewController({
     return persistenceMinLifetimeValue !== "" ? "persistence" : "distance_threshold";
   }
 
+  function currentPersistenceScoreMode(settings = state.embeddingClusteringSettingsDraft) {
+    const settingsMode = String(settings?.persistenceScoreMode ?? "").trim().toLowerCase();
+    if (settingsMode === "rectangle" || settingsMode === "integral") {
+      return settingsMode;
+    }
+    const memoryMode = String(
+      state.embeddingHierarchicalTargetMemory.persistenceScoreMode ??
+        DEFAULT_CLUSTERING_SETTINGS.persistenceScoreMode
+    ).trim().toLowerCase();
+    return memoryMode === "integral" ? "integral" : "rectangle";
+  }
+
   function appendHierarchicalClusteringParams(params, settings) {
     const hierarchicalTarget = currentHierarchicalTarget(settings);
     params.set("linkage", String(settings.linkage));
@@ -88,6 +100,7 @@ export function createEmbeddingViewController({
     if (hierarchicalTarget === "persistence") {
       const minLifetime = String(settings.persistenceMinLifetime ?? "").trim();
       const lifetimeWeight = String(settings.persistenceLifetimeWeight ?? "").trim();
+      const scoreMode = currentPersistenceScoreMode(settings);
       params.set(
         "persistence_min_lifetime",
         minLifetime || String(DEFAULT_CLUSTERING_SETTINGS.persistenceMinLifetime)
@@ -96,6 +109,7 @@ export function createEmbeddingViewController({
         "persistence_lifetime_weight",
         lifetimeWeight || String(DEFAULT_CLUSTERING_SETTINGS.persistenceLifetimeWeight)
       );
+      params.set("persistence_score_mode", scoreMode);
     }
   }
 
@@ -198,6 +212,7 @@ export function createEmbeddingViewController({
       settings.distanceThreshold,
       settings.persistenceMinLifetime,
       settings.persistenceLifetimeWeight,
+      currentPersistenceScoreMode(settings),
       settings.hierarchicalMinClusterSize,
     ].join("|");
   }
@@ -335,6 +350,7 @@ export function createEmbeddingViewController({
       distanceThreshold: elements.embeddingClusterDistanceThresholdInput.value.trim(),
       persistenceMinLifetime: elements.embeddingClusterLifetimeThresholdInput.value.trim(),
       persistenceLifetimeWeight: elements.embeddingClusterStabilityWeightInput.value.trim(),
+      persistenceScoreMode: currentPersistenceScoreMode(),
       hierarchicalMinClusterSize:
         elements.embeddingClusterHierarchicalMinSizeInput.value.trim(),
     };
@@ -360,6 +376,8 @@ export function createEmbeddingViewController({
       state.embeddingHierarchicalTargetMemory.persistenceLifetimeWeight =
         persistenceLifetimeWeightValue;
     }
+    state.embeddingHierarchicalTargetMemory.persistenceScoreMode =
+      currentPersistenceScoreMode(state.embeddingClusteringSettingsDraft);
   }
 
   function hierarchicalTargetFallbackValue(target) {
@@ -387,6 +405,7 @@ export function createEmbeddingViewController({
     const distanceThresholdValue = String(settings?.distanceThreshold ?? "").trim();
     const persistenceMinLifetimeValue = String(settings?.persistenceMinLifetime ?? "").trim();
     const persistenceLifetimeWeightValue = String(settings?.persistenceLifetimeWeight ?? "").trim();
+    const persistenceScoreModeValue = currentPersistenceScoreMode(settings);
     return {
       ...settings,
       hierarchicalTarget: target,
@@ -407,6 +426,12 @@ export function createEmbeddingViewController({
           ? persistenceLifetimeWeightValue ||
             state.embeddingHierarchicalTargetMemory.persistenceLifetimeWeight ||
             String(DEFAULT_CLUSTERING_SETTINGS.persistenceLifetimeWeight)
+          : "",
+      persistenceScoreMode:
+        target === "persistence"
+          ? persistenceScoreModeValue ||
+            state.embeddingHierarchicalTargetMemory.persistenceScoreMode ||
+            DEFAULT_CLUSTERING_SETTINGS.persistenceScoreMode
           : "",
     };
   }
@@ -510,6 +535,14 @@ export function createEmbeddingViewController({
         DEFAULT_CLUSTERING_SETTINGS.persistenceLifetimeWeight
     );
     syncPersistenceStabilityWeightValueUi();
+    const persistenceScoreMode = currentPersistenceScoreMode(
+      state.embeddingClusteringSettingsDraft
+    );
+    [...elements.embeddingSettingsPanel.querySelectorAll("[data-persistence-score-mode]")].forEach((button) => {
+      const isActive = button.dataset.persistenceScoreMode === persistenceScoreMode;
+      button.classList.toggle("active", isActive);
+      button.setAttribute("aria-pressed", String(isActive));
+    });
     elements.embeddingClusterHierarchicalMinSizeInput.value = String(
       state.embeddingClusteringSettingsDraft.hierarchicalMinClusterSize
     );
@@ -627,6 +660,7 @@ export function createEmbeddingViewController({
     let distanceThreshold = elements.embeddingClusterDistanceThresholdInput.value.trim();
     let persistenceMinLifetime = elements.embeddingClusterLifetimeThresholdInput.value.trim();
     let persistenceLifetimeWeight = elements.embeddingClusterStabilityWeightInput.value.trim();
+    let persistenceScoreMode = currentPersistenceScoreMode();
     const hierarchicalMinClusterSize = Number.parseInt(
       elements.embeddingClusterHierarchicalMinSizeInput.value.trim(),
       10
@@ -646,6 +680,7 @@ export function createEmbeddingViewController({
         distanceThreshold = "";
         persistenceMinLifetime = "";
         persistenceLifetimeWeight = "";
+        persistenceScoreMode = "";
       } else if (hierarchicalTarget === "persistence") {
         if (persistenceMinLifetime === "") {
           throw new Error("Persistent clustering needs a minimum lifetime.");
@@ -665,6 +700,9 @@ export function createEmbeddingViewController({
         ) {
           throw new Error("Stability balance must be between 0 and 1.");
         }
+        if (!["rectangle", "integral"].includes(persistenceScoreMode)) {
+          throw new Error("Stability score must be rectangle or integral.");
+        }
         nClusters = "";
         distanceThreshold = "";
       } else {
@@ -678,6 +716,7 @@ export function createEmbeddingViewController({
         nClusters = "";
         persistenceMinLifetime = "";
         persistenceLifetimeWeight = "";
+        persistenceScoreMode = "";
       }
     }
     const parsedSettings = {
@@ -695,6 +734,8 @@ export function createEmbeddingViewController({
         hierarchicalTarget === "persistence" ? persistenceMinLifetime : "",
       persistenceLifetimeWeight:
         hierarchicalTarget === "persistence" ? persistenceLifetimeWeight : "",
+      persistenceScoreMode:
+        hierarchicalTarget === "persistence" ? persistenceScoreMode : "",
       hierarchicalMinClusterSize,
     };
     if (

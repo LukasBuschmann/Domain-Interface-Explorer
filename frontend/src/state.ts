@@ -99,6 +99,7 @@ export const state = {
     distanceThreshold: String(DEFAULT_CLUSTERING_SETTINGS.distanceThreshold),
     persistenceMinLifetime: String(DEFAULT_CLUSTERING_SETTINGS.persistenceMinLifetime),
     persistenceLifetimeWeight: String(DEFAULT_CLUSTERING_SETTINGS.persistenceLifetimeWeight),
+    persistenceScoreMode: String(DEFAULT_CLUSTERING_SETTINGS.persistenceScoreMode),
   },
   embeddingView: {
     yaw: -0.7,

@@ -28,6 +28,7 @@ export const DEFAULT_CLUSTERING_SETTINGS = {
   distanceThreshold: 0.5,
   persistenceMinLifetime: 0.05,
   persistenceLifetimeWeight: 0.5,
+  persistenceScoreMode: "rectangle",
   hierarchicalMinClusterSize: 10,
 };
 

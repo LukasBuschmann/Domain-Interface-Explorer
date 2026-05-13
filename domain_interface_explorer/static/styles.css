@@ -1516,6 +1516,15 @@ select,
   gap: 6px;
 }
 
+.embedding-settings-inline-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .embedding-settings-input {
   height: 34px;
   border: 1px solid var(--line);
