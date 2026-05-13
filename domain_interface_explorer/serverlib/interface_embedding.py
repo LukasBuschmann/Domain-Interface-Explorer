@@ -25,6 +25,7 @@ from .config import (
     DEFAULT_HIERARCHICAL_LINKAGE,
     DEFAULT_HIERARCHICAL_MIN_CLUSTER_SIZE,
     DEFAULT_HIERARCHICAL_N_CLUSTERS,
+    DEFAULT_HIERARCHICAL_PERSISTENCE_LIFETIME_WEIGHT,
     DEFAULT_HIERARCHICAL_PERSISTENCE_MIN_LIFETIME,
     DEFAULT_HIERARCHICAL_TARGET,
     DEFAULT_EMBEDDING_DISTANCE,
@@ -1081,11 +1082,18 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
     elif distance_threshold_requested and not n_clusters_requested:
         n_clusters_default_raw = ""
     default_persistence_min_lifetime_raw = str(DEFAULT_HIERARCHICAL_PERSISTENCE_MIN_LIFETIME)
+    default_persistence_lifetime_weight_raw = str(
+        DEFAULT_HIERARCHICAL_PERSISTENCE_LIFETIME_WEIGHT
+    )
     n_clusters_raw = query.get("n_clusters", [n_clusters_default_raw])[0].strip()
     distance_threshold_raw = query.get("distance_threshold", [distance_threshold_default_raw])[0].strip()
     persistence_min_lifetime_raw = query.get(
         "persistence_min_lifetime",
         [default_persistence_min_lifetime_raw],
+    )[0].strip()
+    persistence_lifetime_weight_raw = query.get(
+        "persistence_lifetime_weight",
+        [default_persistence_lifetime_weight_raw],
     )[0].strip()
     hierarchical_min_cluster_size_raw = query.get(
         "hierarchical_min_cluster_size",
@@ -1138,6 +1146,13 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
     )
     if persistence_min_lifetime < 0:
         raise ValueError("cluster lifetime must be non-negative")
+    persistence_lifetime_weight = (
+        DEFAULT_HIERARCHICAL_PERSISTENCE_LIFETIME_WEIGHT
+        if persistence_lifetime_weight_raw == ""
+        else float(persistence_lifetime_weight_raw)
+    )
+    if persistence_lifetime_weight < 0 or persistence_lifetime_weight > 1:
+        raise ValueError("persistence lifetime weight must be between 0 and 1")
     hierarchical_min_cluster_size = int(hierarchical_min_cluster_size_raw)
     if hierarchical_min_cluster_size <= 0:
         raise ValueError("hierarchical minimal cluster size must be positive")
@@ -1178,6 +1193,7 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
         "n_clusters": n_clusters,
         "distance_threshold": distance_threshold,
         "persistence_min_lifetime": persistence_min_lifetime,
+        "persistence_lifetime_weight": persistence_lifetime_weight,
         "hierarchical_min_cluster_size": hierarchical_min_cluster_size,
     }
 
@@ -2873,9 +2889,16 @@ def cut_hierarchy_leaf_labels_by_persistence(
     leaf_member_counts: object,
     min_lifetime: float,
     min_cluster_size: int,
+    lifetime_weight: float,
 ) -> list[int]:
     if leaf_count <= 1:
         return [0] * leaf_count
+    if min_lifetime < 0:
+        raise ValueError("cluster lifetime must be non-negative")
+    if min_cluster_size <= 0:
+        raise ValueError("hierarchical minimal cluster size must be positive")
+    if lifetime_weight < 0 or lifetime_weight > 1:
+        raise ValueError("persistence lifetime weight must be between 0 and 1")
     leaf_member_counts = np.asarray(leaf_member_counts, dtype=np.int64)
     if leaf_member_counts.shape[0] != leaf_count:
         raise ValueError("hierarchy leaf counts are inconsistent")
@@ -2885,6 +2908,8 @@ def cut_hierarchy_leaf_labels_by_persistence(
     total_node_count = (2 * leaf_count) - 1
     node_sizes = np.zeros(total_node_count, dtype=np.int64)
     node_sizes[:leaf_count] = leaf_member_counts
+    node_children: list[tuple[int, int] | None] = [None] * total_node_count
+    birth_distance = np.zeros(total_node_count, dtype=np.float64)
     parent_distance = np.full(total_node_count, np.nan, dtype=np.float64)
 
     for merge_index in range(leaf_count - 1):
@@ -2894,25 +2919,42 @@ def cut_hierarchy_leaf_labels_by_persistence(
         if left_child >= node_id or right_child >= node_id:
             raise ValueError("hierarchy children are not ordered like a scipy linkage matrix")
         merge_distance = float(distances[merge_index])
+        node_children[node_id] = (left_child, right_child)
+        birth_distance[node_id] = merge_distance
         node_sizes[node_id] = node_sizes[left_child] + node_sizes[right_child]
         parent_distance[left_child] = merge_distance
         parent_distance[right_child] = merge_distance
 
     root_node_id = total_node_count - 1
-    candidates: list[tuple[float, int, int]] = []
-    for node_id in range(root_node_id):
-        birth_distance = 0.0 if node_id < leaf_count else float(distances[node_id - leaf_count])
+    root_size = max(1, int(node_sizes[root_node_id]))
+    # At 0.5 this is lifetime * size; moving the slider fades one factor out.
+    lifetime_exponent = min(1.0, max(0.0, lifetime_weight * 2.0))
+    size_exponent = min(1.0, max(0.0, (1.0 - lifetime_weight) * 2.0))
+
+    def score_component(value: float, exponent: float) -> float:
+        if exponent <= 0:
+            return 1.0
+        if value <= 0:
+            return 0.0
+        return value ** exponent
+
+    def node_stability_score(node_id: int) -> float:
+        if node_id == root_node_id:
+            return 0.0
         death_distance = float(parent_distance[node_id])
         if not math.isfinite(death_distance):
-            continue
-        lifetime = death_distance - birth_distance
+            return 0.0
+        lifetime = max(0.0, death_distance - float(birth_distance[node_id]))
         if lifetime < min_lifetime:
-            continue
+            return 0.0
         cluster_size = int(node_sizes[node_id])
         if cluster_size < min_cluster_size:
-            continue
-        candidates.append((lifetime, cluster_size, node_id))
-    candidates.sort(key=lambda candidate: (-candidate[0], -candidate[1], candidate[2]))
+            return 0.0
+        size_fraction = cluster_size / root_size
+        return score_component(lifetime, lifetime_exponent) * score_component(
+            size_fraction,
+            size_exponent,
+        )
 
     def collect_leaf_indices(node_id: int) -> list[int]:
         leaves: list[int] = []
@@ -2922,26 +2964,41 @@ def cut_hierarchy_leaf_labels_by_persistence(
             if node < leaf_count:
                 leaves.append(node)
                 continue
-            child_index = node - leaf_count
-            if child_index < 0 or child_index >= leaf_count - 1:
+            child_pair = node_children[node]
+            if child_pair is None:
                 raise ValueError("hierarchy children are inconsistent")
-            left_child = int(children[child_index][0])
-            right_child = int(children[child_index][1])
+            left_child, right_child = child_pair
             stack.append(right_child)
             stack.append(left_child)
         return leaves
 
+    best_scores = np.zeros(total_node_count, dtype=np.float64)
+    best_nodes: list[list[int]] = [[] for _ in range(total_node_count)]
+    for node_id in range(total_node_count):
+        child_pair = node_children[node_id]
+        child_score = 0.0
+        child_nodes: list[int] = []
+        if child_pair is not None:
+            left_child, right_child = child_pair
+            child_score = float(best_scores[left_child] + best_scores[right_child])
+            child_nodes = best_nodes[left_child] + best_nodes[right_child]
+
+        keep_score = node_stability_score(node_id)
+        if keep_score > 0 and keep_score >= child_score:
+            best_scores[node_id] = keep_score
+            best_nodes[node_id] = [node_id]
+        else:
+            best_scores[node_id] = child_score
+            best_nodes[node_id] = child_nodes
+
+    selected_nodes = best_nodes[root_node_id]
     labels = [-1] * leaf_count
-    next_label = 0
-    for _, _, node_id in candidates:
+    for next_label, node_id in enumerate(selected_nodes):
         leaves = collect_leaf_indices(node_id)
-        if any(labels[leaf_index] >= 0 for leaf_index in leaves):
-            continue
         for leaf_index in leaves:
             labels[leaf_index] = next_label
-        next_label += 1
 
-    if next_label == 0:
+    if not selected_nodes:
         return [0] * leaf_count
     return labels
 
@@ -2962,6 +3019,12 @@ def compute_hierarchical_clustering_payload_from_hierarchy(
         settings.get(
             "persistence_min_lifetime",
             DEFAULT_HIERARCHICAL_PERSISTENCE_MIN_LIFETIME,
+        )
+    )
+    persistence_lifetime_weight = float(
+        settings.get(
+            "persistence_lifetime_weight",
+            DEFAULT_HIERARCHICAL_PERSISTENCE_LIFETIME_WEIGHT,
         )
     )
     hierarchical_min_cluster_size = int(
@@ -2994,6 +3057,7 @@ def compute_hierarchical_clustering_payload_from_hierarchy(
             n_clusters=n_clusters,
             distance_threshold=distance_threshold,
             persistence_min_lifetime=persistence_min_lifetime,
+            persistence_lifetime_weight=persistence_lifetime_weight,
         ) as timer:
             if hierarchical_target == "persistence":
                 leaf_member_counts = hierarchy_leaf_member_counts(
@@ -3007,6 +3071,7 @@ def compute_hierarchical_clustering_payload_from_hierarchy(
                     leaf_member_counts,
                     min_lifetime=persistence_min_lifetime,
                     min_cluster_size=hierarchical_min_cluster_size,
+                    lifetime_weight=persistence_lifetime_weight,
                 )
             else:
                 leaf_labels = cut_hierarchy_leaf_labels(
@@ -3106,6 +3171,7 @@ def compute_hierarchical_clustering_payload_from_hierarchy(
             "n_clusters": n_clusters,
             "distance_threshold": distance_threshold,
             "persistence_min_lifetime": persistence_min_lifetime,
+            "persistence_lifetime_weight": persistence_lifetime_weight,
             "hierarchical_min_cluster_size": hierarchical_min_cluster_size,
         },
         "points": points,

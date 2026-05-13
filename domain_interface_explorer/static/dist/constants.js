@@ -25,6 +25,7 @@ export const DEFAULT_CLUSTERING_SETTINGS = {
     nClusters: "",
     distanceThreshold: 0.5,
     persistenceMinLifetime: 0.05,
+    persistenceLifetimeWeight: 0.5,
     hierarchicalMinClusterSize: 10,
 };
 export const DEFAULT_SELECTION_SETTINGS = {

@@ -628,6 +628,47 @@
                     </label>
                     <label
                       data-clustering-panel="hierarchical"
+                      data-hierarchical-target-panel="persistence"
+                      class="embedding-settings-section-hidden"
+                    >
+                      <span>
+                        Stability Balance
+                        <span
+                          class="embedding-settings-help"
+                          tabindex="0"
+                          title="Balances persistent-cluster scoring. 50/50 scores lifetime times size; moving left favors larger clusters, moving right favors longer-lived clusters."
+                        >?</span>
+                      </span>
+                      <div class="embedding-settings-balance-control">
+                        <div class="embedding-settings-balance-row">
+                          <span class="embedding-settings-balance-label embedding-settings-balance-size">
+                            <span>Size</span>
+                            <span
+                              id="embedding-cluster-stability-size-value"
+                              class="embedding-settings-balance-percent"
+                            >50%</span>
+                          </span>
+                          <input
+                            id="embedding-cluster-stability-weight"
+                            class="embedding-settings-input embedding-settings-range embedding-settings-balance-range"
+                            type="range"
+                            step="0.05"
+                            min="0"
+                            max="1"
+                            value="0.5"
+                          >
+                          <span class="embedding-settings-balance-label embedding-settings-balance-lifetime">
+                            <span>Lifetime</span>
+                            <span
+                              id="embedding-cluster-stability-lifetime-value"
+                              class="embedding-settings-balance-percent"
+                            >50%</span>
+                          </span>
+                        </div>
+                      </div>
+                    </label>
+                    <label
+                      data-clustering-panel="hierarchical"
                       class="embedding-settings-section-hidden"
                     >
                       <span>
@@ -635,7 +676,7 @@
                         <span
                           class="embedding-settings-help"
                           tabindex="0"
-                          title="After cutting the hierarchy, clusters smaller than this size are relabeled as noise instead of being kept as standalone groups."
+                          title="For persistence, branches below this size are not eligible. For fixed cuts, clusters below this size are relabeled as noise after cutting."
                         >?</span>
                       </span>
                       <input
@@ -675,7 +716,16 @@
               </div>
             </div>
             <div id="columns-root" class="columns-root panel-view-hidden">
+              <div id="columns-scroll" class="columns-scroll">
+                <div id="columns-spacer" class="columns-spacer"></div>
+              </div>
               <canvas id="columns-canvas" class="columns-canvas"></canvas>
+              <div class="columns-controls">
+                <label class="columns-mode-toggle">
+                  <input id="columns-interface-only-toggle" type="checkbox">
+                  <span>Interface only</span>
+                </label>
+              </div>
               <div id="columns-loading" class="embedding-loading hidden">
                 <strong id="columns-loading-label">Loading clustering data</strong>
                 <div class="embedding-loading-track">
@@ -695,48 +745,99 @@
                   <div class="embedding-loading-bar"></div>
                 </div>
               </div>
-              <div class="dendrogram-controls">
-                <label>
-                  <span>Merge Depth</span>
-                  <div class="embedding-settings-range-row">
-                    <input
-                      id="dendrogram-depth-slider"
-                      class="embedding-settings-input embedding-settings-range"
-                      type="range"
-                      step="1"
-                      min="1"
-                      max="5"
-                      value="5"
+              <button
+                id="dendrogram-settings-toggle"
+                class="embedding-settings-toggle dendrogram-settings-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="dendrogram-settings-panel"
+                title="Dendrogram settings"
+              >
+                &#9881;
+              </button>
+              <div id="dendrogram-settings-panel" class="embedding-settings-panel dendrogram-settings-panel hidden">
+                <section class="embedding-settings-section">
+                  <h3 class="embedding-settings-section-title">Dendrogram</h3>
+                  <div class="dendrogram-setting-group">
+                    <span>Style</span>
+                    <div
+                      id="dendrogram-style-mode"
+                      class="embedding-settings-mode"
+                      role="tablist"
+                      aria-label="Dendrogram style"
                     >
-                    <output
-                      id="dendrogram-depth-value"
-                      class="embedding-settings-range-value"
-                      for="dendrogram-depth-slider"
-                    >5 / 5</output>
+                      <button
+                        type="button"
+                        class="embedding-clustering-mode-button active"
+                        data-dendrogram-style="radial"
+                        aria-pressed="true"
+                      >Radial</button>
+                      <button
+                        type="button"
+                        class="embedding-clustering-mode-button"
+                        data-dendrogram-style="linear"
+                        aria-pressed="false"
+                      >Linear</button>
+                    </div>
                   </div>
-                </label>
-                <div class="dendrogram-radius-control">
-                  <span>Radius</span>
+                  <label>
+                    <span>Merge Depth</span>
+                    <div class="embedding-settings-range-row">
+                      <input
+                        id="dendrogram-depth-slider"
+                        class="embedding-settings-input embedding-settings-range"
+                        type="range"
+                        step="1"
+                        min="1"
+                        max="5"
+                        value="5"
+                      >
+                      <output
+                        id="dendrogram-depth-value"
+                        class="embedding-settings-range-value"
+                        for="dendrogram-depth-slider"
+                      >5 / 5</output>
+                    </div>
+                  </label>
+                  <div class="dendrogram-setting-group">
+                    <span>Branch Scale</span>
+                    <div
+                      id="dendrogram-radius-mode"
+                      class="embedding-settings-mode"
+                      role="tablist"
+                      aria-label="Dendrogram branch scale"
+                    >
+                      <button
+                        type="button"
+                        class="embedding-clustering-mode-button active"
+                        data-dendrogram-radius-mode="depth"
+                        aria-pressed="true"
+                      >Depth</button>
+                      <button
+                        type="button"
+                        class="embedding-clustering-mode-button"
+                        data-dendrogram-radius-mode="distance"
+                        aria-pressed="false"
+                      >Distance</button>
+                    </div>
+                  </div>
                   <div
-                    id="dendrogram-radius-mode"
-                    class="embedding-legend-mode"
-                    role="tablist"
-                    aria-label="Dendrogram radius mode"
+                    id="dendrogram-true-distance-option"
+                    class="dendrogram-toggle-row hidden"
+                    title="Draw distance-scaled branches with outward segments whose lengths match the represented merge-distance spans."
                   >
+                    <span>True Lengths</span>
                     <button
+                      id="dendrogram-true-distance-toggle"
+                      class="dendrogram-switch"
                       type="button"
-                      class="embedding-legend-mode-button active"
-                      data-dendrogram-radius-mode="depth"
-                      aria-pressed="true"
-                    >Depth</button>
-                    <button
-                      type="button"
-                      class="embedding-legend-mode-button"
-                      data-dendrogram-radius-mode="distance"
-                      aria-pressed="false"
-                    >Distance</button>
+                      role="switch"
+                      aria-checked="false"
+                    >
+                      <span class="dendrogram-switch-knob"></span>
+                    </button>
                   </div>
-                </div>
+                </section>
               </div>
               <div id="dendrogram-partner-legend" class="embedding-partner-legend"></div>
               <div id="dendrogram-info" class="embedding-info">

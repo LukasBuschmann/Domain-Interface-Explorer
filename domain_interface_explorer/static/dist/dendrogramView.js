@@ -1,6 +1,6 @@
 import { fetchJson } from "./api.js";
 import { appendSelectionSettingsToParams, selectionSettingsKey, } from "./selectionSettings.js";
-export function createDendrogramViewController({ state, elements, interfaceSelect, appendClusteringSettingsToParams, embeddingClusteringSettingsKey, embeddingClusterColor, embeddingClusterLabel, partnerColor, }) {
+export function createDendrogramViewController({ state, elements, interfaceSelect, appendClusteringSettingsToParams, embeddingClusteringSettingsKey, embeddingClusterColor, embeddingClusterLabel, onCutoffDistanceChange = () => { }, partnerColor, }) {
     let dendrogramRenderFrameId = 0;
     let dendrogramLoadTimer = 0;
     function dendrogramSettingsKey() {
@@ -27,6 +27,131 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
     }
     function dendrogramLegendMode() {
         return state.dendrogramColorMode || "cluster";
+    }
+    function dendrogramStyle() {
+        return state.dendrogramStyle === "linear" ? "linear" : "radial";
+    }
+    function dendrogramScaleMode() {
+        return state.dendrogramRadiusMode === "distance" ? "distance" : "depth";
+    }
+    function clampUnit(value) {
+        return Math.max(0, Math.min(1, Number(value) || 0));
+    }
+    function dendrogramLayoutForSize(width, height) {
+        const view = state.dendrogramView || { x: 0, y: 0, scale: 1 };
+        const viewScale = Math.max(0.08, Math.min(16, Number(view.scale || 1)));
+        const style = dendrogramStyle();
+        if (style === "linear") {
+            const plotWidth = Math.max(1, width - 112) * viewScale;
+            const plotHeight = Math.max(1, height - 120) * viewScale;
+            const left = width / 2 - plotWidth / 2 + Number(view.x || 0);
+            const top = height / 2 - plotHeight / 2 + Number(view.y || 0);
+            return {
+                style,
+                left,
+                right: left + plotWidth,
+                top,
+                bottom: top + plotHeight,
+                width: plotWidth,
+                height: plotHeight,
+            };
+        }
+        const baseRadius = Math.max(1, Math.min(width, height) * 0.41);
+        return {
+            style,
+            centerX: width / 2 + Number(view.x || 0),
+            centerY: height / 2 + Number(view.y || 0),
+            radius: baseRadius * viewScale,
+        };
+    }
+    function currentDendrogramLayout() {
+        if (!elements.dendrogramRoot) {
+            return null;
+        }
+        const width = Math.max(1, Math.round(elements.dendrogramRoot.clientWidth));
+        const height = Math.max(1, Math.round(elements.dendrogramRoot.clientHeight));
+        return dendrogramLayoutForSize(width, height);
+    }
+    function currentHierarchicalTarget() {
+        return String(state.embeddingClusteringSettings?.hierarchicalTarget ||
+            state.dendrogram?.hierarchical_target ||
+            "");
+    }
+    function dendrogramMaxMergeDistance() {
+        const maxMergeDistance = Number(state.dendrogram?.max_merge_distance || 0);
+        return Number.isFinite(maxMergeDistance) && maxMergeDistance > 0 ? maxMergeDistance : 0;
+    }
+    function currentCutoffDistance() {
+        if (dendrogramScaleMode() !== "distance") {
+            return null;
+        }
+        if (currentHierarchicalTarget() !== "distance_threshold") {
+            return null;
+        }
+        const cutoffDistance = Number(state.embeddingClusteringSettings?.distanceThreshold ??
+            state.dendrogram?.cutoff_distance);
+        return Number.isFinite(cutoffDistance) ? Math.max(0, cutoffDistance) : null;
+    }
+    function cutoffProgressForDistance(distance) {
+        const maxMergeDistance = dendrogramMaxMergeDistance();
+        if (maxMergeDistance <= 0) {
+            return null;
+        }
+        return clampUnit(1 - Math.max(0, Number(distance) || 0) / maxMergeDistance);
+    }
+    function cutoffScreenRadius(layout) {
+        const cutoffDistance = currentCutoffDistance();
+        const progress = cutoffDistance === null
+            ? null
+            : cutoffProgressForDistance(cutoffDistance);
+        if (progress === null) {
+            return null;
+        }
+        return progress * (layout.style === "linear" ? layout.height : layout.radius);
+    }
+    function cutoffDistanceForPoint(point, layout) {
+        const maxMergeDistance = dendrogramMaxMergeDistance();
+        if (maxMergeDistance <= 0 ||
+            dendrogramScaleMode() !== "distance" ||
+            currentHierarchicalTarget() !== "distance_threshold") {
+            return null;
+        }
+        const progress = layout.style === "linear"
+            ? clampUnit((point.y - layout.top) / layout.height)
+            : clampUnit(Math.hypot(point.x - layout.centerX, point.y - layout.centerY) / layout.radius);
+        return Math.max(0, maxMergeDistance * (1 - progress));
+    }
+    function pointNearDendrogramCutoff(point, layout) {
+        const screenRadius = cutoffScreenRadius(layout);
+        if (screenRadius === null) {
+            return false;
+        }
+        const tolerance = 12;
+        if (layout.style === "linear") {
+            const y = layout.top + screenRadius;
+            return (Math.abs(point.y - y) <= tolerance &&
+                point.x >= layout.left - 18 &&
+                point.x <= layout.right + 92);
+        }
+        const distanceFromCenter = Math.hypot(point.x - layout.centerX, point.y - layout.centerY);
+        return (Math.abs(distanceFromCenter - screenRadius) <= tolerance &&
+            distanceFromCenter <= layout.radius + 24);
+    }
+    function cutoffCursor(layout) {
+        return layout?.style === "linear" ? "ns-resize" : "grab";
+    }
+    function updateDendrogramCutoffFromPoint(point, commit = false) {
+        const layout = currentDendrogramLayout();
+        if (!layout) {
+            return;
+        }
+        const cutoffDistance = cutoffDistanceForPoint(point, layout);
+        if (cutoffDistance === null) {
+            return;
+        }
+        const roundedDistance = Number(cutoffDistance.toFixed(4));
+        onCutoffDistanceChange(roundedDistance, { commit });
+        requestDendrogramRender();
     }
     function dendrogramClusterSelectionKey() {
         return [
@@ -92,9 +217,27 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
         elements.dendrogramDepthSlider.max = String(maxDepth);
         elements.dendrogramDepthSlider.value = String(depth);
         const controlsDisabled = !interfaceSelect.value || state.embeddingClusteringSettings.method !== "hierarchical";
+        if (controlsDisabled) {
+            state.dendrogramSettingsOpen = false;
+        }
+        elements.dendrogramSettingsToggle?.setAttribute("aria-expanded", String(Boolean(state.dendrogramSettingsOpen)));
+        elements.dendrogramSettingsToggle?.classList.toggle("active", Boolean(state.dendrogramSettingsOpen));
+        if (elements.dendrogramSettingsToggle) {
+            elements.dendrogramSettingsToggle.disabled = controlsDisabled;
+        }
+        elements.dendrogramSettingsPanel?.classList.toggle("hidden", !state.dendrogramSettingsOpen);
+        const style = dendrogramStyle();
+        elements.dendrogramStyleMode
+            ?.querySelectorAll("[data-dendrogram-style]")
+            .forEach((button) => {
+            const isActive = button.dataset.dendrogramStyle === style;
+            button.disabled = controlsDisabled;
+            button.classList.toggle("active", isActive);
+            button.setAttribute("aria-pressed", String(isActive));
+        });
         elements.dendrogramDepthSlider.disabled = controlsDisabled;
         elements.dendrogramDepthValue.textContent = `${depth} / ${maxDepth}`;
-        const radiusMode = state.dendrogramRadiusMode === "distance" ? "distance" : "depth";
+        const radiusMode = dendrogramScaleMode();
         elements.dendrogramRadiusMode
             ?.querySelectorAll("[data-dendrogram-radius-mode]")
             .forEach((button) => {
@@ -103,6 +246,12 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
             button.classList.toggle("active", isActive);
             button.setAttribute("aria-pressed", String(isActive));
         });
+        elements.dendrogramTrueDistanceOption?.classList.toggle("hidden", radiusMode !== "distance");
+        elements.dendrogramTrueDistanceOption?.classList.toggle("disabled", controlsDisabled || radiusMode !== "distance");
+        if (elements.dendrogramTrueDistanceToggle) {
+            elements.dendrogramTrueDistanceToggle.setAttribute("aria-checked", String(Boolean(state.dendrogramTrueDistanceEdges)));
+            elements.dendrogramTrueDistanceToggle.disabled = controlsDisabled || radiusMode !== "distance";
+        }
     }
     function renderDendrogramLegend() {
         if (!elements.dendrogramPartnerLegend) {
@@ -254,21 +403,53 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
         ctx.textBaseline = "middle";
         ctx.fillText(message, width / 2, height / 2);
     }
-    function nodeScreenPosition(node, centerX, centerY, radius) {
-        const radiusMode = state.dendrogramRadiusMode === "distance" ? "distance" : "depth";
+    function normalizedAngle(angle) {
+        const numeric = Number(angle);
+        if (!Number.isFinite(numeric)) {
+            return 0;
+        }
+        const fullTurn = Math.PI * 2;
+        return ((numeric % fullTurn) + fullTurn) % fullTurn;
+    }
+    function nodeScaleProgress(node) {
+        const radiusMode = dendrogramScaleMode();
         const radiusValue = Number(radiusMode === "distance"
             ? node.radius_distance ?? node.radius
             : node.radius_depth ?? node.radius);
+        if (!Number.isFinite(radiusValue)) {
+            return 0;
+        }
+        return Math.max(0, Math.min(1, radiusValue));
+    }
+    function nodeScreenPosition(node, layout) {
+        const progress = nodeScaleProgress(node);
         const angle = Number(node.angle);
-        if (Number.isFinite(radiusValue) && Number.isFinite(angle)) {
+        const normalized = normalizedAngle(angle);
+        if (layout.style === "linear") {
+            const order = normalized / (Math.PI * 2);
             return {
-                x: centerX + Math.cos(angle) * radiusValue * radius,
-                y: centerY + Math.sin(angle) * radiusValue * radius,
+                x: layout.left + order * layout.width,
+                y: layout.top + progress * layout.height,
+                angle,
+                order,
+                progress,
+            };
+        }
+        if (Number.isFinite(angle)) {
+            return {
+                x: layout.centerX + Math.cos(angle) * progress * layout.radius,
+                y: layout.centerY + Math.sin(angle) * progress * layout.radius,
+                angle,
+                order: normalized / (Math.PI * 2),
+                progress,
             };
         }
         return {
-            x: centerX + Number(node.x || 0) * radius,
-            y: centerY + Number(node.y || 0) * radius,
+            x: layout.centerX + Number(node.x || 0) * layout.radius,
+            y: layout.centerY + Number(node.y || 0) * layout.radius,
+            angle,
+            order: normalized / (Math.PI * 2),
+            progress,
         };
     }
     function normalizedCountEntries(counts) {
@@ -337,6 +518,61 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
         ctx.stroke();
         ctx.restore();
     }
+    function shortestAngleDelta(startAngle, endAngle) {
+        let delta = endAngle - startAngle;
+        while (delta <= -Math.PI) {
+            delta += Math.PI * 2;
+        }
+        while (delta > Math.PI) {
+            delta -= Math.PI * 2;
+        }
+        return delta;
+    }
+    function drawDendrogramTrueDistanceEdge(ctx, source, target, sourceNode, targetNode, layout, colorMode, visibleKeys) {
+        const visual = dendrogramVisualForNode(targetNode, colorMode, visibleKeys);
+        const purity = Math.max(0.15, Math.min(1, Number(visual.purity || 0)));
+        ctx.save();
+        ctx.globalAlpha = visual.label === null ? 0.2 : 0.22 + purity * 0.58;
+        ctx.strokeStyle = visual.label === null ? "rgba(71, 62, 49, 0.38)" : visual.color;
+        ctx.lineWidth = Math.max(0.7, 1.15 + purity * 1.2);
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        if (layout.style === "linear") {
+            if (Math.abs(target.x - source.x) > 0.5) {
+                ctx.lineTo(target.x, source.y);
+            }
+            ctx.lineTo(target.x, target.y);
+            ctx.stroke();
+            ctx.restore();
+            return;
+        }
+        const sourceAngle = Number(sourceNode.angle);
+        const targetAngle = Number(targetNode.angle);
+        if (!Number.isFinite(sourceAngle) || !Number.isFinite(targetAngle)) {
+            ctx.lineTo(target.x, target.y);
+            ctx.stroke();
+            ctx.restore();
+            return;
+        }
+        const sourceScreenRadius = Math.max(0, source.progress || 0) * layout.radius;
+        const targetScreenRadius = Math.max(sourceScreenRadius, Math.max(0, target.progress || 0) * layout.radius);
+        const radialStartX = layout.centerX + Math.cos(targetAngle) * sourceScreenRadius;
+        const radialStartY = layout.centerY + Math.sin(targetAngle) * sourceScreenRadius;
+        const radialEndX = layout.centerX + Math.cos(targetAngle) * targetScreenRadius;
+        const radialEndY = layout.centerY + Math.sin(targetAngle) * targetScreenRadius;
+        const delta = shortestAngleDelta(sourceAngle, targetAngle);
+        if (sourceScreenRadius > 0.5 && Math.abs(delta) > 0.0001) {
+            ctx.arc(layout.centerX, layout.centerY, sourceScreenRadius, sourceAngle, sourceAngle + delta, delta < 0);
+        }
+        else if (Math.hypot(radialStartX - source.x, radialStartY - source.y) > 0.5) {
+            ctx.lineTo(radialStartX, radialStartY);
+        }
+        ctx.lineTo(radialEndX, radialEndY);
+        ctx.stroke();
+        ctx.restore();
+    }
     function drawDendrogramNode(ctx, position, node, colorMode, visibleKeys) {
         const visual = dendrogramVisualForNode(node, colorMode, visibleKeys);
         const purity = Math.max(0.15, Math.min(1, Number(visual.purity || 0)));
@@ -383,40 +619,49 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
         }
         return numeric.toPrecision(2);
     }
-    function drawDendrogramCutoffCircle(ctx, centerX, centerY, radius) {
-        if (state.dendrogramRadiusMode !== "distance") {
+    function drawDendrogramCutoffCircle(ctx, layout) {
+        if (dendrogramScaleMode() !== "distance") {
             return;
         }
-        if (state.dendrogram?.hierarchical_target !== "distance_threshold") {
+        if (currentHierarchicalTarget() !== "distance_threshold") {
             return;
         }
-        const cutoffRadius = Number(state.dendrogram?.cutoff_radius_distance);
-        const cutoffDistance = Number(state.dendrogram?.cutoff_distance);
-        if (!Number.isFinite(cutoffRadius) || !Number.isFinite(cutoffDistance)) {
+        const cutoffDistance = currentCutoffDistance();
+        const screenRadius = cutoffScreenRadius(layout);
+        if (cutoffDistance === null || screenRadius === null) {
             return;
         }
-        const screenRadius = Math.max(0, cutoffRadius) * radius;
         ctx.save();
-        ctx.strokeStyle = "rgba(72, 70, 66, 0.62)";
-        ctx.lineWidth = 1.4;
+        ctx.strokeStyle = "rgba(72, 70, 66, 0.72)";
+        ctx.lineWidth = 1.8;
         ctx.setLineDash([4, 6]);
         ctx.beginPath();
-        ctx.arc(centerX, centerY, screenRadius, 0, Math.PI * 2);
+        if (layout.style === "linear") {
+            const y = layout.top + screenRadius;
+            ctx.moveTo(layout.left, y);
+            ctx.lineTo(layout.right, y);
+        }
+        else {
+            ctx.arc(layout.centerX, layout.centerY, screenRadius, 0, Math.PI * 2);
+        }
         ctx.stroke();
         ctx.setLineDash([]);
         ctx.fillStyle = "rgba(72, 70, 66, 0.78)";
         ctx.font = '11px "IBM Plex Sans", sans-serif';
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
-        ctx.fillText(`cutoff ${formatDendrogramDistance(cutoffDistance)}`, centerX + screenRadius + 8, centerY);
+        const labelX = layout.style === "linear" ? layout.right + 8 : layout.centerX + screenRadius + 8;
+        const labelY = layout.style === "linear" ? layout.top + screenRadius : layout.centerY;
+        ctx.fillText(`cutoff ${formatDendrogramDistance(cutoffDistance)}`, labelX, labelY);
         ctx.restore();
     }
-    function drawDendrogramDistanceGuides(ctx, centerX, centerY, radius) {
-        if (state.dendrogramRadiusMode !== "distance") {
+    function drawDendrogramDistanceGuides(ctx, layout) {
+        if (dendrogramScaleMode() !== "distance") {
             return;
         }
         const maxMergeDistance = Number(state.dendrogram?.max_merge_distance || 0);
-        if (!Number.isFinite(maxMergeDistance) || maxMergeDistance <= 0 || radius <= 0) {
+        const scaleLength = layout.style === "linear" ? layout.height : layout.radius;
+        if (!Number.isFinite(maxMergeDistance) || maxMergeDistance <= 0 || scaleLength <= 0) {
             return;
         }
         ctx.save();
@@ -428,24 +673,32 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
             if (distance > maxMergeDistance) {
                 continue;
             }
-            const guideRadius = Math.max(0, 1 - distance / maxMergeDistance) * radius;
+            const guideRadius = Math.max(0, 1 - distance / maxMergeDistance) * scaleLength;
             ctx.beginPath();
-            ctx.arc(centerX, centerY, guideRadius, 0, Math.PI * 2);
+            if (layout.style === "linear") {
+                const y = layout.top + guideRadius;
+                ctx.moveTo(layout.left, y);
+                ctx.lineTo(layout.right, y);
+            }
+            else {
+                ctx.arc(layout.centerX, layout.centerY, guideRadius, 0, Math.PI * 2);
+            }
             ctx.stroke();
         }
         ctx.restore();
     }
-    function drawDendrogramDistanceScale(ctx, width, height, radius) {
-        if (state.dendrogramRadiusMode !== "distance") {
+    function drawDendrogramDistanceScale(ctx, width, height, layout) {
+        if (dendrogramScaleMode() !== "distance") {
             return;
         }
         const maxMergeDistance = Number(state.dendrogram?.max_merge_distance || 0);
-        if (!Number.isFinite(maxMergeDistance) || maxMergeDistance <= 0 || radius <= 0) {
+        const scaleLength = layout.style === "linear" ? layout.height : layout.radius;
+        if (!Number.isFinite(maxMergeDistance) || maxMergeDistance <= 0 || scaleLength <= 0) {
             return;
         }
         const pixelsPerCssCm = 96 / 2.54;
         const barWidth = Math.min(pixelsPerCssCm, Math.max(28, width - 34));
-        const distancePerBar = (barWidth / radius) * maxMergeDistance;
+        const distancePerBar = (barWidth / scaleLength) * maxMergeDistance;
         const x = width - barWidth - 18;
         const y = height - 24;
         ctx.save();
@@ -520,11 +773,8 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
                 : "Dendrogram filter hides all domains. Click legend items to show them again.");
             return;
         }
-        const view = state.dendrogramView || { x: 0, y: 0, scale: 1 };
-        const baseRadius = Math.max(1, Math.min(width, height) * 0.41);
-        const radius = baseRadius * Math.max(0.08, Math.min(16, Number(view.scale || 1)));
-        const centerX = width / 2 + Number(view.x || 0);
-        const centerY = height / 2 + Number(view.y || 0);
+        const style = dendrogramStyle();
+        const layout = dendrogramLayoutForSize(width, height);
         const nodesById = new Map((state.dendrogram.nodes || []).map((node) => [node.id, node]));
         const visibleNodeIds = new Set((state.dendrogram.nodes || [])
             .filter((node) => dendrogramNodeVisible(node, colorMode, visibleKeys))
@@ -543,21 +793,28 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
             if (!visibleNodeIds.has(node.id)) {
                 continue;
             }
-            positions.set(node.id, nodeScreenPosition(node, centerX, centerY, radius));
+            positions.set(node.id, nodeScreenPosition(node, layout));
         }
-        drawDendrogramDistanceGuides(ctx, centerX, centerY, radius);
-        drawDendrogramCutoffCircle(ctx, centerX, centerY, radius);
+        drawDendrogramDistanceGuides(ctx, layout);
+        drawDendrogramCutoffCircle(ctx, layout);
+        const trueDistanceEdges = dendrogramScaleMode() === "distance" && Boolean(state.dendrogramTrueDistanceEdges);
         for (const edge of state.dendrogram.edges || []) {
             if (!visibleNodeIds.has(edge.source) || !visibleNodeIds.has(edge.target)) {
                 continue;
             }
             const source = positions.get(edge.source);
             const target = positions.get(edge.target);
+            const sourceNode = nodesById.get(edge.source);
             const targetNode = nodesById.get(edge.target);
-            if (!source || !target || !targetNode) {
+            if (!source || !target || !sourceNode || !targetNode) {
                 continue;
             }
-            drawDendrogramEdge(ctx, source, target, targetNode, colorMode, visibleKeys);
+            if (trueDistanceEdges) {
+                drawDendrogramTrueDistanceEdge(ctx, source, target, sourceNode, targetNode, layout, colorMode, visibleKeys);
+            }
+            else {
+                drawDendrogramEdge(ctx, source, target, targetNode, colorMode, visibleKeys);
+            }
         }
         let originNode = null;
         let originPosition = null;
@@ -579,14 +836,16 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
         if (originNode && originPosition) {
             drawDendrogramOriginMarker(ctx, originPosition, originNode, colorMode, visibleKeys);
         }
-        drawDendrogramDistanceScale(ctx, width, height, radius);
+        drawDendrogramDistanceScale(ctx, width, height, layout);
         const maxDepth = Number(state.dendrogram.max_merge_depth || 1);
-        const radiusModeLabel = state.dendrogramRadiusMode === "distance" ? "distance" : "depth";
+        const scaleModeLabel = dendrogramScaleMode();
+        const styleLabel = style === "linear" ? "linear" : "radial";
+        const distanceLayoutLabel = trueDistanceEdges ? " · true lengths" : "";
         const visibleMemberCount = (state.dendrogram.nodes || [])
             .filter((node) => node.parent_id === null)
             .reduce((total, node) => total +
             countVisibleMembers(colorMode === "cluster" ? node.cluster_counts : node.domain_counts, visibleKeys), 0);
-        setDendrogramInfo(`Depth ${state.dendrogram.merge_depth}/${maxDepth} · radius by ${radiusModeLabel} · ${visibleNodeIds.size} visible nodes · ${visibleMemberCount} rows · ${state.dendrogram.cluster_count} clusters · ${state.dendrogram.hierarchy_source}`);
+        setDendrogramInfo(`Style ${styleLabel} · depth ${state.dendrogram.merge_depth}/${maxDepth} · scale by ${scaleModeLabel}${distanceLayoutLabel} · ${visibleNodeIds.size} visible nodes · ${visibleMemberCount} rows · ${state.dendrogram.cluster_count} clusters · ${state.dendrogram.hierarchy_source}`);
     }
     function dendrogramCanvasPoint(event) {
         const rect = elements.dendrogramCanvas.getBoundingClientRect();
@@ -600,7 +859,20 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
             return;
         }
         const point = dendrogramCanvasPoint(event);
+        const layout = currentDendrogramLayout();
+        if (layout && pointNearDendrogramCutoff(point, layout)) {
+            event.preventDefault();
+            state.dendrogramDrag = {
+                type: "cutoff",
+            };
+            elements.dendrogramCanvas.style.cursor =
+                layout.style === "linear" ? "ns-resize" : "grabbing";
+            updateDendrogramCutoffFromPoint(point, false);
+            elements.dendrogramCanvas.setPointerCapture?.(event.pointerId);
+            return;
+        }
         state.dendrogramDrag = {
+            type: "pan",
             x: point.x,
             y: point.y,
             viewX: Number(state.dendrogramView?.x || 0),
@@ -609,10 +881,22 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
         elements.dendrogramCanvas.setPointerCapture?.(event.pointerId);
     }
     function handleDendrogramPointerMove(event) {
+        const point = dendrogramCanvasPoint(event);
         if (!state.dendrogramDrag) {
+            const layout = currentDendrogramLayout();
+            if (layout && pointNearDendrogramCutoff(point, layout)) {
+                elements.dendrogramCanvas.style.cursor = cutoffCursor(layout);
+            }
+            else {
+                elements.dendrogramCanvas.style.cursor = "";
+            }
             return;
         }
-        const point = dendrogramCanvasPoint(event);
+        if (state.dendrogramDrag.type === "cutoff") {
+            event.preventDefault();
+            updateDendrogramCutoffFromPoint(point, false);
+            return;
+        }
         state.dendrogramView = {
             ...state.dendrogramView,
             x: state.dendrogramDrag.viewX + point.x - state.dendrogramDrag.x,
@@ -621,7 +905,11 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
         requestDendrogramRender();
     }
     function handleDendrogramPointerUp(event) {
+        if (state.dendrogramDrag?.type === "cutoff") {
+            updateDendrogramCutoffFromPoint(dendrogramCanvasPoint(event), true);
+        }
         state.dendrogramDrag = null;
+        elements.dendrogramCanvas.style.cursor = "";
         elements.dendrogramCanvas?.releasePointerCapture?.(event.pointerId);
     }
     function handleDendrogramWheel(event) {

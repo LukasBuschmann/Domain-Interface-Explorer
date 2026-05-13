@@ -8,11 +8,13 @@ import { createRepresentativeViewController } from "./representativeView.js";
 import { createEmbeddingViewController } from "./embeddingView.js";
 import { createDendrogramViewController } from "./dendrogramView.js";
 import { createMsaViewController } from "./msaView.js";
+import { applyUiPreferences, saveUiPreferences } from "./preferences.js";
 import { buildPartnerColorMap, clusterHoverColor as clusterHoverColorForLabel, clusterLensColor as clusterLensColorForLabel, colorToRgb as parseColorToRgb, columnColor as colorColumn, conservationColor, interpolateColor as mixColor, nonZeroRoundedPercent, partnerColorFromMap, partnerLensColor as colorPartnerLens, } from "./colors.js";
 import { activeConservationVector as getActiveConservationVector, buildStructureResidueLookup as buildStructureResidueLookupFromModel, columnStateDistribution as getColumnStateDistribution, topResiduesForColumn as getTopResiduesForColumn, } from "./msaModel.js";
 import { buildOverlayMaps, buildPairs, interactionRowKey, parseInteractionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams, parseSelectionSettingsDraft } from "./selectionSettings.js";
-const { appStatus, closeClusterCompareModalButton, closeStructureModalButton, clusterCompareGrid, clusterCompareModal, columnCount, columnsRoot, clusteringSettingsToggle, detailsList, embeddingCanvas, embeddingRoot, embeddingClusterDistanceInput, embeddingClusterDistanceThresholdInput, embeddingClusterEpsilonInput, embeddingClusterHierarchicalMinSizeInput, embeddingClusterLifetimeThresholdInput, embeddingClusterLinkageInput, embeddingClusterMinSamplesInput, embeddingClusterMinSizeInput, embeddingClusterNClustersInput, embeddingClusteringApply, embeddingEarlyExaggerationInput, embeddingDistanceInput, embeddingInfo, embeddingLearningRateInput, embeddingLoading, embeddingLoadingLabel, embeddingMemberNext, embeddingMemberPrev, embeddingMaxIterInput, embeddingPartnerLegend, embeddingPerplexityInput, embeddingSettingsPanel, embeddingSettingsToggle, embeddingTsneApply, gridCanvas, gridScroll, gridSpacer, headerCanvas, interfaceSelect, labelsCanvas, loadingDetail, loadingLabel, loadingPanel, loadStructureButton, msaLegend, msaPanelTabs, msaPickerButton, msaPickerFilters, msaPickerMenu, msaPickerOptions, msaPickerSearch, msaPickerSelection, msaSelect, selectionSettingsApply, selectionSettingsPanel, selectionSettingsToggle, selectionMinInterfaceSizeInput, partnerSelect, progressBar, representativeClusterLegend, representativeColumnLegend, representativeColumnLegendEnd, representativeColumnLegendMid, representativeColumnLegendStart, representativeCopy, representativeHoverAccentLabel, representativeHoverCard, representativeHoverDetails, representativeHoverDistributionChart, representativeHoverDistributionLayout, representativeHoverDistributionLegend, representativeHoverDistributionPieLegend, representativeHoverDistributionTitle, representativeHoverTitle, representativeClusterGridButton, representativeLensGroup, representativeMethodButton, representativeMethodLabel, representativeMethodMenu, representativePartnerFilterList, representativeScopeControl, representativeScopeButton, representativeScopeLabel, representativeScopeMenu, representativeScopeSwatch, representativeViewerRoot, rowCount, rowSearchInput, selectedRowCopy, structureColumnLegend, structureColumnLegendEnd, structureColumnLegendMid, structureColumnLegendStart, structureColumnViewToggle, structureHoverCard, structureHoverDetails, structureHoverDistributionChart, structureHoverDistributionLegend, structureHoverHistogram, structureModal, structureMemberNext, structureMemberPrev, structureContactViewToggle, structureDisplaySettingsClose, structureDisplaySettingsPanel, structureRecenterDomainButton, structureModalStatus, structureModalSubtitle, structureModalTitle, structureStatus, structureViewerRoot, clusterCompareRerollButton, viewerRoot, } = elements;
+applyUiPreferences(state);
+const { appStatus, closeClusterCompareModalButton, closeStructureModalButton, clusterCompareGrid, clusterCompareModal, columnCount, columnsRoot, clusteringSettingsToggle, detailsList, embeddingCanvas, embeddingRoot, embeddingClusterDistanceInput, embeddingClusterDistanceThresholdInput, embeddingClusterEpsilonInput, embeddingClusterHierarchicalMinSizeInput, embeddingClusterLifetimeThresholdInput, embeddingClusterLinkageInput, embeddingClusterMinSamplesInput, embeddingClusterMinSizeInput, embeddingClusterNClustersInput, embeddingClusterStabilityWeightInput, embeddingClusteringApply, embeddingEarlyExaggerationInput, embeddingDistanceInput, embeddingInfo, embeddingLearningRateInput, embeddingLoading, embeddingLoadingLabel, embeddingMemberNext, embeddingMemberPrev, embeddingMaxIterInput, embeddingPartnerLegend, embeddingPerplexityInput, embeddingSettingsPanel, embeddingSettingsToggle, embeddingTsneApply, gridCanvas, gridScroll, gridSpacer, headerCanvas, interfaceSelect, labelsCanvas, loadingDetail, loadingLabel, loadingPanel, loadStructureButton, msaLegend, msaPanelTabs, msaPickerButton, msaPickerFilters, msaPickerMenu, msaPickerOptions, msaPickerSearch, msaPickerSelection, msaSelect, selectionSettingsApply, selectionSettingsPanel, selectionSettingsToggle, selectionMinInterfaceSizeInput, partnerSelect, progressBar, representativeClusterLegend, representativeColumnLegend, representativeColumnLegendEnd, representativeColumnLegendMid, representativeColumnLegendStart, representativeCopy, representativeHoverAccentLabel, representativeHoverCard, representativeHoverDetails, representativeHoverDistributionChart, representativeHoverDistributionLayout, representativeHoverDistributionLegend, representativeHoverDistributionPieLegend, representativeHoverDistributionTitle, representativeHoverTitle, representativeClusterGridButton, representativeLensGroup, representativeMethodButton, representativeMethodLabel, representativeMethodMenu, representativePartnerFilterList, representativeScopeControl, representativeScopeButton, representativeScopeLabel, representativeScopeMenu, representativeScopeSwatch, representativeViewerRoot, rowCount, rowSearchInput, selectedRowCopy, structureColumnLegend, structureColumnLegendEnd, structureColumnLegendMid, structureColumnLegendStart, structureColumnViewToggle, structureHoverCard, structureHoverDetails, structureHoverDistributionChart, structureHoverDistributionLegend, structureHoverHistogram, structureModal, structureMemberNext, structureMemberPrev, structureContactViewToggle, structureDisplaySettingsClose, structureDisplaySettingsPanel, structureRecenterDomainButton, structureModalStatus, structureModalSubtitle, structureModalTitle, structureStatus, structureViewerRoot, clusterCompareRerollButton, viewerRoot, } = elements;
 function activeConservationVector() {
     return getActiveConservationVector(state.msa);
 }
@@ -200,7 +202,7 @@ const embeddingViewController = createEmbeddingViewController({
     syncRepresentativeScopeControls,
     representativeLens,
 });
-const { allEmbeddingClusterLabels, allColumnsClusterLabels, allRepresentativeClusterLabels, clusteringMethodLabel, currentClusterCompareQuery, currentEmbeddingClusteringQuery, currentEmbeddingClusteringRequestKey, currentEmbeddingQuery, currentEmbeddingRequestKey, currentHierarchicalTarget, embeddingClusterColor, embeddingClusterLabel, embeddingClusteringSettingsKey, embeddingDistanceLabel, embeddingLegendMode, embeddingPointAt, embeddingSettingsKey, ensureEmbeddingClusteringLoaded, ensureEmbeddingDataLoaded, ensureHierarchyStatusLoaded, normalizeHierarchicalDraft, parseEmbeddingClusteringSettingsDraft, parseEmbeddingSettingsDraft, readEmbeddingClusteringDraftInputs, renderEmbeddingLegend, renderEmbeddingPlot, requestEmbeddingRender, renderColumnsChart, renderColumnsClusterLegend, resetColumnsClusterSelection, resetEmbeddingClusterSelection, resetEmbeddingPartnerSelection, resetRepresentativeClusterSelection, resizeColumnsCanvas, resizeEmbeddingCanvas, setEmbeddingInfo, setColumnsInfo, syncEmbeddingLoadingUi, syncEmbeddingMemberControls, syncDistanceThresholdValueUi, syncPersistenceMinLifetimeValueUi, syncEmbeddingSettingsUi, syncHierarchicalTargetMemoryFromDraft, syncHierarchicalTargetUi, visibleColumnsClusters, visibleRepresentativeClusters, } = embeddingViewController;
+const { allEmbeddingClusterLabels, allColumnsClusterLabels, allRepresentativeClusterLabels, clusteringMethodLabel, currentClusterCompareQuery, currentEmbeddingClusteringQuery, currentEmbeddingClusteringRequestKey, currentEmbeddingQuery, currentEmbeddingRequestKey, currentHierarchicalTarget, embeddingClusterColor, embeddingClusterLabel, embeddingClusteringSettingsKey, embeddingDistanceLabel, embeddingLegendMode, embeddingPointAt, embeddingSettingsKey, ensureEmbeddingClusteringLoaded, ensureEmbeddingDataLoaded, ensureHierarchyStatusLoaded, handleColumnsPointerDown, handleColumnsPointerMove, handleColumnsPointerUp, handleColumnsScroll, handleColumnsWheel, normalizeHierarchicalDraft, parseEmbeddingClusteringSettingsDraft, parseEmbeddingSettingsDraft, readEmbeddingClusteringDraftInputs, renderEmbeddingLegend, renderEmbeddingPlot, requestEmbeddingRender, renderColumnsChart, renderColumnsClusterLegend, resetColumnsClusterSelection, resetEmbeddingClusterSelection, resetEmbeddingPartnerSelection, resetRepresentativeClusterSelection, resizeColumnsCanvas, resizeEmbeddingCanvas, setEmbeddingInfo, setColumnsInfo, syncEmbeddingLoadingUi, syncEmbeddingMemberControls, syncDistanceThresholdValueUi, syncPersistenceMinLifetimeValueUi, syncPersistenceStabilityWeightValueUi, syncEmbeddingSettingsUi, syncHierarchicalTargetMemoryFromDraft, syncHierarchicalTargetUi, visibleColumnsClusters, visibleRepresentativeClusters, } = embeddingViewController;
 const dendrogramViewController = createDendrogramViewController({
     state,
     elements,
@@ -209,9 +211,23 @@ const dendrogramViewController = createDendrogramViewController({
     embeddingClusteringSettingsKey,
     embeddingClusterColor,
     embeddingClusterLabel,
+    onCutoffDistanceChange: handleDendrogramCutoffDistanceChange,
     partnerColor,
 });
 const { allDendrogramClusterLabels, clearDendrogram, ensureDendrogramLoaded, handleDendrogramPointerDown, handleDendrogramPointerMove, handleDendrogramPointerUp, handleDendrogramWheel, renderDendrogramLegend, renderDendrogram, requestDendrogramRender, resetDendrogramClusterSelection, resetDendrogramPartnerSelection, resizeDendrogramCanvas, scheduleDendrogramLoad, syncDendrogramControls, } = dendrogramViewController;
+let uiPreferencesSaveTimer = 0;
+function persistUiPreferences() {
+    window.clearTimeout(uiPreferencesSaveTimer);
+    uiPreferencesSaveTimer = 0;
+    saveUiPreferences(state);
+}
+function scheduleUiPreferencesSave() {
+    window.clearTimeout(uiPreferencesSaveTimer);
+    uiPreferencesSaveTimer = window.setTimeout(() => {
+        uiPreferencesSaveTimer = 0;
+        saveUiPreferences(state);
+    }, 120);
+}
 function representativeLens() {
     return state.representativeLens;
 }
@@ -513,7 +529,9 @@ function appendClusteringSettingsToParams(params) {
         }
         if (hierarchicalTarget === "persistence") {
             const minLifetime = String(state.embeddingClusteringSettings.persistenceMinLifetime ?? "").trim();
+            const lifetimeWeight = String(state.embeddingClusteringSettings.persistenceLifetimeWeight ?? "").trim();
             params.set("persistence_min_lifetime", minLifetime || String(DEFAULT_CLUSTERING_SETTINGS.persistenceMinLifetime));
+            params.set("persistence_lifetime_weight", lifetimeWeight || String(DEFAULT_CLUSTERING_SETTINGS.persistenceLifetimeWeight));
         }
     }
     else {
@@ -1547,6 +1565,7 @@ function updateStructureDisplaySetting(control) {
         syncStructureDisplaySettingsUi();
         applyStructureDisplaySettingsToViewers();
         scheduleStructureDisplayRepresentationRefresh();
+        scheduleUiPreferencesSave();
         return;
     }
     state.structureDisplaySettings = {
@@ -1556,6 +1575,7 @@ function updateStructureDisplaySetting(control) {
     };
     syncStructureDisplaySettingsUi();
     applyStructureDisplaySettingsToViewers();
+    scheduleUiPreferencesSave();
     if (control.dataset.representationSetting === "true" ||
         STRUCTURE_REPRESENTATION_SETTINGS.has(key)) {
         scheduleStructureDisplayRepresentationRefresh();
@@ -1763,6 +1783,7 @@ selectionSettingsApply?.addEventListener("click", async () => {
         };
         state.selectionSettingsOpen = false;
         syncSelectionSettingsUi();
+        persistUiPreferences();
         if (settingsChanged && msaSelect.value && interfaceSelect.value) {
             await loadCurrentSelection();
         }
@@ -1816,6 +1837,10 @@ function scheduleLiveHierarchicalClusteringUpdate() {
                 preserveAppliedHierarchy: true,
             });
             state.embeddingClusteringSettings = nextSettings;
+            state.embeddingClusteringSettingsDraft = {
+                ...nextSettings,
+            };
+            scheduleUiPreferencesSave();
             const representativeDependsOnClustering = state.representativeScope === "cluster" || representativeLens() === "cluster";
             if (activeMsaPanelView() === "embeddings" ||
                 activeMsaPanelView() === "columns" ||
@@ -1841,6 +1866,69 @@ function scheduleHierarchyStatusUpdate() {
         state.embeddingClusteringSettingsDraft = readEmbeddingClusteringDraftInputs();
         void ensureHierarchyStatusLoaded();
     }, 250);
+}
+function distanceThresholdSettings(settings, distanceThreshold) {
+    return {
+        ...settings,
+        method: "hierarchical",
+        hierarchicalTarget: "distance_threshold",
+        nClusters: "",
+        distanceThreshold,
+        persistenceMinLifetime: "",
+        persistenceLifetimeWeight: "",
+    };
+}
+async function refreshAfterDendrogramCutoffChange() {
+    try {
+        const representativeDependsOnClustering = state.representativeScope === "cluster" || representativeLens() === "cluster";
+        if (activeMsaPanelView() === "embeddings" ||
+            activeMsaPanelView() === "columns" ||
+            representativeDependsOnClustering) {
+            await ensureEmbeddingClusteringLoaded();
+        }
+        if (activeMsaPanelView() === "dendrogram") {
+            await ensureDendrogramLoaded({ force: true });
+        }
+        if (state.representativeScope === "cluster") {
+            await refreshRepresentativeSelection("No representative row found for the selected scope.");
+        }
+        render();
+    }
+    catch (error) {
+        setEmbeddingInfo(error.message);
+    }
+}
+function handleDendrogramCutoffDistanceChange(distance, options = {}) {
+    const numericDistance = Number(distance);
+    if (!Number.isFinite(numericDistance) || numericDistance < 0) {
+        return;
+    }
+    const cutoffDistance = Number(Math.max(0, numericDistance).toFixed(4));
+    const previousDistance = Number(state.embeddingClusteringSettings.distanceThreshold);
+    const previousTarget = state.embeddingClusteringSettings.hierarchicalTarget;
+    const changed = previousTarget !== "distance_threshold" ||
+        !Number.isFinite(previousDistance) ||
+        Math.abs(previousDistance - cutoffDistance) > 0.00001;
+    if (!changed && !options.commit) {
+        return;
+    }
+    state.embeddingClusteringSettings = distanceThresholdSettings(state.embeddingClusteringSettings, cutoffDistance);
+    state.embeddingClusteringSettingsDraft = distanceThresholdSettings(state.embeddingClusteringSettingsDraft, cutoffDistance);
+    state.embeddingHierarchicalTargetMemory.distanceThreshold = String(cutoffDistance);
+    state.hierarchyStatus = null;
+    state.hierarchyStatusLoadingKey = null;
+    state.hierarchyStatusPromise = null;
+    syncEmbeddingSettingsUi();
+    syncDistanceThresholdValueUi();
+    scheduleUiPreferencesSave();
+    scheduleHierarchyStatusUpdate();
+    if (options.commit) {
+        window.clearTimeout(liveHierarchicalClusteringTimer);
+        void refreshAfterDendrogramCutoffChange();
+    }
+    else {
+        scheduleLiveHierarchicalClusteringUpdate();
+    }
 }
 function placeEmbeddingSettingsPanel() {
     if (state.embeddingSettingsSection === "clustering") {
@@ -1876,6 +1964,9 @@ function openEmbeddingSettingsSection(section) {
     if (String(state.embeddingClusteringSettings.persistenceMinLifetime).trim() !== "") {
         state.embeddingHierarchicalTargetMemory.persistenceMinLifetime = String(state.embeddingClusteringSettings.persistenceMinLifetime).trim();
     }
+    if (String(state.embeddingClusteringSettings.persistenceLifetimeWeight).trim() !== "") {
+        state.embeddingHierarchicalTargetMemory.persistenceLifetimeWeight = String(state.embeddingClusteringSettings.persistenceLifetimeWeight).trim();
+    }
     state.embeddingClusteringSettingsDraft = normalizeHierarchicalDraft(state.embeddingClusteringSettingsDraft);
     placeEmbeddingSettingsPanel();
     syncEmbeddingSettingsUi();
@@ -1900,6 +1991,7 @@ embeddingSettingsPanel.addEventListener("click", (event) => {
             ...state.embeddingSettingsDraft,
             method: nextMethod,
         };
+        scheduleUiPreferencesSave();
         syncEmbeddingSettingsUi();
         return;
     }
@@ -1916,6 +2008,7 @@ embeddingSettingsPanel.addEventListener("click", (event) => {
         if (nextMethod === "hierarchical") {
             state.embeddingClusteringSettingsDraft = normalizeHierarchicalDraft(state.embeddingClusteringSettingsDraft);
         }
+        scheduleUiPreferencesSave();
         syncEmbeddingSettingsUi();
         void ensureHierarchyStatusLoaded();
         return;
@@ -1931,6 +2024,7 @@ embeddingSettingsPanel.addEventListener("click", (event) => {
             ...readEmbeddingClusteringDraftInputs(),
             hierarchicalTarget: nextTarget,
         });
+        scheduleUiPreferencesSave();
         syncEmbeddingSettingsUi();
         scheduleLiveHierarchicalClusteringUpdate();
         scheduleHierarchyStatusUpdate();
@@ -1952,6 +2046,8 @@ embeddingClusterNClustersInput.addEventListener("input", () => {
     if (value !== "") {
         state.embeddingHierarchicalTargetMemory.nClusters = value;
     }
+    state.embeddingClusteringSettingsDraft = readEmbeddingClusteringDraftInputs();
+    scheduleUiPreferencesSave();
     scheduleHierarchyStatusUpdate();
     scheduleLiveHierarchicalClusteringUpdate();
 });
@@ -1961,6 +2057,8 @@ embeddingClusterDistanceThresholdInput.addEventListener("input", () => {
     if (value !== "") {
         state.embeddingHierarchicalTargetMemory.distanceThreshold = value;
     }
+    state.embeddingClusteringSettingsDraft = readEmbeddingClusteringDraftInputs();
+    scheduleUiPreferencesSave();
     scheduleHierarchyStatusUpdate();
     scheduleLiveHierarchicalClusteringUpdate();
 });
@@ -1970,17 +2068,54 @@ embeddingClusterLifetimeThresholdInput.addEventListener("input", () => {
     if (value !== "") {
         state.embeddingHierarchicalTargetMemory.persistenceMinLifetime = value;
     }
+    state.embeddingClusteringSettingsDraft = readEmbeddingClusteringDraftInputs();
+    scheduleUiPreferencesSave();
+    scheduleHierarchyStatusUpdate();
+    scheduleLiveHierarchicalClusteringUpdate();
+});
+embeddingClusterStabilityWeightInput.addEventListener("input", () => {
+    syncPersistenceStabilityWeightValueUi();
+    const value = embeddingClusterStabilityWeightInput.value.trim();
+    if (value !== "") {
+        state.embeddingHierarchicalTargetMemory.persistenceLifetimeWeight = value;
+    }
+    state.embeddingClusteringSettingsDraft = readEmbeddingClusteringDraftInputs();
+    scheduleUiPreferencesSave();
     scheduleHierarchyStatusUpdate();
     scheduleLiveHierarchicalClusteringUpdate();
 });
 embeddingClusterHierarchicalMinSizeInput.addEventListener("input", () => {
+    state.embeddingClusteringSettingsDraft = readEmbeddingClusteringDraftInputs();
+    scheduleUiPreferencesSave();
     scheduleHierarchyStatusUpdate();
     scheduleLiveHierarchicalClusteringUpdate();
 });
 elements.dendrogramDepthSlider?.addEventListener("input", () => {
     state.dendrogramDepth = Number(elements.dendrogramDepthSlider.value || 5);
+    scheduleUiPreferencesSave();
     syncDendrogramControls();
     scheduleDendrogramLoad();
+});
+elements.dendrogramSettingsToggle?.addEventListener("click", () => {
+    if (elements.dendrogramSettingsToggle.disabled) {
+        return;
+    }
+    state.dendrogramSettingsOpen = !state.dendrogramSettingsOpen;
+    syncDendrogramControls();
+});
+elements.dendrogramStyleMode?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-dendrogram-style]");
+    if (!button) {
+        return;
+    }
+    const nextStyle = button.dataset.dendrogramStyle;
+    if (!nextStyle || nextStyle === state.dendrogramStyle) {
+        return;
+    }
+    state.dendrogramStyle = nextStyle;
+    persistUiPreferences();
+    syncDendrogramControls();
+    requestDendrogramRender();
 });
 elements.dendrogramRadiusMode?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-dendrogram-radius-mode]");
@@ -1992,6 +2127,16 @@ elements.dendrogramRadiusMode?.addEventListener("click", (event) => {
         return;
     }
     state.dendrogramRadiusMode = nextMode;
+    persistUiPreferences();
+    syncDendrogramControls();
+    requestDendrogramRender();
+});
+elements.dendrogramTrueDistanceToggle?.addEventListener("click", () => {
+    if (elements.dendrogramTrueDistanceToggle.disabled) {
+        return;
+    }
+    state.dendrogramTrueDistanceEdges = !state.dendrogramTrueDistanceEdges;
+    persistUiPreferences();
     syncDendrogramControls();
     requestDendrogramRender();
 });
@@ -2000,12 +2145,25 @@ elements.dendrogramCanvas?.addEventListener("pointermove", handleDendrogramPoint
 elements.dendrogramCanvas?.addEventListener("pointerup", handleDendrogramPointerUp);
 elements.dendrogramCanvas?.addEventListener("pointercancel", handleDendrogramPointerUp);
 elements.dendrogramCanvas?.addEventListener("wheel", handleDendrogramWheel, { passive: false });
+elements.columnsCanvas?.addEventListener("pointerdown", handleColumnsPointerDown);
+elements.columnsCanvas?.addEventListener("pointermove", handleColumnsPointerMove);
+elements.columnsCanvas?.addEventListener("pointerup", handleColumnsPointerUp);
+elements.columnsCanvas?.addEventListener("pointercancel", handleColumnsPointerUp);
+elements.columnsCanvas?.addEventListener("wheel", handleColumnsWheel, { passive: false });
+elements.columnsScroll?.addEventListener("scroll", handleColumnsScroll);
+elements.columnsInterfaceOnlyToggle?.addEventListener("change", () => {
+    state.columnsInterfaceOnly = Boolean(elements.columnsInterfaceOnlyToggle.checked);
+    persistUiPreferences();
+    renderColumnsChart();
+});
 embeddingClusterDistanceInput.addEventListener("change", () => {
     state.embeddingClusteringSettingsDraft = readEmbeddingClusteringDraftInputs();
+    persistUiPreferences();
     void ensureHierarchyStatusLoaded();
 });
 embeddingClusterLinkageInput.addEventListener("change", () => {
     state.embeddingClusteringSettingsDraft = readEmbeddingClusteringDraftInputs();
+    persistUiPreferences();
     void ensureHierarchyStatusLoaded();
 });
 embeddingTsneApply.addEventListener("click", async () => {
@@ -2016,6 +2174,7 @@ embeddingTsneApply.addEventListener("click", async () => {
             ...nextSettings,
         };
         state.embeddingSettingsOpen = false;
+        persistUiPreferences();
         syncEmbeddingSettingsUi();
         if (activeMsaPanelView() === "embeddings") {
             await ensureEmbeddingDataLoaded();
@@ -2038,6 +2197,7 @@ embeddingClusteringApply.addEventListener("click", async () => {
             state.hierarchyStatusPromise = null;
         }
         state.embeddingSettingsOpen = false;
+        persistUiPreferences();
         syncEmbeddingSettingsUi();
         const representativeDependsOnClustering = state.representativeScope === "cluster" || representativeLens() === "cluster";
         if (activeMsaPanelView() === "embeddings" ||
@@ -2065,6 +2225,7 @@ embeddingPartnerLegend.addEventListener("click", (event) => {
             return;
         }
         state.embeddingColorMode = nextMode;
+        persistUiPreferences();
         renderEmbeddingLegend();
         requestEmbeddingRender();
         if (nextMode === "cluster") {
@@ -2129,6 +2290,7 @@ elements.dendrogramPartnerLegend?.addEventListener("click", (event) => {
             return;
         }
         state.dendrogramColorMode = nextMode;
+        persistUiPreferences();
         renderDendrogramLegend();
         requestDendrogramRender();
         if (nextMode === "cluster") {
@@ -2247,6 +2409,7 @@ representativeLensGroup.addEventListener("click", (event) => {
     }
     state.representativeLens = button.dataset.lens;
     state.representativeHoveredClusterLabel = null;
+    persistUiPreferences();
     syncRepresentativeLensControls();
     if (state.representativeLens === "cluster") {
         void ensureEmbeddingClusteringLoaded();
@@ -2284,10 +2447,12 @@ representativeMethodMenu?.addEventListener("click", (event) => {
         return;
     }
     state.representativeHoveredClusterLabel = null;
+    persistUiPreferences();
     void refreshRepresentativeSelection("No representative row found for the selected method.");
 });
 structureColumnViewToggle.addEventListener("change", () => {
     state.structureColumnView = structureColumnViewToggle.checked;
+    persistUiPreferences();
     syncColumnLegends();
     if (state.structureData) {
         void renderInteractiveStructure();
@@ -2295,6 +2460,7 @@ structureColumnViewToggle.addEventListener("change", () => {
 });
 structureContactViewToggle?.addEventListener("change", () => {
     state.structureContactsVisible = structureContactViewToggle.checked;
+    persistUiPreferences();
     syncColumnLegends();
     if (state.structureData) {
         void renderInteractiveStructure();
@@ -2543,6 +2709,12 @@ document.addEventListener("click", (event) => {
         state.embeddingSettingsOpen = false;
         syncEmbeddingSettingsUi();
     }
+    if (state.dendrogramSettingsOpen &&
+        !event.target.closest("#dendrogram-settings-panel") &&
+        !event.target.closest("#dendrogram-settings-toggle")) {
+        state.dendrogramSettingsOpen = false;
+        syncDendrogramControls();
+    }
     if (!event.target.closest("#representative-method-control")) {
         setRepresentativeMethodMenuOpen(false);
     }
@@ -2586,9 +2758,15 @@ window.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && state.selectionSettingsOpen) {
         state.selectionSettingsOpen = false;
         syncSelectionSettingsUi();
+        return;
+    }
+    if (event.key === "Escape" && state.dendrogramSettingsOpen) {
+        state.dendrogramSettingsOpen = false;
+        syncDendrogramControls();
     }
 });
 window.addEventListener("resize", render);
+window.addEventListener("beforeunload", persistUiPreferences);
 window.addEventListener("resize", () => {
     fitRepresentativeDropdownToViewport(representativeScopeMenu, Boolean(representativeScopeMenu && !representativeScopeMenu.classList.contains("hidden")));
     fitRepresentativeDropdownToViewport(representativeMethodMenu, Boolean(representativeMethodMenu && !representativeMethodMenu.classList.contains("hidden")));

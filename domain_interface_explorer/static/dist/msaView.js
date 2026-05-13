@@ -1,4 +1,4 @@
-import { CELL_WIDTH, DEFAULT_CLUSTERING_SETTINGS, DEFAULT_EMBEDDING_SETTINGS, HEADER_HEIGHT, LABEL_WIDTH, ROW_HEIGHT, TEXT_FONT, } from "./constants.js";
+import { CELL_WIDTH, HEADER_HEIGHT, LABEL_WIDTH, ROW_HEIGHT, TEXT_FONT, } from "./constants.js";
 import { fetchJson } from "./api.js";
 import { interactionRowKey, interfaceFileStem, parseInteractionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams, normalizeSelectionSettings, } from "./selectionSettings.js";
@@ -49,7 +49,7 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         return state.msaPanelView;
     }
     function defaultPointMethodLabel() {
-        return DEFAULT_EMBEDDING_SETTINGS.method === "pca" ? "PCA" : "openTSNE";
+        return state.embeddingSettings.method === "pca" ? "PCA" : "openTSNE";
     }
     function numericStyleValue(style, property) {
         const value = Number.parseFloat(style[property] || "0");
@@ -1788,6 +1788,10 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         state.embeddingClustering = null;
         state.columnsChart = null;
         state.columnsChartKey = null;
+        state.columnsView = { start: 0, end: null };
+        state.columnsClusterOrder = [];
+        state.columnsDrag = null;
+        state.columnsInteractionLayout = null;
         state.dendrogram = null;
         state.dendrogramRequestId += 1;
         state.dendrogramLoading = false;
@@ -2019,6 +2023,10 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         state.embedding = null;
         state.columnsChart = null;
         state.columnsChartKey = null;
+        state.columnsView = { start: 0, end: null };
+        state.columnsClusterOrder = [];
+        state.columnsDrag = null;
+        state.columnsInteractionLayout = null;
         state.embeddingClustering = null;
         state.embeddingHoverRowKey = null;
         state.dendrogram = null;
@@ -2037,31 +2045,13 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         state.embeddingClusteringLoading = false;
         state.embeddingClusteringLoadingKey = null;
         state.embeddingClusteringPromise = null;
-        state.embeddingSettingsOpen = false;
-        state.selectionSettingsOpen = false;
-        state.selectionSettingsDraft = {
-            ...state.selectionSettings,
-        };
-        state.embeddingSettingsSection = "clustering";
-        state.embeddingColorMode = "cluster";
         state.embeddingVisiblePartners = new Set();
         state.embeddingVisibleClusters = new Set();
-        state.dendrogramRadiusMode = "depth";
-        state.dendrogramColorMode = "cluster";
         state.dendrogramVisiblePartners = new Set();
         state.dendrogramVisibleClusters = new Set();
         state.dendrogramClusterSelectionKey = null;
         state.columnsVisibleClusters = new Set();
         state.msaVisibleClusters = new Set();
-        state.embeddingSettings = { ...DEFAULT_EMBEDDING_SETTINGS };
-        state.embeddingSettingsDraft = { ...DEFAULT_EMBEDDING_SETTINGS };
-        state.embeddingClusteringSettings = { ...DEFAULT_CLUSTERING_SETTINGS };
-        state.embeddingClusteringSettingsDraft = { ...DEFAULT_CLUSTERING_SETTINGS };
-        state.embeddingHierarchicalTargetMemory = {
-            nClusters: String(DEFAULT_CLUSTERING_SETTINGS.nClusters),
-            distanceThreshold: String(DEFAULT_CLUSTERING_SETTINGS.distanceThreshold),
-            persistenceMinLifetime: String(DEFAULT_CLUSTERING_SETTINGS.persistenceMinLifetime),
-        };
         state.selectedPartner = "__all__";
         state.selectedRowKey = null;
         state.selectedRowSnapshot = null;
@@ -2070,7 +2060,6 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         state.representativeAnchorRowKey = null;
         state.representativeScope = "overall";
         state.representativeClusterLabel = null;
-        state.representativeMethod = "balanced";
         state.representativeClusterSummaries = null;
         state.representativeVisiblePartners = new Set();
         state.representativeVisibleClusters = new Set();
@@ -2114,8 +2103,8 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         updateSelectedRowUi();
         resetRepresentativePanel();
         resetStructurePanel();
-        setEmbeddingInfo(`3D ${defaultPointMethodLabel()} points on ${embeddingDistanceLabel(DEFAULT_EMBEDDING_SETTINGS.distance)} input. Drag to rotate.`);
-        setColumnsInfo("Stacked per-column cluster interaction profile.");
+        setEmbeddingInfo(`3D ${defaultPointMethodLabel()} points on ${embeddingDistanceLabel(state.embeddingSettings.distance)} input. Drag to rotate.`);
+        setColumnsInfo("Cluster-column interaction barcode.");
         syncEmbeddingLoadingUi();
         syncEmbeddingSettingsUi();
         syncSelectionSettingsUi();
@@ -2266,7 +2255,7 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         syncRepresentativeScopeControls();
         syncMsaPanelView();
         syncSelectionSettingsUi();
-        setEmbeddingInfo(`3D ${defaultPointMethodLabel()} points on ${embeddingDistanceLabel(DEFAULT_EMBEDDING_SETTINGS.distance)} input. Drag to rotate.`);
+        setEmbeddingInfo(`3D ${defaultPointMethodLabel()} points on ${embeddingDistanceLabel(state.embeddingSettings.distance)} input. Drag to rotate.`);
         syncEmbeddingSettingsUi();
         clearViewer();
         if (hasMissingPfamDisplayNames()) {
