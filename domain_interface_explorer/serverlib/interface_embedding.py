@@ -3285,6 +3285,7 @@ def compute_columns_chart_payload(
             "clusters": [],
             "clusterSizes": {},
             "relativeByCluster": {},
+            "gapByCluster": {},
             "maxStackValue": 0.0,
         }
     normalized_alignment_length = int(alignment_length or 0)
@@ -3312,7 +3313,11 @@ def compute_columns_chart_payload(
 
         cluster_keys = sorted(cluster_sizes, key=numeric_cluster_sort_key)
         counts_by_cluster = {
-            cluster_label: [0] * normalized_alignment_length
+            cluster_label: np.zeros(normalized_alignment_length, dtype=np.int32)
+            for cluster_label in cluster_keys
+        }
+        gap_counts_by_cluster = {
+            cluster_label: np.zeros(normalized_alignment_length, dtype=np.int32)
             for cluster_label in cluster_keys
         }
 
@@ -3324,6 +3329,24 @@ def compute_columns_chart_payload(
             counts = counts_by_cluster.get(cluster_label)
             if counts is None:
                 continue
+            gap_counts = gap_counts_by_cluster.get(cluster_label)
+            raw_sequence = row_payload.get("aligned_seq")
+            if not isinstance(raw_sequence, str):
+                raw_sequence = row_payload.get("aligned_sequence")
+            aligned_sequence = raw_sequence if isinstance(raw_sequence, str) else ""
+            if gap_counts is not None:
+                encoded = np.frombuffer(
+                    aligned_sequence.encode("ascii", "ignore")[:normalized_alignment_length],
+                    dtype=np.uint8,
+                )
+                encoded_length = min(encoded.shape[0], normalized_alignment_length)
+                if encoded_length > 0:
+                    gap_counts[:encoded_length] += (
+                        (encoded[:encoded_length] == ord("-"))
+                        | (encoded[:encoded_length] == ord("."))
+                    )
+                if encoded_length < normalized_alignment_length:
+                    gap_counts[encoded_length:] += 1
             for raw_column in row_payload.get("interface_msa_columns_a", []) or []:
                 try:
                     column_index = int(raw_column)
@@ -3333,12 +3356,20 @@ def compute_columns_chart_payload(
                     counts[column_index] += 1
 
         relative_by_cluster: dict[str, list[float]] = {}
+        gap_by_cluster: dict[str, list[float]] = {}
         stack_totals = [0.0] * normalized_alignment_length
         for cluster_label in cluster_keys:
             cluster_size = max(1, int(cluster_sizes.get(cluster_label, 0)))
-            counts = counts_by_cluster.get(cluster_label) or [0] * normalized_alignment_length
-            relative = [float(count) / cluster_size for count in counts]
+            counts = counts_by_cluster.get(cluster_label)
+            if counts is None:
+                counts = np.zeros(normalized_alignment_length, dtype=np.int32)
+            gap_counts = gap_counts_by_cluster.get(cluster_label)
+            if gap_counts is None:
+                gap_counts = np.zeros(normalized_alignment_length, dtype=np.int32)
+            relative = (counts.astype(np.float64) / cluster_size).tolist()
+            gap_relative = (gap_counts.astype(np.float64) / cluster_size).tolist()
             relative_by_cluster[cluster_label] = relative
+            gap_by_cluster[cluster_label] = gap_relative
             for column_index, value in enumerate(relative):
                 stack_totals[column_index] += value
         max_stack_value = max(stack_totals) if stack_totals else 0.0
@@ -3349,6 +3380,7 @@ def compute_columns_chart_payload(
         "clusters": cluster_keys,
         "clusterSizes": cluster_sizes,
         "relativeByCluster": relative_by_cluster,
+        "gapByCluster": gap_by_cluster,
         "maxStackValue": max_stack_value,
     }
 

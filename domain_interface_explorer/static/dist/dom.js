@@ -35,6 +35,8 @@ export const elements = {
     columnsClusterLegend: document.getElementById("columns-cluster-legend"),
     columnsInfo: document.getElementById("columns-info"),
     columnsInterfaceOnlyToggle: document.getElementById("columns-interface-only-toggle"),
+    columnsEmptyBinsWhiteToggle: document.getElementById("columns-empty-bins-white-toggle"),
+    columnsGapShadingToggle: document.getElementById("columns-gap-shading-toggle"),
     dendrogramRoot: document.getElementById("dendrogram-root"),
     dendrogramCanvas: document.getElementById("dendrogram-canvas"),
     dendrogramLoading: document.getElementById("dendrogram-loading"),

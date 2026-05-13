@@ -690,7 +690,7 @@ class InterfaceStore:
             with self.connect() as connection:
                 for row in connection.execute(
                     f"""
-                    SELECT partner_domain, interface_row_key, interface_msa_columns_a
+                    SELECT partner_domain, interface_row_key, interface_msa_columns_a, aligned_seq
                     FROM interface_rows
                     WHERE source_id = ? AND {where_sql}
                     ORDER BY row_order
@@ -701,6 +701,7 @@ class InterfaceStore:
                     row_key = str(row[1])
                     payload.setdefault(partner_domain, {})[row_key] = {
                         "interface_msa_columns_a": unpack_uints(row[2]),
+                        "aligned_seq": str(row[3] or ""),
                     }
                     row_count += 1
             timer.set(rows=row_count, partner_domains=len(payload))

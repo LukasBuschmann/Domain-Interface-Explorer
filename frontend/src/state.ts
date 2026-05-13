@@ -27,7 +27,13 @@ export const state = {
     start: 0,
     end: null,
   },
+  columnsInterfaceView: {
+    start: 0,
+    end: null,
+  },
   columnsInterfaceOnly: false,
+  columnsEmptyBinsWhite: false,
+  columnsGapShading: false,
   columnsClusterOrder: [],
   columnsDrag: null,
   columnsInteractionLayout: null,

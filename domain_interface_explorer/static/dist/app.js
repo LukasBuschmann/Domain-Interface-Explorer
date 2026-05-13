@@ -1018,8 +1018,22 @@ function representativeClusterSummaries() {
     const summaries = new Map();
     const totalPartnerCounts = new Map();
     for (const point of state.embeddingClustering.points) {
-        const partnerDomain = String(point.partner_domain);
-        totalPartnerCounts.set(partnerDomain, (totalPartnerCounts.get(partnerDomain) || 0) + 1);
+        const members = [];
+        const seenMemberKeys = new Set();
+        for (const member of normalizedClusterPointMembers(point)) {
+            const rowKey = String(member?.row_key || "");
+            const partnerDomain = String(member?.partner_domain || "");
+            const memberKey = embeddingMemberKey(member);
+            if (!rowKey || !partnerDomain || !memberKey || seenMemberKeys.has(memberKey)) {
+                continue;
+            }
+            seenMemberKeys.add(memberKey);
+            members.push({ row_key: rowKey, partner_domain: partnerDomain });
+            totalPartnerCounts.set(partnerDomain, (totalPartnerCounts.get(partnerDomain) || 0) + 1);
+        }
+        if (members.length === 0) {
+            continue;
+        }
         const clusterLabel = Number(point.cluster_label);
         if (!Number.isFinite(clusterLabel) || clusterLabel < 0) {
             continue;
@@ -1036,17 +1050,20 @@ function representativeClusterSummaries() {
             };
             summaries.set(clusterLabel, summary);
         }
-        summary.memberCount += 1;
-        summary.partnerCounts.set(partnerDomain, (summary.partnerCounts.get(partnerDomain) || 0) + 1);
-        const interfaceColumns = state.interface.overlayByRow
-            .get(point.row_key)
-            ?.byPartner.get(partnerDomain)
-            ?.interface;
-        if (!interfaceColumns) {
-            continue;
-        }
-        for (const columnIndex of interfaceColumns) {
-            summary.columnCounts.set(columnIndex, (summary.columnCounts.get(columnIndex) || 0) + 1);
+        for (const member of members) {
+            const partnerDomain = member.partner_domain;
+            summary.memberCount += 1;
+            summary.partnerCounts.set(partnerDomain, (summary.partnerCounts.get(partnerDomain) || 0) + 1);
+            const interfaceColumns = state.interface.overlayByRow
+                .get(member.row_key)
+                ?.byPartner.get(partnerDomain)
+                ?.interface;
+            if (!interfaceColumns) {
+                continue;
+            }
+            for (const columnIndex of interfaceColumns) {
+                summary.columnCounts.set(columnIndex, (summary.columnCounts.get(columnIndex) || 0) + 1);
+            }
         }
     }
     return [...summaries.values()]
@@ -1074,6 +1091,18 @@ function representativeClusterSummaries() {
     })
         .sort((left, right) => left.clusterLabel - right.clusterLabel);
 }
+function representativeVisibleClusterLabelSet(clusterSummaries) {
+    const labels = Array.from(new Set((clusterSummaries || []).map((summary) => String(summary.clusterLabel))));
+    if (labels.length === 0) {
+        return new Set();
+    }
+    const visibleLabels = labels.filter((clusterLabel) => state.representativeVisibleClusters.has(clusterLabel));
+    if (visibleLabels.length > 0) {
+        return new Set(visibleLabels);
+    }
+    state.representativeVisibleClusters = new Set(labels);
+    return new Set(labels);
+}
 function representativeClusterLensData(row) {
     if (!row) {
         return {
@@ -1082,8 +1111,9 @@ function representativeClusterLensData(row) {
         };
     }
     const residueLookup = buildStructureResidueLookup(row);
-    const visibleClusterLabels = new Set(visibleRepresentativeClusters());
-    const clusterSummaries = representativeClusterSummaries().filter((summary) => visibleClusterLabels.has(String(summary.clusterLabel)));
+    const summaries = representativeClusterSummaries();
+    const visibleClusterLabels = representativeVisibleClusterLabelSet(summaries);
+    const clusterSummaries = summaries.filter((summary) => visibleClusterLabels.has(String(summary.clusterLabel)));
     const dominantClusterByColumn = new Map();
     const minSupportFraction = 0.04;
     for (const summary of clusterSummaries) {
@@ -1199,6 +1229,7 @@ function renderRepresentativeClusterLegend(clusterLensData = null) {
         syncRepresentativeClusterCompareButton([]);
         return;
     }
+    representativeVisibleClusterLabelSet(clusters);
     syncRepresentativeClusterCompareButton(representativeClusterCompareSummaries());
     representativeClusterLegend.innerHTML = `
     <span class="representative-cluster-legend-title">Clusters</span>
@@ -1728,6 +1759,7 @@ msaPickerButton.addEventListener("click", (event) => {
     if (state.selectionSettingsOpen) {
         state.selectionSettingsOpen = false;
         syncSelectionSettingsUi();
+        scheduleUiPreferencesSave();
     }
     toggleMsaPicker();
 });
@@ -1739,6 +1771,7 @@ selectionSettingsToggle?.addEventListener("click", (event) => {
         ...state.selectionSettings,
     };
     syncSelectionSettingsUi();
+    scheduleUiPreferencesSave();
 });
 msaPickerSearch.addEventListener("input", () => {
     renderMsaPickerOptions(msaPickerSearch.value);
@@ -1805,6 +1838,7 @@ msaPanelTabs.addEventListener("click", (event) => {
         return;
     }
     state.msaPanelView = nextView;
+    scheduleUiPreferencesSave();
     render();
     scheduleLayoutSync();
     if (nextView === "info") {
@@ -1977,6 +2011,7 @@ function openEmbeddingSettingsSection(section) {
     state.embeddingClusteringSettingsDraft = normalizeHierarchicalDraft(state.embeddingClusteringSettingsDraft);
     placeEmbeddingSettingsPanel();
     syncEmbeddingSettingsUi();
+    scheduleUiPreferencesSave();
     if (state.embeddingSettingsOpen && section === "clustering") {
         void ensureHierarchyStatusLoaded();
     }
@@ -2065,6 +2100,7 @@ embeddingSettingsPanel.addEventListener("click", (event) => {
         return;
     }
     state.embeddingSettingsSection = nextSection;
+    scheduleUiPreferencesSave();
     syncEmbeddingSettingsUi();
 });
 embeddingClusterNClustersInput.addEventListener("input", () => {
@@ -2128,6 +2164,7 @@ elements.dendrogramSettingsToggle?.addEventListener("click", () => {
     }
     state.dendrogramSettingsOpen = !state.dendrogramSettingsOpen;
     syncDendrogramControls();
+    scheduleUiPreferencesSave();
 });
 elements.dendrogramStyleMode?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-dendrogram-style]");
@@ -2179,6 +2216,17 @@ elements.columnsCanvas?.addEventListener("wheel", handleColumnsWheel, { passive:
 elements.columnsScroll?.addEventListener("scroll", handleColumnsScroll);
 elements.columnsInterfaceOnlyToggle?.addEventListener("change", () => {
     state.columnsInterfaceOnly = Boolean(elements.columnsInterfaceOnlyToggle.checked);
+    state.columnsInterfaceView = { start: 0, end: null };
+    persistUiPreferences();
+    renderColumnsChart();
+});
+elements.columnsEmptyBinsWhiteToggle?.addEventListener("change", () => {
+    state.columnsEmptyBinsWhite = Boolean(elements.columnsEmptyBinsWhiteToggle.checked);
+    persistUiPreferences();
+    renderColumnsChart();
+});
+elements.columnsGapShadingToggle?.addEventListener("change", () => {
+    state.columnsGapShading = Boolean(elements.columnsGapShadingToggle.checked);
     persistUiPreferences();
     renderColumnsChart();
 });
@@ -2508,6 +2556,7 @@ structureDisplaySettingsPanel?.addEventListener("change", (event) => {
 });
 structureDisplaySettingsClose?.addEventListener("click", () => {
     setStructureDisplaySettingsOpen(false);
+    persistUiPreferences();
 });
 representativePartnerFilterList.addEventListener("click", (event) => {
     const button = event.target.closest("[data-partner-domain]");
@@ -2727,6 +2776,7 @@ document.addEventListener("click", (event) => {
         !event.target.closest("#selection-settings-toggle")) {
         state.selectionSettingsOpen = false;
         syncSelectionSettingsUi();
+        scheduleUiPreferencesSave();
     }
     if (state.embeddingSettingsOpen &&
         !event.target.closest("#embedding-settings-panel") &&
@@ -2734,12 +2784,14 @@ document.addEventListener("click", (event) => {
         !event.target.closest("#clustering-settings-toggle")) {
         state.embeddingSettingsOpen = false;
         syncEmbeddingSettingsUi();
+        scheduleUiPreferencesSave();
     }
     if (state.dendrogramSettingsOpen &&
         !event.target.closest("#dendrogram-settings-panel") &&
         !event.target.closest("#dendrogram-settings-toggle")) {
         state.dendrogramSettingsOpen = false;
         syncDendrogramControls();
+        scheduleUiPreferencesSave();
     }
     if (!event.target.closest("#representative-method-control")) {
         setRepresentativeMethodMenuOpen(false);
@@ -2750,6 +2802,7 @@ document.addEventListener("click", (event) => {
     if (state.structureDisplaySettingsOpen &&
         !event.target.closest("#structure-display-settings-panel")) {
         setStructureDisplaySettingsOpen(false);
+        scheduleUiPreferencesSave();
     }
 });
 window.addEventListener("keydown", (event) => {
@@ -2763,10 +2816,12 @@ window.addEventListener("keydown", (event) => {
         event.preventDefault();
         setStructureDisplaySettingsOpen(!state.structureDisplaySettingsOpen);
         syncStructureDisplaySettingsUi();
+        persistUiPreferences();
         return;
     }
     if (event.key === "Escape" && state.structureDisplaySettingsOpen) {
         setStructureDisplaySettingsOpen(false);
+        persistUiPreferences();
         return;
     }
     if (event.key === "Escape" && !structureModal.classList.contains("hidden")) {
@@ -2784,11 +2839,13 @@ window.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && state.selectionSettingsOpen) {
         state.selectionSettingsOpen = false;
         syncSelectionSettingsUi();
+        persistUiPreferences();
         return;
     }
     if (event.key === "Escape" && state.dendrogramSettingsOpen) {
         state.dendrogramSettingsOpen = false;
         syncDendrogramControls();
+        persistUiPreferences();
     }
 });
 window.addEventListener("resize", render);

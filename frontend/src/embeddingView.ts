@@ -32,6 +32,11 @@ export function createEmbeddingViewController({
     annotatedPoints: [],
   };
   const embeddingPointSpriteCache = new Map();
+  const columnsInterfaceColumnCache = {
+    chart: null,
+    key: "",
+    columns: [],
+  };
 
   function embeddingSettingsKey(settings = state.embeddingSettings) {
     return JSON.stringify(settings);
@@ -454,6 +459,21 @@ export function createEmbeddingViewController({
   }
 
   function syncEmbeddingSettingsUi() {
+    if (elements.embeddingSettingsPanel && elements.msaPanelTabs && elements.embeddingRoot) {
+      if (state.embeddingSettingsSection === "clustering") {
+        if (elements.embeddingSettingsPanel.parentElement !== elements.msaPanelTabs.parentElement) {
+          elements.msaPanelTabs.insertAdjacentElement("afterend", elements.embeddingSettingsPanel);
+        }
+        elements.embeddingSettingsPanel.classList.remove("points-settings-panel");
+        elements.embeddingSettingsPanel.classList.add("clustering-settings-panel");
+      } else {
+        if (elements.embeddingSettingsPanel.parentElement !== elements.embeddingRoot) {
+          elements.embeddingRoot.appendChild(elements.embeddingSettingsPanel);
+        }
+        elements.embeddingSettingsPanel.classList.remove("clustering-settings-panel");
+        elements.embeddingSettingsPanel.classList.add("points-settings-panel");
+      }
+    }
     const pointsOpen = state.embeddingSettingsOpen && state.embeddingSettingsSection === "points";
     const clusteringOpen = state.embeddingSettingsOpen && state.embeddingSettingsSection === "clustering";
     elements.embeddingSettingsToggle.setAttribute(
@@ -818,6 +838,7 @@ export function createEmbeddingViewController({
     const clusterKeys = allColumnsClusterLabels();
     state.columnsClusterOrder = [...clusterKeys];
     state.columnsVisibleClusters = new Set(clusterKeys);
+    state.columnsInterfaceView = { start: 0, end: null };
   }
 
   function allRepresentativeClusterLabels() {
@@ -863,7 +884,12 @@ export function createEmbeddingViewController({
     if (clusterKeys.length === 0) {
       return [];
     }
-    return clusterKeys.filter((clusterKey) => state.representativeVisibleClusters.has(clusterKey));
+    const visible = clusterKeys.filter((clusterKey) => state.representativeVisibleClusters.has(clusterKey));
+    if (visible.length > 0) {
+      return visible;
+    }
+    state.representativeVisibleClusters = new Set(clusterKeys);
+    return clusterKeys;
   }
 
   function visibleColumnsClusters() {
@@ -913,16 +939,29 @@ export function createEmbeddingViewController({
     ];
   }
 
-  function columnsBarcodeColor(clusterLabel, fraction) {
+  function rgbToCss(channels) {
+    return `rgb(${channels[0]}, ${channels[1]}, ${channels[2]})`;
+  }
+
+  function columnsEmptyBinRgb() {
+    return state.columnsEmptyBinsWhite ? [255, 255, 255] : [234, 223, 207];
+  }
+
+  function columnsBarcodeRgb(clusterLabel, fraction) {
     const clamped = Math.max(0, Math.min(1, Number(fraction) || 0));
     const base = colorToRgb(embeddingClusterColor(clusterLabel));
-    const strength = Math.sqrt(clamped);
-    const low = base.map((channel) => Math.round(channel * 0.42));
-    const high = base.map((channel) => Math.round(channel + (255 - channel) * 0.34));
-    const channels = low.map((channel, index) =>
+    const background = [234, 223, 207];
+    const strength = clamped * clamped * (3 - (2 * clamped));
+    const high = base.map((channel) => Math.round(channel + (255 - channel) * 0.38));
+    return background.map((channel, index) =>
       Math.round(channel + (high[index] - channel) * strength)
     );
-    return `rgb(${channels[0]}, ${channels[1]}, ${channels[2]})`;
+  }
+
+  function columnsGapMergedColor(baseRgb, fraction) {
+    const clamped = Math.max(0, Math.min(1, Number(fraction) || 0));
+    const blackness = Math.min(0.78, clamped * 0.78);
+    return rgbToCss(baseRgb.map((channel) => Math.round(channel * (1 - blackness))));
   }
 
   function niceColumnTickStep(span, targetTicks = 8) {
@@ -1044,9 +1083,13 @@ export function createEmbeddingViewController({
     }
     const relativeByCluster = {};
     const rawRelativeByCluster = chart.relativeByCluster || {};
+    const gapByCluster = {};
+    const rawGapByCluster = chart.gapByCluster || {};
     for (const clusterLabel of clusters) {
       const values = rawRelativeByCluster[clusterLabel];
       relativeByCluster[clusterLabel] = Array.isArray(values) ? values : [];
+      const gapValues = rawGapByCluster[clusterLabel];
+      gapByCluster[clusterLabel] = Array.isArray(gapValues) ? gapValues : [];
     }
     return {
       file: interfaceSelect.value,
@@ -1054,6 +1097,7 @@ export function createEmbeddingViewController({
       clusters,
       clusterSizes,
       relativeByCluster,
+      gapByCluster,
       maxStackValue: Number(chart.maxStackValue || 0),
       source: "server",
     };
@@ -1070,6 +1114,7 @@ export function createEmbeddingViewController({
       state.columnsChart = null;
       state.columnsChartKey = nextKey;
       state.columnsView = { start: 0, end: null };
+      state.columnsInterfaceView = { start: 0, end: null };
       state.columnsVisibleClusters = new Set();
       state.columnsClusterOrder = [];
       state.columnsDrag = null;
@@ -1083,6 +1128,7 @@ export function createEmbeddingViewController({
       start: 0,
       end: Math.max(1, Number(serverChart.alignmentLength || 1)),
     };
+    state.columnsInterfaceView = { start: 0, end: null };
     const clusterKeys = serverChart.clusters.map((clusterLabel) => String(clusterLabel));
     const clusterSet = new Set(clusterKeys);
     const ordered = Array.isArray(state.columnsClusterOrder)
@@ -1196,43 +1242,101 @@ export function createEmbeddingViewController({
     return columns;
   }
 
-  function columnsRangeHasInterface(range, visibleClusters, alignmentLength) {
-    return visibleInterfaceColumns(visibleClusters, range, alignmentLength).length > 0;
-  }
-
-  function nearestInterfaceColumn(targetColumn, visibleClusters, alignmentLength) {
-    let bestColumn = null;
-    let bestDistance = Number.POSITIVE_INFINITY;
-    const target = Number(targetColumn) || 0;
-    for (let columnIndex = 0; columnIndex < alignmentLength; columnIndex += 1) {
-      if (!columnHasVisibleInteraction(columnIndex, visibleClusters)) {
-        continue;
-      }
-      const distance = Math.abs(columnIndex - target);
-      if (distance < bestDistance) {
-        bestColumn = columnIndex;
-        bestDistance = distance;
-      }
-    }
-    return bestColumn;
-  }
-
-  function rangeCenteredOnColumn(columnIndex, span, alignmentLength) {
-    const nextSpan = Math.max(1, Math.min(alignmentLength, Number(span) || 1));
-    let start = Number(columnIndex) - nextSpan / 2;
-    start = Math.max(0, Math.min(alignmentLength - nextSpan, start));
-    return normalizedColumnsRange(start, start + nextSpan, alignmentLength);
-  }
-
-  function setColumnsViewRange(start, end, alignmentLength, visibleClusters = null) {
-    const range = normalizedColumnsRange(start, end, alignmentLength);
+  function allVisibleInterfaceColumns(visibleClusters, alignmentLength) {
+    const key = `${alignmentLength}|${visibleClusters.join(",")}`;
     if (
-      state.columnsInterfaceOnly &&
-      visibleClusters?.length &&
-      !columnsRangeHasInterface(range, visibleClusters, alignmentLength)
+      columnsInterfaceColumnCache.chart === state.columnsChart &&
+      columnsInterfaceColumnCache.key === key
     ) {
+      return columnsInterfaceColumnCache.columns;
+    }
+    const columns = visibleInterfaceColumns(
+      visibleClusters,
+      {
+        start: 0,
+        end: alignmentLength,
+      },
+      alignmentLength
+    );
+    columnsInterfaceColumnCache.chart = state.columnsChart;
+    columnsInterfaceColumnCache.key = key;
+    columnsInterfaceColumnCache.columns = columns;
+    return columns;
+  }
+
+  function normalizedInterfaceOrdinalRange(startValue, endValue, totalCount) {
+    const total = Math.max(0, Math.floor(Number(totalCount) || 0));
+    if (total <= 0) {
+      return { start: 0, end: 0, span: 0 };
+    }
+    let start = Number(startValue ?? 0);
+    let end = Number(endValue ?? total);
+    if (!Number.isFinite(start)) {
+      start = 0;
+    }
+    if (!Number.isFinite(end)) {
+      end = total;
+    }
+    start = Math.max(0, Math.min(total - 1, start));
+    end = Math.max(start + 1, Math.min(total, end));
+    if (end - start > total) {
+      start = 0;
+      end = total;
+    }
+    return { start, end, span: end - start };
+  }
+
+  function columnsInterfaceOrdinalRange(interfaceColumns) {
+    if (!interfaceColumns.length) {
+      state.columnsInterfaceView = { start: 0, end: null };
+      return { start: 0, end: 0, span: 0 };
+    }
+    const range = normalizedInterfaceOrdinalRange(
+      state.columnsInterfaceView?.start ?? 0,
+      state.columnsInterfaceView?.end ?? interfaceColumns.length,
+      interfaceColumns.length
+    );
+    state.columnsInterfaceView = { start: range.start, end: range.end };
+    return range;
+  }
+
+  function setColumnsInterfaceOrdinalRange(start, end, interfaceColumns) {
+    if (!interfaceColumns.length) {
       return false;
     }
+    const range = normalizedInterfaceOrdinalRange(start, end, interfaceColumns.length);
+    state.columnsInterfaceView = {
+      start: range.start,
+      end: range.end,
+    };
+    return true;
+  }
+
+  function interfaceColumnRangeFromOrdinalRange(interfaceColumns, ordinalRange, alignmentLength) {
+    if (!interfaceColumns.length || ordinalRange.span <= 0) {
+      return normalizedColumnsRange(0, alignmentLength, alignmentLength);
+    }
+    const startIndex = Math.max(
+      0,
+      Math.min(interfaceColumns.length - 1, Math.floor(ordinalRange.start))
+    );
+    const endIndex = Math.max(
+      startIndex + 1,
+      Math.min(interfaceColumns.length, Math.ceil(ordinalRange.end))
+    );
+    const firstColumn = interfaceColumns[startIndex];
+    const lastColumn = interfaceColumns[endIndex - 1];
+    const leftBoundary = startIndex > 0
+      ? (interfaceColumns[startIndex - 1] + firstColumn) / 2
+      : 0;
+    const rightBoundary = endIndex < interfaceColumns.length
+      ? (lastColumn + interfaceColumns[endIndex]) / 2
+      : alignmentLength;
+    return normalizedColumnsRange(leftBoundary, rightBoundary, alignmentLength);
+  }
+
+  function setColumnsViewRange(start, end, alignmentLength) {
+    const range = normalizedColumnsRange(start, end, alignmentLength);
     state.columnsView = {
       start: range.start,
       end: range.end,
@@ -1286,7 +1390,13 @@ export function createEmbeddingViewController({
     return (Math.max(0, Math.min(maxScrollLeft, scrollLeft)) / maxScrollLeft) * maxStart;
   }
 
-  function syncColumnsScrollSpace(alignmentLength, range, contentHeight) {
+  function syncColumnsScrollSpace(
+    alignmentLength,
+    range,
+    contentHeight,
+    scrollAxisLength = alignmentLength,
+    scrollRange = range
+  ) {
     const scrollElement = elements.columnsScroll;
     const spacer = elements.columnsSpacer;
     if (!scrollElement || !spacer) {
@@ -1294,15 +1404,15 @@ export function createEmbeddingViewController({
     }
     const viewportWidth = Math.max(1, scrollElement.clientWidth);
     const viewportHeight = Math.max(1, scrollElement.clientHeight);
-    const virtualWidth = columnsVirtualWidth(viewportWidth, alignmentLength, range.span);
+    const virtualWidth = columnsVirtualWidth(viewportWidth, scrollAxisLength, scrollRange.span);
     const virtualHeight = Math.max(viewportHeight, Math.ceil(contentHeight));
     spacer.style.width = `${Math.ceil(virtualWidth)}px`;
     spacer.style.height = `${virtualHeight}px`;
     const targetScrollLeft = columnsScrollLeftForRange(
-      range,
+      scrollRange,
       viewportWidth,
       virtualWidth,
-      alignmentLength
+      scrollAxisLength
     );
     if (Math.abs(scrollElement.scrollLeft - targetScrollLeft) > 1) {
       scrollElement.scrollLeft = targetScrollLeft;
@@ -1331,11 +1441,29 @@ export function createEmbeddingViewController({
   }
 
   function panColumnsByPixels(pixelDelta, chartWidth, alignmentLength, visibleClusters = null) {
+    if (state.columnsInterfaceOnly) {
+      const interfaceColumns = allVisibleInterfaceColumns(
+        visibleClusters || visibleColumnsClusters(),
+        alignmentLength
+      );
+      const range = columnsInterfaceOrdinalRange(interfaceColumns);
+      if (!interfaceColumns.length || range.span <= 0) {
+        return false;
+      }
+      const deltaColumns = (Number(pixelDelta) / Math.max(1, chartWidth)) * range.span;
+      let nextStart = range.start + deltaColumns;
+      nextStart = Math.max(0, Math.min(interfaceColumns.length - range.span, nextStart));
+      return setColumnsInterfaceOrdinalRange(
+        nextStart,
+        nextStart + range.span,
+        interfaceColumns
+      );
+    }
     const range = columnsVisibleRange(alignmentLength);
     const deltaColumns = (Number(pixelDelta) / Math.max(1, chartWidth)) * range.span;
     let nextStart = range.start + deltaColumns;
     nextStart = Math.max(0, Math.min(alignmentLength - range.span, nextStart));
-    return setColumnsViewRange(nextStart, nextStart + range.span, alignmentLength, visibleClusters);
+    return setColumnsViewRange(nextStart, nextStart + range.span, alignmentLength);
   }
 
   function columnsCanvasPoint(event) {
@@ -1471,7 +1599,6 @@ export function createEmbeddingViewController({
     const { chartLeft, chartRight } = columnsChartArea(width);
     const chartWidth = Math.max(1, chartRight - chartLeft);
     const alignmentLength = Math.max(1, Number(state.columnsChart.alignmentLength || 1));
-    const range = columnsVisibleRange(alignmentLength);
     const visibleClusters = visibleColumnsClusters();
     const point = columnsCanvasPoint(event);
     const pointerX = Math.max(chartLeft, Math.min(chartRight, point.x));
@@ -1490,12 +1617,29 @@ export function createEmbeddingViewController({
       return;
     }
     const zoomFactor = Math.exp(Number(event.deltaY || 0) * 0.0015);
+    if (state.columnsInterfaceOnly) {
+      const interfaceColumns = allVisibleInterfaceColumns(visibleClusters, alignmentLength);
+      const range = columnsInterfaceOrdinalRange(interfaceColumns);
+      if (!interfaceColumns.length || range.span <= 0) {
+        return;
+      }
+      const minSpan = Math.min(interfaceColumns.length, 8);
+      const nextSpan = Math.max(minSpan, Math.min(interfaceColumns.length, range.span * zoomFactor));
+      const anchorColumn = range.start + pointerRatio * range.span;
+      let nextStart = anchorColumn - pointerRatio * nextSpan;
+      nextStart = Math.max(0, Math.min(interfaceColumns.length - nextSpan, nextStart));
+      if (setColumnsInterfaceOrdinalRange(nextStart, nextStart + nextSpan, interfaceColumns)) {
+        requestColumnsRenderNextFrame();
+      }
+      return;
+    }
+    const range = columnsVisibleRange(alignmentLength);
     const minSpan = Math.min(alignmentLength, 8);
     const nextSpan = Math.max(minSpan, Math.min(alignmentLength, range.span * zoomFactor));
     const anchorColumn = range.start + pointerRatio * range.span;
     let nextStart = anchorColumn - pointerRatio * nextSpan;
     nextStart = Math.max(0, Math.min(alignmentLength - nextSpan, nextStart));
-    if (setColumnsViewRange(nextStart, nextStart + nextSpan, alignmentLength, visibleClusters)) {
+    if (setColumnsViewRange(nextStart, nextStart + nextSpan, alignmentLength)) {
       requestColumnsRenderNextFrame();
     }
   }
@@ -1507,8 +1651,28 @@ export function createEmbeddingViewController({
       return;
     }
     const alignmentLength = Math.max(1, Number(state.columnsChart.alignmentLength || 1));
-    const range = columnsVisibleRange(alignmentLength);
     const viewportWidth = Math.max(1, scrollElement.clientWidth);
+    const visibleClusters = visibleColumnsClusters();
+    if (state.columnsInterfaceOnly) {
+      const interfaceColumns = allVisibleInterfaceColumns(visibleClusters, alignmentLength);
+      const range = columnsInterfaceOrdinalRange(interfaceColumns);
+      if (!interfaceColumns.length || range.span <= 0) {
+        requestColumnsRenderNextFrame();
+        return;
+      }
+      const virtualWidth = columnsVirtualWidth(viewportWidth, interfaceColumns.length, range.span);
+      const nextStart = columnsRangeStartForScroll(
+        scrollElement.scrollLeft,
+        viewportWidth,
+        virtualWidth,
+        interfaceColumns.length,
+        range.span
+      );
+      setColumnsInterfaceOrdinalRange(nextStart, nextStart + range.span, interfaceColumns);
+      requestColumnsRenderNextFrame();
+      return;
+    }
+    const range = columnsVisibleRange(alignmentLength);
     const virtualWidth = columnsVirtualWidth(viewportWidth, alignmentLength, range.span);
     const nextStart = columnsRangeStartForScroll(
       scrollElement.scrollLeft,
@@ -1517,30 +1681,7 @@ export function createEmbeddingViewController({
       alignmentLength,
       range.span
     );
-    const visibleClusters = visibleColumnsClusters();
-    if (!setColumnsViewRange(nextStart, nextStart + range.span, alignmentLength, visibleClusters)) {
-      const nearestColumn = nearestInterfaceColumn(
-        nextStart + range.span / 2,
-        visibleClusters,
-        alignmentLength
-      );
-      if (nearestColumn !== null) {
-        const nextRange = rangeCenteredOnColumn(nearestColumn, range.span, alignmentLength);
-        state.columnsView = {
-          start: nextRange.start,
-          end: nextRange.end,
-        };
-        const targetScrollLeft = columnsScrollLeftForRange(
-          nextRange,
-          viewportWidth,
-          virtualWidth,
-          alignmentLength
-        );
-        if (Math.abs(scrollElement.scrollLeft - targetScrollLeft) > 1) {
-          scrollElement.scrollLeft = targetScrollLeft;
-        }
-      }
-    }
+    setColumnsViewRange(nextStart, nextStart + range.span, alignmentLength);
     requestColumnsRenderNextFrame();
   }
 
@@ -1639,6 +1780,12 @@ export function createEmbeddingViewController({
     if (elements.columnsInterfaceOnlyToggle) {
       elements.columnsInterfaceOnlyToggle.checked = Boolean(state.columnsInterfaceOnly);
     }
+    if (elements.columnsEmptyBinsWhiteToggle) {
+      elements.columnsEmptyBinsWhiteToggle.checked = Boolean(state.columnsEmptyBinsWhite);
+    }
+    if (elements.columnsGapShadingToggle) {
+      elements.columnsGapShadingToggle.checked = Boolean(state.columnsGapShading);
+    }
     const { chartLeft, chartRight } = columnsChartArea(width);
     const scrollTop = elements.columnsScroll?.scrollTop || 0;
     const contentHeight = columnsCanvasContentHeight(height);
@@ -1658,8 +1805,35 @@ export function createEmbeddingViewController({
     }
 
     const alignmentLength = Math.max(1, Number(state.columnsChart.alignmentLength || 1));
-    const range = columnsVisibleRange(alignmentLength);
-    syncColumnsScrollSpace(alignmentLength, range, contentHeight);
+    const interfaceOnly = Boolean(state.columnsInterfaceOnly);
+    const allInterfaceColumns = interfaceOnly
+      ? allVisibleInterfaceColumns(visibleClusters, alignmentLength)
+      : [];
+    let range = columnsVisibleRange(alignmentLength);
+    let ordinalRange = null;
+    if (interfaceOnly) {
+      if (allInterfaceColumns.length === 0) {
+        ctx.fillStyle = "#6f6658";
+        ctx.font = '13px "IBM Plex Sans", sans-serif';
+        ctx.textAlign = "center";
+        ctx.fillText("No interface residues found for selected clusters.", centerX, centerY);
+        setColumnsInfo("Interface-only mode hides columns without interactions.");
+        return;
+      }
+      ordinalRange = columnsInterfaceOrdinalRange(allInterfaceColumns);
+      range = interfaceColumnRangeFromOrdinalRange(allInterfaceColumns, ordinalRange, alignmentLength);
+      state.columnsView = {
+        start: range.start,
+        end: range.end,
+      };
+    }
+    syncColumnsScrollSpace(
+      alignmentLength,
+      range,
+      contentHeight,
+      interfaceOnly ? allInterfaceColumns.length : alignmentLength,
+      interfaceOnly ? ordinalRange : range
+    );
     if (
       Math.round(scrollElement.clientWidth || width) !== width ||
       Math.round(scrollElement.clientHeight || height) !== height
@@ -1668,38 +1842,25 @@ export function createEmbeddingViewController({
       requestColumnsRenderNextFrame();
       return;
     }
-    const interfaceOnly = Boolean(state.columnsInterfaceOnly);
     const interfaceColumns = interfaceOnly
-      ? visibleInterfaceColumns(visibleClusters, range, alignmentLength)
+      ? allInterfaceColumns.slice(
+          Math.floor(ordinalRange.start),
+          Math.ceil(ordinalRange.end)
+        )
       : [];
     const visibleColumnCount = interfaceOnly
       ? interfaceColumns.length
       : Math.max(1, Math.ceil(range.end) - Math.floor(range.start));
     if (interfaceOnly && visibleColumnCount === 0) {
-      const nearestColumn = nearestInterfaceColumn(
-        (range.start + range.end) / 2,
-        visibleClusters,
-        alignmentLength
-      );
-      if (nearestColumn !== null) {
-        const nextRange = rangeCenteredOnColumn(nearestColumn, range.span, alignmentLength);
-        state.columnsView = {
-          start: nextRange.start,
-          end: nextRange.end,
-        };
-        requestColumnsRenderNextFrame();
-        return;
-      }
-      ctx.fillStyle = "#6f6658";
-      ctx.font = '13px "IBM Plex Sans", sans-serif';
-      ctx.textAlign = "center";
-      ctx.fillText("No interface columns in the current range.", centerX, centerY);
-      setColumnsInfo("Interface-only mode hides columns without interactions.");
+      state.columnsInterfaceView = { start: 0, end: null };
+      requestColumnsRenderNextFrame();
       return;
     }
     const binCount = Math.max(1, Math.min(visibleColumnCount, Math.floor(chartWidth)));
     const binWidth = chartWidth / binCount;
     const binnedValues = new Map(visibleClusters.map((clusterLabel) => [clusterLabel, new Float64Array(binCount)]));
+    const binnedGapValues = new Map(visibleClusters.map((clusterLabel) => [clusterLabel, new Float64Array(binCount)]));
+    const gapShading = Boolean(state.columnsGapShading);
     let maxValue = 0;
     for (let binIndex = 0; binIndex < binCount; binIndex += 1) {
       if (interfaceOnly) {
@@ -1710,12 +1871,17 @@ export function createEmbeddingViewController({
         );
         for (const clusterLabel of visibleClusters) {
           const values = state.columnsChart.relativeByCluster?.[clusterLabel] || [];
+          const gapValues = state.columnsChart.gapByCluster?.[clusterLabel] || [];
           let sum = 0;
+          let gapSum = 0;
           for (let ordinal = startOrdinal; ordinal < endOrdinal; ordinal += 1) {
             sum += Number(values[interfaceColumns[ordinal]] || 0);
+            gapSum += Number(gapValues[interfaceColumns[ordinal]] || 0);
           }
           const averageValue = sum / Math.max(1, endOrdinal - startOrdinal);
+          const averageGapValue = gapSum / Math.max(1, endOrdinal - startOrdinal);
           binnedValues.get(clusterLabel)[binIndex] = averageValue;
+          binnedGapValues.get(clusterLabel)[binIndex] = averageGapValue;
           if (averageValue > maxValue) {
             maxValue = averageValue;
           }
@@ -1731,12 +1897,17 @@ export function createEmbeddingViewController({
         );
         for (const clusterLabel of visibleClusters) {
           const values = state.columnsChart.relativeByCluster?.[clusterLabel] || [];
+          const gapValues = state.columnsChart.gapByCluster?.[clusterLabel] || [];
           let sum = 0;
+          let gapSum = 0;
           for (let columnIndex = startColumn; columnIndex < endColumn; columnIndex += 1) {
             sum += Number(values[columnIndex] || 0);
+            gapSum += Number(gapValues[columnIndex] || 0);
           }
           const averageValue = sum / Math.max(1, endColumn - startColumn);
+          const averageGapValue = gapSum / Math.max(1, endColumn - startColumn);
           binnedValues.get(clusterLabel)[binIndex] = averageValue;
+          binnedGapValues.get(clusterLabel)[binIndex] = averageGapValue;
           if (averageValue > maxValue) {
             maxValue = averageValue;
           }
@@ -1817,7 +1988,8 @@ export function createEmbeddingViewController({
       const drawHeight = Math.max(1, Math.ceil(rowHeight));
       ctx.fillStyle = rowIndex % 2 === 0 ? "#fffaf1" : "#f8f1e6";
       ctx.fillRect(0, rowY, chartRight, drawHeight);
-      ctx.fillStyle = "#eadfcf";
+      const emptyBinRgb = columnsEmptyBinRgb();
+      ctx.fillStyle = rgbToCss(emptyBinRgb);
       ctx.fillRect(chartLeft, rowY, chartWidth, drawHeight);
       if (rowHeight >= 8) {
         ctx.fillStyle = "#b0a491";
@@ -1838,16 +2010,25 @@ export function createEmbeddingViewController({
         ctx.fillRect(chartLeft - 10, rowY, 5, drawHeight);
       }
       const values = binnedValues.get(clusterLabel);
+      const gapValues = binnedGapValues.get(clusterLabel);
       for (let binIndex = 0; binIndex < binCount; binIndex += 1) {
         const value = values[binIndex];
-        if (value <= 0) {
-          continue;
-        }
+        const gapValue = gapValues?.[binIndex] || 0;
         const x0 = chartLeft + binIndex * binWidth;
         const x1 = chartLeft + (binIndex + 1) * binWidth;
         const drawWidth = Math.max(1, Math.ceil(x1 - x0));
         const x = Math.floor(x0);
-        ctx.fillStyle = columnsBarcodeColor(clusterLabel, value);
+        if (value <= 0) {
+          if (gapShading && gapValue > 0) {
+            ctx.fillStyle = columnsGapMergedColor(emptyBinRgb, gapValue);
+            ctx.fillRect(x, rowY, drawWidth, drawHeight);
+          }
+          continue;
+        }
+        const baseRgb = columnsBarcodeRgb(clusterLabel, value);
+        ctx.fillStyle = gapShading && gapValue > 0
+          ? columnsGapMergedColor(baseRgb, gapValue)
+          : rgbToCss(baseRgb);
         ctx.fillRect(x, rowY, drawWidth, drawHeight);
       }
       if (rowGap > 0) {
@@ -1867,8 +2048,11 @@ export function createEmbeddingViewController({
     const modeLabel = interfaceOnly
       ? `interface-only axis hides ${hiddenColumnCount} empty columns`
       : "full MSA axis";
+    const colorMeaning = gapShading
+      ? "gap fraction darkens each bin"
+      : "color luminance shows interacting fraction";
     setColumnsInfo(
-      `Cluster barcodes: ${modeLabel}; color luminance shows interacting fraction (${visibleClusters.length}/${state.columnsChart.clusters.length} clusters visible, columns ${startLabel}-${endLabel}).`
+      `Cluster barcodes: ${modeLabel}; ${colorMeaning} (${visibleClusters.length}/${state.columnsChart.clusters.length} clusters visible, columns ${startLabel}-${endLabel}).`
     );
   }
 
@@ -2448,6 +2632,7 @@ export function createEmbeddingViewController({
       state.columnsChart = null;
       state.columnsChartKey = null;
       state.columnsView = { start: 0, end: null };
+      state.columnsInterfaceView = { start: 0, end: null };
       state.columnsVisibleClusters = new Set();
       state.columnsClusterOrder = [];
       state.columnsDrag = null;
@@ -2529,6 +2714,7 @@ export function createEmbeddingViewController({
         state.columnsChart = null;
         state.columnsChartKey = null;
         state.columnsView = { start: 0, end: null };
+        state.columnsInterfaceView = { start: 0, end: null };
         state.columnsDrag = null;
         state.columnsInteractionLayout = null;
         resetEmbeddingClusterSelection();
@@ -2549,6 +2735,7 @@ export function createEmbeddingViewController({
         state.columnsChart = null;
         state.columnsChartKey = null;
         state.columnsView = { start: 0, end: null };
+        state.columnsInterfaceView = { start: 0, end: null };
         state.columnsVisibleClusters = new Set();
         state.columnsClusterOrder = [];
         state.columnsDrag = null;

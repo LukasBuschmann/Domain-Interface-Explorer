@@ -9,6 +9,8 @@ import { normalizeSelectionSettings } from "./selectionSettings.js";
 
 const UI_PREFERENCES_KEY = "die.uiPreferences.v1";
 const UI_PREFERENCES_VERSION = 1;
+const PANEL_VIEWS = ["info", "msa", "embeddings", "columns", "dendrogram"];
+const EMBEDDING_SETTINGS_SECTIONS = ["points", "clustering"];
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -245,10 +247,45 @@ export function applyUiPreferences(state) {
     ["cluster", "domain"],
     state.embeddingColorMode,
   );
+  const uiState = isRecord(preferences.uiState) ? preferences.uiState : {};
+  state.msaPanelView = enumValue(
+    uiState.msaPanelView ?? preferences.msaPanelView,
+    PANEL_VIEWS,
+    state.msaPanelView,
+  );
+  state.selectionSettingsOpen =
+    typeof uiState.selectionSettingsOpen === "boolean"
+      ? uiState.selectionSettingsOpen
+      : state.selectionSettingsOpen;
+  state.embeddingSettingsOpen =
+    typeof uiState.embeddingSettingsOpen === "boolean"
+      ? uiState.embeddingSettingsOpen
+      : state.embeddingSettingsOpen;
+  state.embeddingSettingsSection = enumValue(
+    uiState.embeddingSettingsSection,
+    EMBEDDING_SETTINGS_SECTIONS,
+    state.embeddingSettingsSection,
+  );
+  state.dendrogramSettingsOpen =
+    typeof uiState.dendrogramSettingsOpen === "boolean"
+      ? uiState.dendrogramSettingsOpen
+      : state.dendrogramSettingsOpen;
+  state.structureDisplaySettingsOpen =
+    typeof uiState.structureDisplaySettingsOpen === "boolean"
+      ? uiState.structureDisplaySettingsOpen
+      : state.structureDisplaySettingsOpen;
   state.columnsInterfaceOnly =
     typeof preferences.columnsInterfaceOnly === "boolean"
       ? preferences.columnsInterfaceOnly
       : state.columnsInterfaceOnly;
+  state.columnsEmptyBinsWhite =
+    typeof preferences.columnsEmptyBinsWhite === "boolean"
+      ? preferences.columnsEmptyBinsWhite
+      : state.columnsEmptyBinsWhite;
+  state.columnsGapShading =
+    typeof preferences.columnsGapShading === "boolean"
+      ? preferences.columnsGapShading
+      : state.columnsGapShading;
 
   const dendrogram = isRecord(preferences.dendrogram) ? preferences.dendrogram : {};
   state.dendrogramStyle = enumValue(dendrogram.style, ["radial", "linear"], state.dendrogramStyle);
@@ -301,7 +338,17 @@ function preferencesPayload(state) {
     embeddingClusteringSettingsDraft: state.embeddingClusteringSettingsDraft,
     embeddingHierarchicalTargetMemory: state.embeddingHierarchicalTargetMemory,
     embeddingColorMode: state.embeddingColorMode,
+    uiState: {
+      msaPanelView: state.msaPanelView,
+      selectionSettingsOpen: state.selectionSettingsOpen,
+      embeddingSettingsOpen: state.embeddingSettingsOpen,
+      embeddingSettingsSection: state.embeddingSettingsSection,
+      dendrogramSettingsOpen: state.dendrogramSettingsOpen,
+      structureDisplaySettingsOpen: state.structureDisplaySettingsOpen,
+    },
     columnsInterfaceOnly: state.columnsInterfaceOnly,
+    columnsEmptyBinsWhite: state.columnsEmptyBinsWhite,
+    columnsGapShading: state.columnsGapShading,
     dendrogram: {
       style: state.dendrogramStyle,
       depth: state.dendrogramDepth,
