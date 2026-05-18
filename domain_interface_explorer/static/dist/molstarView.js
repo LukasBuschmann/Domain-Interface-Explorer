@@ -146,15 +146,6 @@ function residueStyleIds(residueStyles) {
         ? residueStyles.map((style) => style?.residueId)
         : [];
 }
-function filterResidueStyles(residueStyles, excludedResidues) {
-    const excluded = new Set(numberList(excludedResidues));
-    return Array.isArray(residueStyles)
-        ? residueStyles.filter((style) => {
-            const residueId = Number.parseInt(style?.residueId, 10);
-            return !Number.isFinite(residueId) || !excluded.has(residueId);
-        })
-        : [];
-}
 function mainFragmentResidues(payload) {
     if (Array.isArray(payload?.fragment_residue_ids) && payload.fragment_residue_ids.length > 0) {
         return numberList(payload.fragment_residue_ids);
@@ -579,20 +570,18 @@ class DomainMolstarViewer {
         const { payload, columnView, contactsVisible, residueStyles, markerResidueStyles = [], settings, modelText, mode, } = options;
         const fragmentResidues = mainFragmentResidues(payload);
         const interfaceResidues = payload?.interface_residue_ids || [];
-        const markerResidues = residueStyleIds(markerResidueStyles);
-        const surfaceOnlyResidues = differenceResidues(payload?.surface_residue_ids, interfaceResidues, markerResidues);
-        const domainOnlyResidues = differenceResidues(fragmentResidues, payload?.surface_residue_ids, interfaceResidues, markerResidues);
-        const visibleInterfaceResidues = differenceResidues(interfaceResidues, markerResidues);
+        const surfaceOnlyResidues = differenceResidues(payload?.surface_residue_ids, interfaceResidues);
+        const domainOnlyResidues = differenceResidues(fragmentResidues, payload?.surface_residue_ids, interfaceResidues);
         const partnerInterfaceResidues = payload?.partner_interface_residue_ids || [];
         const partnerSurfaceOnlyResidues = differenceResidues(payload?.partner_surface_residue_ids, partnerInterfaceResidues);
         const partnerDomainOnlyResidues = differenceResidues(payload?.partner_fragment_residue_ids, payload?.partner_surface_residue_ids, partnerInterfaceResidues);
         if (columnView) {
-            await this.addResiduesByColor(stylesToColorMap(filterResidueStyles(residueStyles, markerResidues)), settings, "column");
+            await this.addResiduesByColor(stylesToColorMap(residueStyles), settings, "column");
         }
         else {
             await this.addResidueCartoon(domainOnlyResidues, MAIN_DOMAIN_COLOR, settings, "main-domain", "Main domain");
             await this.addResidueCartoon(surfaceOnlyResidues, MAIN_SURFACE_COLOR, settings, "main-surface", "Main surface");
-            await this.addResidueCartoon(visibleInterfaceResidues, MAIN_INTERFACE_COLOR, settings, "main-interface", "Main interface");
+            await this.addResidueCartoon(interfaceResidues, MAIN_INTERFACE_COLOR, settings, "main-interface", "Main interface");
         }
         await this.addMarkerResidues(stylesToColorMap(markerResidueStyles), settings);
         await this.addResidueCartoon(partnerDomainOnlyResidues, PARTNER_DOMAIN_COLOR, settings, "partner-domain", "Partner domain");
@@ -616,8 +605,7 @@ class DomainMolstarViewer {
     async addMarkerResidues(residueColorMap, settings) {
         for (const [color, residueIds] of residueColorMap.entries()) {
             const keyColor = String(color).replace(/[^a-z0-9]/gi, "");
-            await this.addResidueCartoon(residueIds, color, settings, `structure-marker-cartoon-${keyColor}`, "Selected column residue");
-            await this.addResidueSpacefill(residueIds, color, settings, `structure-marker-spacefill-${keyColor}`, "Selected column residue");
+            await this.addResidueSpacefill(residueIds, color, settings, `structure-marker-spacefill-${keyColor}`, "Selected column residue", { alpha: 0.38, sizeFactor: 0.64 });
         }
     }
     async addResidueCartoon(residueIds, color, settings, key, label, options = {}) {
