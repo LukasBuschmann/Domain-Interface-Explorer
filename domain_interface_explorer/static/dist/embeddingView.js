@@ -949,11 +949,27 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         }
         return Number(clusterLabel) < 0 ? "Noise" : `Cluster ${Number(clusterLabel) + 1}`;
     }
+    function columnsSourceMode() {
+        return state.columnsSource === "domains" ? "domains" : "clusters";
+    }
+    function columnsSourceTitle() {
+        return columnsSourceMode() === "domains" ? "Domain" : "Cluster";
+    }
+    function columnsSourcePlural() {
+        return columnsSourceMode() === "domains" ? "domains" : "clusters";
+    }
     function columnsClusterShortLabel(clusterLabel) {
         if (clusterLabel === null || clusterLabel === undefined || Number.isNaN(Number(clusterLabel))) {
             return "?";
         }
         return Number(clusterLabel) < 0 ? "N" : `C${Number(clusterLabel) + 1}`;
+    }
+    function columnsSeriesShortLabel(seriesLabel) {
+        if (columnsSourceMode() !== "domains") {
+            return columnsClusterShortLabel(seriesLabel);
+        }
+        const label = String(seriesLabel || "?");
+        return label.length > 8 ? label.slice(0, 8) : label;
     }
     function embeddingClusterColor(clusterLabel) {
         const numericLabel = Number(clusterLabel);
@@ -964,6 +980,11 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             return "#8a847a";
         }
         return CLUSTER_COLOR_PALETTE[numericLabel % CLUSTER_COLOR_PALETTE.length];
+    }
+    function columnsSeriesColor(seriesLabel) {
+        return columnsSourceMode() === "domains"
+            ? partnerColor(seriesLabel)
+            : embeddingClusterColor(seriesLabel);
     }
     function sizeBracketColor(index, bracketCount) {
         if (bracketCount <= 1) {
@@ -1070,7 +1091,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
     }
     function columnsBarcodeRgb(clusterLabel, fraction) {
         const clamped = Math.max(0, Math.min(1, Number(fraction) || 0));
-        const base = colorToRgb(embeddingClusterColor(clusterLabel));
+        const base = colorToRgb(columnsSeriesColor(clusterLabel));
         const background = [234, 223, 207];
         const strength = clamped * clamped * (3 - (2 * clamped));
         const high = base.map((channel) => Math.round(channel + (255 - channel) * 0.38));
@@ -1176,12 +1197,38 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             }
         });
     }
+    function columnsAlignmentLength() {
+        return Math.max(0, Number(state.msa?.alignment_length ||
+            state.interface?.alignment_length ||
+            state.interface?.alignmentLength ||
+            0));
+    }
+    function columnsDomainChartSignature(alignmentLength) {
+        const partners = state.interface?.partnerDomains || [];
+        return [
+            interfaceSelect.value || "",
+            columnsSourceMode(),
+            alignmentLength,
+            partners
+                .map((partner) => {
+                const stats = state.interface?.partnerColumnStats?.get(partner);
+                const columnCountTotal = stats?.columnCounts instanceof Map
+                    ? Array.from(stats.columnCounts.values()).reduce((total, count) => total + Number(count || 0), 0)
+                    : 0;
+                return `${partner}:${Number(stats?.denominator || 0)}:${Number(stats?.columnCounts?.size || 0)}:${columnCountTotal}`;
+            })
+                .join(","),
+        ].join("|");
+    }
     function columnsChartCacheKey() {
+        if (columnsSourceMode() === "domains") {
+            return columnsDomainChartSignature(columnsAlignmentLength());
+        }
         const serverChart = state.embeddingClustering?.columns_chart;
         return [
             interfaceSelect.value || "",
             state.embeddingClustering?.settingsKey || "",
-            "server",
+            columnsSourceMode(),
             serverChart ? Number(serverChart.alignmentLength || 0) : "missing",
             serverChart ? (serverChart.clusters || []).join(",") : "",
             Number(state.embeddingClustering?.points?.length || 0),
@@ -1217,7 +1264,57 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             relativeByCluster,
             gapByCluster,
             maxStackValue: Number(chart.maxStackValue || 0),
-            source: "server",
+            source: "clusters",
+        };
+    }
+    function normalizedDomainColumnsChart() {
+        const alignmentLength = columnsAlignmentLength();
+        if (!state.interface || alignmentLength <= 0) {
+            return null;
+        }
+        const partners = (state.interface.partnerDomains || [])
+            .map((partner) => String(partner || ""))
+            .filter((partner) => partner);
+        if (partners.length === 0) {
+            return null;
+        }
+        const clusters = [];
+        const clusterSizes = {};
+        const relativeByCluster = {};
+        const gapByCluster = {};
+        for (const partner of partners) {
+            const stats = state.interface.partnerColumnStats?.get(partner);
+            const denominator = Math.max(0, Number(stats?.denominator || 0));
+            if (denominator <= 0) {
+                continue;
+            }
+            clusters.push(partner);
+            clusterSizes[partner] = denominator;
+            const values = new Array(alignmentLength).fill(0);
+            if (stats?.columnCounts instanceof Map) {
+                for (const [columnIndex, count] of stats.columnCounts.entries()) {
+                    const index = Number(columnIndex);
+                    if (!Number.isInteger(index) || index < 0 || index >= alignmentLength) {
+                        continue;
+                    }
+                    values[index] = Math.max(0, Number(count || 0)) / denominator;
+                }
+            }
+            relativeByCluster[partner] = values;
+            gapByCluster[partner] = new Array(alignmentLength).fill(0);
+        }
+        if (clusters.length === 0) {
+            return null;
+        }
+        return {
+            file: interfaceSelect.value,
+            alignmentLength,
+            clusters,
+            clusterSizes,
+            relativeByCluster,
+            gapByCluster,
+            maxStackValue: 1,
+            source: "domains",
         };
     }
     function rebuildColumnsChartIfNeeded() {
@@ -1225,8 +1322,10 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         if (state.columnsChartKey === nextKey) {
             return;
         }
-        const serverChart = normalizedServerColumnsChart();
-        if (!serverChart) {
+        const columnsChart = columnsSourceMode() === "domains"
+            ? normalizedDomainColumnsChart()
+            : normalizedServerColumnsChart();
+        if (!columnsChart) {
             state.columnsChart = null;
             state.columnsChartKey = nextKey;
             state.columnsView = { start: 0, end: null };
@@ -1237,14 +1336,14 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             state.columnsInteractionLayout = null;
             return;
         }
-        state.columnsChart = serverChart;
+        state.columnsChart = columnsChart;
         state.columnsChartKey = nextKey;
         state.columnsView = {
             start: 0,
-            end: Math.max(1, Number(serverChart.alignmentLength || 1)),
+            end: Math.max(1, Number(columnsChart.alignmentLength || 1)),
         };
         state.columnsInterfaceView = { start: 0, end: null };
-        const clusterKeys = serverChart.clusters.map((clusterLabel) => String(clusterLabel));
+        const clusterKeys = columnsChart.clusters.map((clusterLabel) => String(clusterLabel));
         const clusterSet = new Set(clusterKeys);
         const ordered = Array.isArray(state.columnsClusterOrder)
             ? state.columnsClusterOrder.filter((clusterLabel) => clusterSet.has(String(clusterLabel))).map(String)
@@ -1254,8 +1353,8 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             ...ordered,
             ...clusterKeys.filter((clusterLabel) => !orderedSet.has(clusterLabel)),
         ];
-        const stillVisible = serverChart.clusters.filter((clusterLabel) => state.columnsVisibleClusters.has(String(clusterLabel)));
-        state.columnsVisibleClusters = new Set(stillVisible.length > 0 ? stillVisible : serverChart.clusters);
+        const stillVisible = columnsChart.clusters.filter((clusterLabel) => state.columnsVisibleClusters.has(String(clusterLabel)));
+        state.columnsVisibleClusters = new Set(stillVisible.length > 0 ? stillVisible : columnsChart.clusters);
     }
     function renderColumnsClusterLegend() {
         if (!elements.columnsClusterLegend) {
@@ -1717,7 +1816,11 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         }
         rebuildColumnsChartIfNeeded();
         renderColumnsClusterLegend();
-        elements.columnsLoading.classList.toggle("hidden", !(state.embeddingClusteringLoading && !(state.columnsChart?.clusters || []).length));
+        const sourceMode = columnsSourceMode();
+        const sourceTitle = columnsSourceTitle();
+        const sourcePlural = columnsSourcePlural();
+        const clusterSource = sourceMode === "clusters";
+        elements.columnsLoading.classList.toggle("hidden", !(clusterSource && state.embeddingClusteringLoading && !(state.columnsChart?.clusters || []).length));
         elements.columnsLoadingLabel.textContent = "Loading clustering data...";
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, width, height);
@@ -1731,10 +1834,10 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             ctx.font = '13px "IBM Plex Sans", sans-serif';
             ctx.textAlign = "center";
             ctx.fillText("Load an interface selection to view columns.", centerX, centerY);
-            setColumnsInfo("Cluster-column interaction barcode.");
+            setColumnsInfo(`${sourceTitle}-column interaction barcode.`);
             return;
         }
-        if (state.embeddingClustering?.error) {
+        if (clusterSource && state.embeddingClustering?.error) {
             ctx.fillStyle = "#6f6658";
             ctx.font = '13px "IBM Plex Sans", sans-serif';
             ctx.textAlign = "center";
@@ -1742,7 +1845,8 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             setColumnsInfo(state.embeddingClustering.error);
             return;
         }
-        if (state.embeddingClustering &&
+        if (clusterSource &&
+            state.embeddingClustering &&
             !state.embeddingClusteringLoading &&
             !state.embeddingClustering.columns_chart) {
             ctx.fillStyle = "#6f6658";
@@ -1756,10 +1860,14 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             ctx.fillStyle = "#6f6658";
             ctx.font = '13px "IBM Plex Sans", sans-serif';
             ctx.textAlign = "center";
-            ctx.fillText(state.embeddingClusteringLoading
+            ctx.fillText(clusterSource && state.embeddingClusteringLoading
                 ? "Preparing clustering..."
-                : "Load clustering to inspect cluster-column interactions.", centerX, centerY);
-            setColumnsInfo("Shows for each MSA column the fraction of each cluster that interacts at that position.");
+                : clusterSource
+                    ? "Load clustering to inspect cluster-column interactions."
+                    : "No interacting domains available.", centerX, centerY);
+            setColumnsInfo(clusterSource
+                ? "Shows for each MSA column the fraction of each cluster that interacts at that position."
+                : "Shows for each MSA column the fraction of each interacting domain that contacts that position.");
             return;
         }
         const visibleClusters = visibleColumnsClusters();
@@ -1767,8 +1875,8 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             ctx.fillStyle = "#6f6658";
             ctx.font = '13px "IBM Plex Sans", sans-serif';
             ctx.textAlign = "center";
-            ctx.fillText("Select at least one cluster in the legend.", centerX, centerY);
-            setColumnsInfo("Cluster filter hides all columns.");
+            ctx.fillText(`Select at least one ${sourceMode === "domains" ? "domain" : "cluster"} in the legend.`, centerX, centerY);
+            setColumnsInfo(`${sourceTitle} filter hides all columns.`);
             return;
         }
         if (elements.columnsInterfaceOnlyToggle) {
@@ -1789,12 +1897,12 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         const rowsBottom = rowsBottomContent - scrollTop;
         const chartWidth = Math.max(0, chartRight - chartLeft);
         const chartHeight = Math.max(0, rowsBottomContent - rowsTopContent);
-        if (chartWidth < 20 || chartHeight < 20) {
+        if (chartWidth < 20 || chartHeight < 1) {
             ctx.fillStyle = "#6f6658";
             ctx.font = '13px "IBM Plex Sans", sans-serif';
             ctx.textAlign = "center";
             ctx.fillText("Columns view is too small.", centerX, centerY);
-            setColumnsInfo("Expand the panel to render the cluster-column barcode.");
+            setColumnsInfo(`Expand the panel to render the ${sourceMode === "domains" ? "domain" : "cluster"}-column barcode.`);
             return;
         }
         const alignmentLength = Math.max(1, Number(state.columnsChart.alignmentLength || 1));
@@ -1809,7 +1917,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 ctx.fillStyle = "#6f6658";
                 ctx.font = '13px "IBM Plex Sans", sans-serif';
                 ctx.textAlign = "center";
-                ctx.fillText("No interface residues found for selected clusters.", centerX, centerY);
+                ctx.fillText(`No interface residues found for selected ${sourcePlural}.`, centerX, centerY);
                 setColumnsInfo("Interface-only mode hides columns without interactions.");
                 return;
             }
@@ -1892,8 +2000,8 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             ctx.fillStyle = "#6f6658";
             ctx.font = '13px "IBM Plex Sans", sans-serif';
             ctx.textAlign = "center";
-            ctx.fillText("No interface residues found for selected clusters.", centerX, centerY);
-            setColumnsInfo("Selected clusters have no interacting columns.");
+            ctx.fillText(`No interface residues found for selected ${sourcePlural}.`, centerX, centerY);
+            setColumnsInfo(`Selected ${sourcePlural} have no interacting columns.`);
             return;
         }
         const rowGap = columnsRowGap(visibleClusters.length);
@@ -1966,16 +2074,16 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 ctx.textBaseline = "middle";
                 ctx.fillText("::", 7, y + rowHeight / 2);
                 ctx.fillText("::", 13, y + rowHeight / 2);
-                ctx.fillStyle = embeddingClusterColor(clusterLabel);
+                ctx.fillStyle = columnsSeriesColor(clusterLabel);
                 ctx.fillRect(chartLeft - 34, y + Math.max(1, (rowHeight - 9) / 2), 9, Math.min(9, rowHeight - 2));
                 ctx.fillStyle = "#6f6658";
                 ctx.font = '10px "IBM Plex Sans", sans-serif';
                 ctx.textAlign = "right";
                 ctx.textBaseline = "middle";
-                ctx.fillText(columnsClusterShortLabel(clusterLabel), chartLeft - 7, y + rowHeight / 2);
+                ctx.fillText(columnsSeriesShortLabel(clusterLabel), chartLeft - 7, y + rowHeight / 2);
             }
             else {
-                ctx.fillStyle = embeddingClusterColor(clusterLabel);
+                ctx.fillStyle = columnsSeriesColor(clusterLabel);
                 ctx.fillRect(chartLeft - 10, rowY, 5, drawHeight);
             }
             const values = binnedValues.get(clusterLabel);
@@ -2016,7 +2124,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         const colorMeaning = gapShading
             ? "gap fraction darkens each bin"
             : "color luminance shows interacting fraction";
-        setColumnsInfo(`Cluster barcodes: ${modeLabel}; ${colorMeaning} (${visibleClusters.length}/${state.columnsChart.clusters.length} clusters visible, columns ${startLabel}-${endLabel}).`);
+        setColumnsInfo(`${sourceTitle} barcodes: ${modeLabel}; ${colorMeaning} (${visibleClusters.length}/${state.columnsChart.clusters.length} ${sourcePlural} visible, columns ${startLabel}-${endLabel}).`);
     }
     function embeddingClusterByRowKey() {
         const source = state.embeddingClustering?.points || emptyClusteringPoints;

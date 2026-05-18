@@ -522,20 +522,37 @@ class DomainMolstarViewer {
         const { mode, payload, settings, modelText, residueStyles, markerResidueStyles } = options;
         const fragmentResidues = mainFragmentResidues(payload);
         const partnerResidues = payload?.partner_fragment_residue_ids || [];
-        const contextResidues = differenceResidues(pdbResidueIds(modelText), fragmentResidues, partnerResidues, residueStyleIds(residueStyles), residueStyleIds(markerResidueStyles));
-        await this.addContextCartoon(settings, contextResidues);
+        const contextExclusions = mode === "representative"
+            ? [
+                fragmentResidues,
+                residueStyleIds(residueStyles),
+                residueStyleIds(markerResidueStyles),
+            ]
+            : [
+                fragmentResidues,
+                partnerResidues,
+                residueStyleIds(residueStyles),
+                residueStyleIds(markerResidueStyles),
+            ];
+        const contextResidues = differenceResidues(pdbResidueIds(modelText), ...contextExclusions);
+        await this.addContextCartoon(settings, contextResidues, {
+            fallbackAll: mode !== "representative",
+        });
         if (mode === "representative") {
             await this.addRepresentativeRepresentations(options);
             return;
         }
         await this.addStructureRepresentations(options);
     }
-    async addContextCartoon(settings, residueIds) {
+    async addContextCartoon(settings, residueIds, options = {}) {
         const ids = numberList(residueIds);
         if (ids.length > 0) {
             await this.addResidueCartoon(ids, WHOLE_PROTEIN_COLOR, settings, "protein-context", "Protein context", {
                 alpha: clamp(settings.contextAlpha ?? 0.24, 0.05, 0.9),
             });
+            return;
+        }
+        if (options.fallbackAll === false) {
             return;
         }
         await this.addStaticCartoon("all", WHOLE_PROTEIN_COLOR, settings, "Protein context", {

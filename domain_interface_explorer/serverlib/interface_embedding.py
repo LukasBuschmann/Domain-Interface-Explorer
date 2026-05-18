@@ -654,6 +654,7 @@ def build_interface_alignment_rows_from_metadata(
                     "aligned_sequence": aligned_sequence,
                     "residue_ids": residue_ids,
                     "has_alignment": bool(str(raw_row["aligned_sequence"] or "")),
+                    "interface_msa_columns_a": list(raw_row.get("interface_msa_columns_a") or []),
                 }
             )
         timer.set(rows=len(rows), total_rows=total_rows)

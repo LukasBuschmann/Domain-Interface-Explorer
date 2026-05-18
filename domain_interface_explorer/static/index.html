@@ -796,19 +796,54 @@
                 <div id="columns-spacer" class="columns-spacer"></div>
               </div>
               <canvas id="columns-canvas" class="columns-canvas"></canvas>
-              <div class="columns-controls">
-                <label class="columns-mode-toggle">
-                  <input id="columns-interface-only-toggle" type="checkbox">
-                  <span>Interface only</span>
-                </label>
-                <label class="columns-mode-toggle">
-                  <input id="columns-empty-bins-white-toggle" type="checkbox">
-                  <span>Zero interactions white</span>
-                </label>
-                <label class="columns-mode-toggle">
-                  <input id="columns-gap-shading-toggle" type="checkbox">
-                  <span>Gap %</span>
-                </label>
+              <button
+                id="columns-settings-toggle"
+                class="embedding-settings-toggle columns-settings-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="columns-settings-panel"
+                title="Column settings"
+              >
+                &#9881;
+              </button>
+              <div id="columns-settings-panel" class="embedding-settings-panel columns-settings-panel hidden">
+                <section class="embedding-settings-section">
+                  <h3 class="embedding-settings-section-title">Columns</h3>
+                  <div class="columns-setting-group">
+                    <span>Rows</span>
+                    <div
+                      id="columns-source-mode"
+                      class="embedding-settings-mode"
+                      role="tablist"
+                      aria-label="Column row source"
+                    >
+                      <button
+                        type="button"
+                        class="embedding-clustering-mode-button active"
+                        data-columns-source="clusters"
+                        aria-pressed="true"
+                      >Clusters</button>
+                      <button
+                        type="button"
+                        class="embedding-clustering-mode-button"
+                        data-columns-source="domains"
+                        aria-pressed="false"
+                      >Domains</button>
+                    </div>
+                  </div>
+                  <label class="columns-settings-check">
+                    <input id="columns-interface-only-toggle" type="checkbox">
+                    <span>Interface only</span>
+                  </label>
+                  <label class="columns-settings-check">
+                    <input id="columns-empty-bins-white-toggle" type="checkbox">
+                    <span>Zero interactions white</span>
+                  </label>
+                  <label class="columns-settings-check">
+                    <input id="columns-gap-shading-toggle" type="checkbox">
+                    <span>Gap %</span>
+                  </label>
+                </section>
               </div>
               <div id="columns-loading" class="embedding-loading hidden">
                 <strong id="columns-loading-label">Loading clustering data</strong>

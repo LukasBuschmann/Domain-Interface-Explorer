@@ -41,6 +41,134 @@ export function createClusterCompareController({ state, elements, interfaceSelec
       </svg>
     `;
     }
+    function clusterCompareEntryKey(entry) {
+        return interactionRowKey(entry?.rowKey || entry?.row_key || "", entry?.partnerDomain || entry?.partner_domain || "");
+    }
+    function normalizedClusterPointMembers(point) {
+        const members = Array.isArray(point?.members) ? point.members : [];
+        const normalizedMembers = members
+            .map((member) => ({
+            row_key: String(member?.row_key || ""),
+            partner_domain: String(member?.partner_domain || ""),
+        }))
+            .filter((member) => member.row_key && member.partner_domain);
+        const rowKey = String(point?.row_key || "");
+        const partnerDomain = String(point?.partner_domain || "");
+        if (!rowKey || !partnerDomain) {
+            return normalizedMembers;
+        }
+        const directKey = interactionRowKey(rowKey, partnerDomain);
+        if (normalizedMembers.some((member) => interactionRowKey(member.row_key, member.partner_domain) === directKey)) {
+            return normalizedMembers;
+        }
+        return [{ row_key: rowKey, partner_domain: partnerDomain }].concat(normalizedMembers);
+    }
+    function clusterOverviewMembersForEntry(entry, clusterSummary) {
+        const clusterLabel = Number(entry?.clusterLabel);
+        const selectedPartner = String(state.selectedPartner || "__all__");
+        const members = [];
+        const seen = new Set();
+        for (const point of state.embeddingClustering?.points || []) {
+            if (Number(point?.cluster_label) !== clusterLabel) {
+                continue;
+            }
+            for (const member of normalizedClusterPointMembers(point)) {
+                const rowKey = String(member?.row_key || "");
+                const partnerDomain = String(member?.partner_domain || "");
+                if (!rowKey || !partnerDomain) {
+                    continue;
+                }
+                if (selectedPartner !== "__all__" && partnerDomain !== selectedPartner) {
+                    continue;
+                }
+                const memberKey = interactionRowKey(rowKey, partnerDomain);
+                if (!memberKey || seen.has(memberKey)) {
+                    continue;
+                }
+                seen.add(memberKey);
+                members.push({
+                    key: memberKey,
+                    rowKey,
+                    openLabel: rowKey,
+                    partnerDomain,
+                    clusterLabel,
+                    title: entry.title,
+                    color: entry.color,
+                    coverageCount: entry.coverageCount,
+                    coveragePercent: entry.coveragePercent,
+                    coverageFraction: entry.coverageFraction,
+                    coverageLabel: entry.coverageLabel,
+                    coverageTitle: entry.coverageTitle,
+                    row: getRowByKey(memberKey),
+                    clusterSummary,
+                });
+            }
+        }
+        const currentKey = clusterCompareEntryKey(entry);
+        if (currentKey && !seen.has(currentKey)) {
+            members.push({
+                key: currentKey,
+                rowKey: String(entry.rowKey || ""),
+                openLabel: entry.openLabel || entry.rowKey || "",
+                partnerDomain: String(entry.partnerDomain || ""),
+                clusterLabel,
+                title: entry.title,
+                color: entry.color,
+                coverageCount: entry.coverageCount,
+                coveragePercent: entry.coveragePercent,
+                coverageFraction: entry.coverageFraction,
+                coverageLabel: entry.coverageLabel,
+                coverageTitle: entry.coverageTitle,
+                row: entry.row || null,
+                clusterSummary,
+            });
+        }
+        return members.sort((left, right) => left.partnerDomain.localeCompare(right.partnerDomain) ||
+            left.rowKey.localeCompare(right.rowKey));
+    }
+    function entryWithClusterCycleMembers(entry, clusterSummary) {
+        const clusterMembers = clusterOverviewMembersForEntry(entry, clusterSummary);
+        const currentKey = clusterCompareEntryKey(entry);
+        const clusterMemberIndex = Math.max(0, clusterMembers.findIndex((member) => clusterCompareEntryKey(member) === currentKey));
+        return {
+            ...entry,
+            clusterMembers,
+            clusterMemberIndex,
+        };
+    }
+    function clusterCycleControlsHtml(entry, tileIndex, enabled) {
+        const members = Array.isArray(entry?.clusterMembers) ? entry.clusterMembers : [];
+        if (!enabled || members.length <= 1) {
+            return "";
+        }
+        const index = Math.max(0, Math.min(members.length - 1, Number(entry.clusterMemberIndex || 0)));
+        return `
+      <div class="cluster-compare-cycle" title="Cycle interfaces in this cluster">
+        <button
+          class="cluster-compare-cycle-button"
+          type="button"
+          data-cluster-compare-cycle="${tileIndex}"
+          data-cluster-compare-cycle-delta="-1"
+          aria-label="Previous interface in cluster"
+        >&#8249;</button>
+        <span class="cluster-compare-cycle-count">${index + 1} / ${members.length}</span>
+        <button
+          class="cluster-compare-cycle-button"
+          type="button"
+          data-cluster-compare-cycle="${tileIndex}"
+          data-cluster-compare-cycle-delta="1"
+          aria-label="Next interface in cluster"
+        >&#8250;</button>
+      </div>
+    `;
+    }
+    function clusterCompareEntrySubtitle(entry) {
+        const members = Array.isArray(entry?.clusterMembers) ? entry.clusterMembers : [];
+        if (members.length > 1) {
+            return `${members.length} members · ${entry.rowKey}`;
+        }
+        return entry.subtitle || `Partner ${entry.partnerDomain}`;
+    }
     function representativeMethodLabel(method) {
         return method === "residue" ? "Residue" : "Balanced";
     }
@@ -426,7 +554,108 @@ export function createClusterCompareController({ state, elements, interfaceSelec
             initialView,
         });
     }
+    function updateClusterCompareTileMeta(tileIndex) {
+        const tile = state.clusterCompareTiles[tileIndex];
+        const tileElement = elements.clusterCompareGrid?.querySelector(`[data-cluster-compare-index="${tileIndex}"]`);
+        if (!tile || !tileElement) {
+            return;
+        }
+        const subtitle = tileElement.querySelector(".cluster-compare-tile-subtitle");
+        if (subtitle) {
+            subtitle.textContent = clusterCompareEntrySubtitle(tile.entry);
+        }
+        const count = tileElement.querySelector(".cluster-compare-cycle-count");
+        const members = Array.isArray(tile.entry?.clusterMembers) ? tile.entry.clusterMembers : [];
+        if (count && members.length > 1) {
+            const index = Math.max(0, Math.min(members.length - 1, Number(tile.entry.clusterMemberIndex || 0)));
+            count.textContent = `${index + 1} / ${members.length}`;
+        }
+    }
+    async function cycleClusterCompareTileMember(tileIndex, delta) {
+        if (state.clusterCompareMode !== "representative-clusters") {
+            return;
+        }
+        const tile = state.clusterCompareTiles[Number(tileIndex)];
+        const members = Array.isArray(tile?.entry?.clusterMembers) ? tile.entry.clusterMembers : [];
+        if (!tile || members.length <= 1) {
+            return;
+        }
+        const currentIndex = Number.isInteger(tile.entry.clusterMemberIndex)
+            ? tile.entry.clusterMemberIndex
+            : Math.max(0, members.findIndex((member) => clusterCompareEntryKey(member) === clusterCompareEntryKey(tile.entry)));
+        const nextIndex = (currentIndex + Number(delta || 0) + members.length) % members.length;
+        const member = members[nextIndex];
+        if (!member) {
+            return;
+        }
+        const previousResult = {
+            entry: tile.entry,
+            row: tile.row,
+            representativePayload: tile.representativePayload,
+            payload: tile.payload,
+            modelText: tile.modelText,
+            previewUrl: tile.previewUrl,
+            residueStyles: tile.residueStyles || [],
+            clusterLensData: tile.clusterLensData || null,
+            error: tile.error,
+        };
+        const nextEntry = {
+            ...tile.entry,
+            ...member,
+            key: member.key || clusterCompareEntryKey(member),
+            rowKey: String(member.rowKey || ""),
+            partnerDomain: String(member.partnerDomain || ""),
+            openLabel: member.openLabel || member.rowKey || "",
+            row: member.row || getRowByKey(clusterCompareEntryKey(member)),
+            clusterMembers: members,
+            clusterMemberIndex: nextIndex,
+            representativePayload: null,
+        };
+        tile.entry = nextEntry;
+        tile.row = nextEntry.row || null;
+        tile.representativePayload = null;
+        tile.error = null;
+        updateClusterCompareTileMeta(tileIndex);
+        const tileElement = elements.clusterCompareGrid?.querySelector(`[data-cluster-compare-index="${tileIndex}"]`);
+        tileElement?.classList.add("cluster-compare-tile-loading");
+        tileElement?.querySelectorAll("[data-cluster-compare-cycle]").forEach((button) => {
+            button.disabled = true;
+        });
+        try {
+            const anchorRowKey = state.clusterCompareAlignmentAnchorRowKey || "";
+            const structureResult = await fetchClusterCompareStructure(nextEntry, nextEntry.rowKey === anchorRowKey ? "" : anchorRowKey);
+            const stylePayload = representativeClusterCompareTileStyles(nextEntry.row, nextEntry.clusterSummary, structureResult.payload);
+            await applyClusterCompareTileResult(tileIndex, {
+                ...structureResult,
+                row: nextEntry.row,
+                representativePayload: null,
+                residueStyles: stylePayload.residueStyles || [],
+                clusterLensData: stylePayload.clusterLensData || null,
+            });
+        }
+        catch (error) {
+            Object.assign(tile, previousResult);
+            updateClusterCompareTileMeta(tileIndex);
+            if (elements.clusterCompareModalSubtitle) {
+                elements.clusterCompareModalSubtitle.textContent =
+                    error.message || "Unable to load the selected cluster interface.";
+            }
+        }
+        finally {
+            tileElement?.classList.remove("cluster-compare-tile-loading");
+            tileElement?.querySelectorAll("[data-cluster-compare-cycle]").forEach((button) => {
+                button.disabled = false;
+            });
+        }
+    }
     elements.clusterCompareGrid?.addEventListener("click", (event) => {
+        const cycleButton = event.target.closest("[data-cluster-compare-cycle]");
+        if (cycleButton && elements.clusterCompareGrid.contains(cycleButton)) {
+            event.preventDefault();
+            event.stopPropagation();
+            void cycleClusterCompareTileMember(Number(cycleButton.dataset.clusterCompareCycle), Number(cycleButton.dataset.clusterCompareCycleDelta || 0));
+            return;
+        }
         const button = event.target.closest("[data-cluster-compare-open]");
         if (!button || !elements.clusterCompareGrid.contains(button)) {
             return;
@@ -438,7 +667,8 @@ export function createClusterCompareController({ state, elements, interfaceSelec
     elements.clusterCompareGrid?.addEventListener("dblclick", (event) => {
         if (state.clusterCompareMode !== "representative-clusters" ||
             typeof openClusterResidueMembers !== "function" ||
-            event.target.closest("[data-cluster-compare-open]")) {
+            event.target.closest("[data-cluster-compare-open]") ||
+            event.target.closest("[data-cluster-compare-cycle]")) {
             return;
         }
         const tileElement = event.target.closest("[data-cluster-compare-index]");
@@ -521,18 +751,19 @@ export function createClusterCompareController({ state, elements, interfaceSelec
                 message.includes("Cannot read properties")));
     }
     async function loadClusterCompareTileViewer(viewer, tile, modelText) {
+        const representativeClusterTile = state.clusterCompareMode === "representative-clusters";
         await viewer.loadStructure({
             modelText,
             payload: tile.payload,
             format: tile.payload.model_format || "pdb",
             label: tile.entry?.title || tile.entry?.rowKey || "Cluster comparison structure",
-            mode: tile.residueStyles?.length ? "representative" : "compare",
+            mode: representativeClusterTile ? "representative" : "compare",
             columnView: false,
             contactsVisible: false,
             residueLookup: new Map(),
             residueStyles: tile.residueStyles || [],
             clusterLensData: tile.clusterLensData || null,
-            representativeLens: tile.residueStyles?.length ? "cluster" : "",
+            representativeLens: representativeClusterTile ? "cluster" : "",
             displaySettings: state.structureDisplaySettings,
             onHover: (hover) => {
                 tile.hoverResidue = hover;
@@ -699,6 +930,7 @@ export function createClusterCompareController({ state, elements, interfaceSelec
     function renderClusterCompareGridShell(record) {
         const selectedEntries = record.selectedEntries || [];
         const remainingEntryCount = Number(record.remainingEntryCount || 0);
+        const showClusterCycleControls = record?.kind === "representative-clusters";
         cleanupClusterCompareTileState({ resetSharedView: false });
         setClusterCompareGridLoading(false);
         applyClusterCompareGridLayout(selectedEntries.length);
@@ -707,7 +939,7 @@ export function createClusterCompareController({ state, elements, interfaceSelec
             const rowLabel = escapeHtml(entry.title || entry.rowKey);
             const openLabel = escapeHtml(entry.openLabel || entry.rowKey);
             const partnerLabel = escapeHtml(entry.partnerDomain);
-            const subtitle = escapeHtml(entry.subtitle || `Partner ${entry.partnerDomain}`);
+            const subtitle = escapeHtml(clusterCompareEntrySubtitle(entry));
             const swatch = entry.color
                 ? `<span class="cluster-compare-tile-swatch" style="background: ${entry.color};"></span>`
                 : "";
@@ -730,6 +962,7 @@ export function createClusterCompareController({ state, elements, interfaceSelec
                 >
                   ${fullScreenIconSvg()}
                 </button>
+                ${clusterCycleControlsHtml(entry, index, showClusterCycleControls)}
                 <span
                   class="cluster-compare-coverage"
                   title="${coverageTitle}"
@@ -961,7 +1194,7 @@ export function createClusterCompareController({ state, elements, interfaceSelec
         }
         const clusterSummary = representativeClusterSummaryFromPayload(payload, cluster.clusterLabel, cluster);
         const memberCount = Number(cluster.compareMemberCount ?? cluster.memberCount ?? 0);
-        return {
+        const entry = {
             key: `representative-cluster:${cluster.clusterLabel}`,
             rowKey: String(row.interface_row_key || row.row_key),
             openLabel: row.display_row_key || row.row_key || row.interface_row_key || "",
@@ -980,6 +1213,7 @@ export function createClusterCompareController({ state, elements, interfaceSelec
             clusterSummary,
             representativePayload: payload,
         };
+        return entryWithClusterCycleMembers(entry, clusterSummary);
     }
     async function openRepresentativeClusterCompare(options = {}) {
         if (!interfaceSelect.value || typeof representativeClusterCompareSummaries !== "function") {
@@ -1079,7 +1313,7 @@ export function createClusterCompareController({ state, elements, interfaceSelec
                 let result;
                 try {
                     const structureResult = await fetchClusterCompareStructure(entry, entry.rowKey === anchorRowKey ? "" : anchorRowKey);
-                    const stylePayload = representativeClusterCompareTileStyles(entry.row, entry.clusterSummary);
+                    const stylePayload = representativeClusterCompareTileStyles(entry.row, entry.clusterSummary, structureResult.payload);
                     result = {
                         ...structureResult,
                         row: entry.row,

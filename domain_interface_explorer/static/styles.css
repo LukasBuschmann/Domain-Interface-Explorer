@@ -1168,27 +1168,32 @@ select,
   pointer-events: none;
 }
 
-.columns-controls {
+.columns-settings-toggle {
   position: absolute;
-  left: 14px;
   top: 14px;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-  max-width: calc(100% - 28px);
-  padding: 6px 9px;
-  border-radius: 12px;
-  border: 1px solid rgba(215, 204, 179, 0.9);
-  background: rgba(255, 252, 245, 0.94);
-  box-shadow: 0 8px 18px rgba(31, 23, 16, 0.07);
+  left: 14px;
 }
 
-.columns-mode-toggle {
-  display: inline-flex;
+.columns-settings-panel {
+  top: 58px;
+  left: 14px;
+  right: auto;
+  width: min(300px, calc(100% - 28px));
+  max-height: calc(100% - 72px);
+}
+
+.columns-setting-group {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.columns-settings-check {
+  display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
@@ -1196,7 +1201,13 @@ select,
   user-select: none;
 }
 
-.columns-mode-toggle input {
+.embedding-settings-panel label.columns-settings-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.columns-settings-check input {
   width: 14px;
   height: 14px;
   accent-color: #8d5b2c;
@@ -2945,7 +2956,8 @@ select,
 }
 
 .cluster-compare-icon-button,
-.cluster-compare-open-structure {
+.cluster-compare-open-structure,
+.cluster-compare-cycle-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2965,7 +2977,8 @@ select,
   display: none;
 }
 
-.cluster-compare-open-structure {
+.cluster-compare-open-structure,
+.cluster-compare-cycle-button {
   width: 24px;
   height: 24px;
   border-radius: 6px;
@@ -2974,9 +2987,15 @@ select,
 }
 
 .cluster-compare-icon-button:hover,
-.cluster-compare-open-structure:hover {
+.cluster-compare-open-structure:hover,
+.cluster-compare-cycle-button:hover {
   background: rgba(141, 91, 44, 0.12);
   border-color: rgba(141, 91, 44, 0.44);
+}
+
+.cluster-compare-cycle-button:disabled {
+  opacity: 0.45;
+  cursor: progress;
 }
 
 .cluster-compare-icon-button svg,
@@ -3311,6 +3330,29 @@ select,
   align-items: center;
   gap: 8px;
   width: 100%;
+}
+
+.cluster-compare-cycle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgba(255, 252, 245, 0.88);
+  box-shadow: 0 8px 18px rgba(31, 23, 16, 0.12);
+  pointer-events: auto;
+}
+
+.cluster-compare-cycle-count {
+  min-width: 44px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.cluster-compare-tile-loading .cluster-compare-tile-viewer {
+  opacity: 0.72;
 }
 
 .cluster-compare-tile-swatch {

@@ -337,6 +337,10 @@ export function applyUiPreferences(state) {
     typeof uiState.structureDisplaySettingsOpen === "boolean"
       ? uiState.structureDisplaySettingsOpen
       : state.structureDisplaySettingsOpen;
+  state.columnsSettingsOpen =
+    typeof uiState.columnsSettingsOpen === "boolean"
+      ? uiState.columnsSettingsOpen
+      : state.columnsSettingsOpen;
   state.columnsInterfaceOnly =
     typeof preferences.columnsInterfaceOnly === "boolean"
       ? preferences.columnsInterfaceOnly
@@ -349,6 +353,11 @@ export function applyUiPreferences(state) {
     typeof preferences.columnsGapShading === "boolean"
       ? preferences.columnsGapShading
       : state.columnsGapShading;
+  state.columnsSource = enumValue(
+    preferences.columnsSource,
+    ["clusters", "domains"],
+    state.columnsSource,
+  );
 
   const dendrogram = isRecord(preferences.dendrogram) ? preferences.dendrogram : {};
   state.dendrogramStyle = enumValue(dendrogram.style, ["radial", "linear"], state.dendrogramStyle);
@@ -410,10 +419,12 @@ function preferencesPayload(state) {
       embeddingSettingsSection: state.embeddingSettingsSection,
       dendrogramSettingsOpen: state.dendrogramSettingsOpen,
       structureDisplaySettingsOpen: state.structureDisplaySettingsOpen,
+      columnsSettingsOpen: state.columnsSettingsOpen,
     },
     columnsInterfaceOnly: state.columnsInterfaceOnly,
     columnsEmptyBinsWhite: state.columnsEmptyBinsWhite,
     columnsGapShading: state.columnsGapShading,
+    columnsSource: state.columnsSource,
     dendrogram: {
       style: state.dendrogramStyle,
       depth: state.dendrogramDepth,

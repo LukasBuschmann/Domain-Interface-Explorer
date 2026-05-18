@@ -428,6 +428,41 @@ const {
   visibleRepresentativeClusters,
 } = embeddingViewController;
 
+function syncColumnsSettingsUi() {
+  const open = Boolean(state.columnsSettingsOpen);
+  elements.columnsSettingsToggle?.setAttribute("aria-expanded", String(open));
+  elements.columnsSettingsToggle?.classList.toggle("active", open);
+  elements.columnsSettingsPanel?.classList.toggle("hidden", !open);
+  const source = state.columnsSource === "domains" ? "domains" : "clusters";
+  elements.columnsSourceMode
+    ?.querySelectorAll("[data-columns-source]")
+    .forEach((button) => {
+      const isActive = button.dataset.columnsSource === source;
+      button.classList.toggle("active", isActive);
+      button.setAttribute("aria-pressed", String(isActive));
+    });
+  if (elements.columnsInterfaceOnlyToggle) {
+    elements.columnsInterfaceOnlyToggle.checked = Boolean(state.columnsInterfaceOnly);
+  }
+  if (elements.columnsEmptyBinsWhiteToggle) {
+    elements.columnsEmptyBinsWhiteToggle.checked = Boolean(state.columnsEmptyBinsWhite);
+  }
+  if (elements.columnsGapShadingToggle) {
+    elements.columnsGapShadingToggle.checked = Boolean(state.columnsGapShading);
+  }
+}
+
+function resetColumnsChartState() {
+  state.columnsChart = null;
+  state.columnsChartKey = null;
+  state.columnsView = { start: 0, end: null };
+  state.columnsInterfaceView = { start: 0, end: null };
+  state.columnsVisibleClusters = new Set();
+  state.columnsClusterOrder = [];
+  state.columnsDrag = null;
+  state.columnsInteractionLayout = null;
+}
+
 const dendrogramViewController = createDendrogramViewController({
   state,
   elements,
@@ -1363,30 +1398,67 @@ function representativeClusterCompareUrl(clusterLabel, method = state.representa
   return `/api/representative?${params.toString()}`;
 }
 
-function representativeClusterCompareTileStyles(row, clusterSummary) {
-  if (!row || !clusterSummary) {
+function representativeRowInterfaceColumns(row) {
+  const rowColumns = Array.isArray(row?.interface_msa_columns_a)
+    ? row.interface_msa_columns_a
+    : Array.isArray(row?.interfaceColumns)
+      ? row.interfaceColumns
+      : [];
+  if (rowColumns.length > 0) {
+    return new Set(rowColumns);
+  }
+  const interfaceRowKey = String(row?.interface_row_key || "");
+  const partnerDomain = String(row?.partner_domain || "");
+  if (!interfaceRowKey || !partnerDomain || !state.interface) {
+    return new Set();
+  }
+  const rowState = state.interface.overlayByRow?.get?.(interfaceRowKey);
+  const partnerColumns = rowState?.byPartner?.get?.(partnerDomain)?.interface;
+  if (partnerColumns instanceof Set) {
+    return partnerColumns;
+  }
+  const interactionColumns = state.interface.overlayByInteractionRow
+    ?.get?.(interactionRowKey(interfaceRowKey, partnerDomain))
+    ?.all?.interface;
+  return interactionColumns instanceof Set ? interactionColumns : new Set();
+}
+
+function representativeClusterCompareTileStyles(row, clusterSummary, structurePayload = null) {
+  if (!clusterSummary) {
     return {
       residueStyles: [],
       clusterLensData: { clusters: [], clusterByResidueId: new Map() },
     };
   }
-  const residueLookup = buildStructureResidueLookup(row);
+  const residueLookup = row ? buildStructureResidueLookup(row) : new Map();
   const clusterLabel = Number(clusterSummary.clusterLabel);
   const memberCount = Number(clusterSummary.memberCount || 0);
-  const minSupportFraction = 0.04;
+  const interfaceColumns = representativeRowInterfaceColumns(row);
+  const interfaceResidueIds = new Set(
+    (Array.isArray(structurePayload?.interface_residue_ids)
+      ? structurePayload.interface_residue_ids
+      : []
+    )
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value))
+  );
+  const color = clusterSummary.color || embeddingClusterColor(clusterLabel);
   const clusterByResidueId = new Map();
   const residueIds = [];
   const residueStyles = [];
   for (const entry of residueLookup.values()) {
+    const isInterfaceResidue = interfaceResidueIds.has(Number(entry.residueId));
+    const isInterfaceColumn =
+      interfaceColumns.has(entry.columnIndex) ||
+      interfaceColumns.has(String(entry.columnIndex));
+    if (
+      !isInterfaceResidue &&
+      !isInterfaceColumn
+    ) {
+      continue;
+    }
     const columnCount = Number(clusterSummary.columnCounts?.get?.(entry.columnIndex) || 0);
-    if (columnCount <= 0 || memberCount <= 0) {
-      continue;
-    }
-    const supportFraction = columnCount / memberCount;
-    if (supportFraction < minSupportFraction) {
-      continue;
-    }
-    const color = clusterLensColor(clusterLabel, supportFraction);
+    const supportFraction = memberCount > 0 && columnCount > 0 ? columnCount / memberCount : 1;
     const residueCluster = {
       clusterLabel,
       label: clusterSummary.label,
@@ -1404,8 +1476,31 @@ function representativeClusterCompareTileStyles(row, clusterSummary) {
     residueStyles.push({
       residueId: entry.residueId,
       color,
-      intensity: supportFraction,
+      intensity: 1,
     });
+  }
+  if (residueStyles.length === 0 && interfaceResidueIds.size > 0) {
+    for (const residueId of [...interfaceResidueIds].sort((left, right) => left - right)) {
+      const residueCluster = {
+        clusterLabel,
+        label: clusterSummary.label,
+        residueId,
+        columnIndex: null,
+        memberCount,
+        columnCount: 0,
+        supportFraction: 1,
+        color,
+        hoverColor: clusterHoverColor(clusterLabel),
+        distribution: clusterSummary.partnerDistribution,
+      };
+      clusterByResidueId.set(residueId, residueCluster);
+      residueIds.push(residueId);
+      residueStyles.push({
+        residueId,
+        color,
+        intensity: 1,
+      });
+    }
   }
   return {
     residueStyles,
@@ -1971,7 +2066,27 @@ async function openStructureForInteractionEntry(entry, loadedStructure = {}) {
     entry?.rowKey || entry?.row_key || "",
     entry?.partnerDomain || entry?.partner_domain || ""
   );
-  clearEmbeddingMemberSelection();
+  const clusterMembers = Array.isArray(entry?.clusterMembers) ? entry.clusterMembers : [];
+  if (clusterMembers.length > 1) {
+    const members = clusterMembers
+      .map((member) => ({
+        row_key: String(member?.rowKey || member?.row_key || ""),
+        partner_domain: String(member?.partnerDomain || member?.partner_domain || ""),
+      }))
+      .filter((member) => member.row_key && member.partner_domain);
+    const selectedIndex = Math.max(
+      0,
+      members.findIndex((member) => embeddingMemberKey(member) === rowKey)
+    );
+    state.embeddingMemberSelection = {
+      pointKey: `cluster-overview:${entry?.clusterLabel ?? ""}`,
+      members,
+      index: selectedIndex,
+    };
+    syncEmbeddingMemberControls();
+  } else {
+    clearEmbeddingMemberSelection();
+  }
   const row = selectRowByKey(rowKey);
   if (!row) {
     return;
@@ -3031,21 +3146,46 @@ elements.columnsCanvas?.addEventListener("pointercancel", handleColumnsPointerUp
 elements.columnsCanvas?.addEventListener("wheel", handleColumnsWheel, { passive: false });
 elements.columnsScroll?.addEventListener("scroll", handleColumnsScroll);
 
+elements.columnsSettingsToggle?.addEventListener("click", () => {
+  state.columnsSettingsOpen = !state.columnsSettingsOpen;
+  syncColumnsSettingsUi();
+  scheduleUiPreferencesSave();
+});
+
+elements.columnsSourceMode?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-columns-source]");
+  if (!button) {
+    return;
+  }
+  const nextSource = button.dataset.columnsSource === "domains" ? "domains" : "clusters";
+  if (nextSource === state.columnsSource) {
+    return;
+  }
+  state.columnsSource = nextSource;
+  resetColumnsChartState();
+  syncColumnsSettingsUi();
+  persistUiPreferences();
+  renderColumnsChart();
+});
+
 elements.columnsInterfaceOnlyToggle?.addEventListener("change", () => {
   state.columnsInterfaceOnly = Boolean(elements.columnsInterfaceOnlyToggle.checked);
   state.columnsInterfaceView = { start: 0, end: null };
+  syncColumnsSettingsUi();
   persistUiPreferences();
   renderColumnsChart();
 });
 
 elements.columnsEmptyBinsWhiteToggle?.addEventListener("change", () => {
   state.columnsEmptyBinsWhite = Boolean(elements.columnsEmptyBinsWhiteToggle.checked);
+  syncColumnsSettingsUi();
   persistUiPreferences();
   renderColumnsChart();
 });
 
 elements.columnsGapShadingToggle?.addEventListener("change", () => {
   state.columnsGapShading = Boolean(elements.columnsGapShadingToggle.checked);
+  syncColumnsSettingsUi();
   persistUiPreferences();
   renderColumnsChart();
 });
@@ -3664,6 +3804,15 @@ document.addEventListener("click", (event) => {
     syncDendrogramControls();
     scheduleUiPreferencesSave();
   }
+  if (
+    state.columnsSettingsOpen &&
+    !event.target.closest("#columns-settings-panel") &&
+    !event.target.closest("#columns-settings-toggle")
+  ) {
+    state.columnsSettingsOpen = false;
+    syncColumnsSettingsUi();
+    scheduleUiPreferencesSave();
+  }
   if (!event.target.closest("#representative-method-control")) {
     setRepresentativeMethodMenuOpen(false);
   }
@@ -3721,6 +3870,12 @@ window.addEventListener("keydown", (event) => {
     state.dendrogramSettingsOpen = false;
     syncDendrogramControls();
     persistUiPreferences();
+    return;
+  }
+  if (event.key === "Escape" && state.columnsSettingsOpen) {
+    state.columnsSettingsOpen = false;
+    syncColumnsSettingsUi();
+    persistUiPreferences();
   }
 });
 window.addEventListener("resize", render);
@@ -3758,5 +3913,6 @@ if (window.ResizeObserver) {
 }
 
 syncStructureDisplaySettingsUi();
+syncColumnsSettingsUi();
 syncRepresentativeMethodControls();
 initialize().catch(handleInitializeError);

@@ -34,6 +34,8 @@ export const state = {
   columnsInterfaceOnly: false,
   columnsEmptyBinsWhite: false,
   columnsGapShading: false,
+  columnsSource: "clusters",
+  columnsSettingsOpen: false,
   columnsClusterOrder: [],
   columnsDrag: null,
   columnsInteractionLayout: null,
