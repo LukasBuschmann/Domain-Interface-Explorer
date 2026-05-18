@@ -2409,6 +2409,10 @@ export function createMsaViewController({
     state.columnsClusterOrder = [];
     state.columnsDrag = null;
     state.columnsInteractionLayout = null;
+    state.columnsDomainOverlayLoading = false;
+    state.columnsDomainOverlayRequestKey = null;
+    state.columnsDomainOverlayErrorKey = null;
+    state.columnsDomainOverlayPromise = null;
     state.dendrogram = null;
     state.dendrogramRequestId += 1;
     state.dendrogramLoading = false;
@@ -2651,6 +2655,10 @@ export function createMsaViewController({
     state.columnsClusterOrder = [];
     state.columnsDrag = null;
     state.columnsInteractionLayout = null;
+    state.columnsDomainOverlayLoading = false;
+    state.columnsDomainOverlayRequestKey = null;
+    state.columnsDomainOverlayErrorKey = null;
+    state.columnsDomainOverlayPromise = null;
     state.embeddingClustering = null;
     state.embeddingHoverRowKey = null;
     state.dendrogram = null;

@@ -1267,6 +1267,177 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             source: "clusters",
         };
     }
+    function columnsDomainOverlayRequestKey() {
+        return [
+            interfaceSelect.value || "",
+            selectionSettingsKey(state.selectionSettings),
+        ].join("|");
+    }
+    function columnsDomainOverlayUrl() {
+        const params = new URLSearchParams({ file: interfaceSelect.value || "" });
+        appendSelectionSettingsToParams(params, state.selectionSettings);
+        params.set("include_rows", "0");
+        params.set("include_data", "1");
+        params.set("include_clean_column_identity", "0");
+        params.set("data_offset", "0");
+        return `/api/interface?${params.toString()}`;
+    }
+    function ensureInterfaceOverlayContainers(interfaceState) {
+        if (!interfaceState.data || typeof interfaceState.data !== "object") {
+            interfaceState.data = {};
+        }
+        if (!(interfaceState.overlayByRow instanceof Map)) {
+            interfaceState.overlayByRow = new Map();
+        }
+        if (!(interfaceState.overlayByInteractionRow instanceof Map)) {
+            interfaceState.overlayByInteractionRow = new Map();
+        }
+        if (!(interfaceState.partnerColumnStats instanceof Map)) {
+            interfaceState.partnerColumnStats = new Map();
+        }
+        if (!interfaceState.allColumnStats) {
+            interfaceState.allColumnStats = { denominator: 0, columnCounts: new Map() };
+        }
+        if (!(interfaceState.allColumnStats.columnCounts instanceof Map)) {
+            interfaceState.allColumnStats.columnCounts = new Map();
+        }
+    }
+    function mergeColumnsDomainOverlayPayload(payload) {
+        if (!state.interface || !payload?.data || payload.file !== state.interface.file) {
+            return false;
+        }
+        const interfaceState = state.interface;
+        ensureInterfaceOverlayContainers(interfaceState);
+        const existingPartners = new Set(interfaceState.partnerDomains || []);
+        const payloadPartners = Array.isArray(payload.interface_partner_domains)
+            ? payload.interface_partner_domains.map((partner) => String(partner || "")).filter(Boolean)
+            : [];
+        for (const partner of payloadPartners) {
+            existingPartners.add(partner);
+        }
+        if (payload.interface_partner_counts && typeof payload.interface_partner_counts === "object") {
+            const counts = interfaceState.partnerInterfaceCounts instanceof Map
+                ? interfaceState.partnerInterfaceCounts
+                : new Map();
+            for (const [partner, count] of Object.entries(payload.interface_partner_counts)) {
+                counts.set(String(partner), Number(count || 0));
+            }
+            interfaceState.partnerInterfaceCounts = counts;
+        }
+        for (const [partnerDomain, rowsByKey] of Object.entries(payload.data || {})) {
+            if (!rowsByKey || typeof rowsByKey !== "object") {
+                continue;
+            }
+            existingPartners.add(partnerDomain);
+            if (!interfaceState.data[partnerDomain]) {
+                interfaceState.data[partnerDomain] = {};
+            }
+            for (const [rowKey, rowPayload] of Object.entries(rowsByKey)) {
+                if (!rowPayload || typeof rowPayload !== "object") {
+                    continue;
+                }
+                if (interfaceState.data[partnerDomain][rowKey]) {
+                    continue;
+                }
+                interfaceState.data[partnerDomain][rowKey] = rowPayload;
+                const partnerState = {
+                    interface: new Set(rowPayload.interface_msa_columns_a || []),
+                    surface: new Set(rowPayload.surface_msa_columns_a || []),
+                };
+                let rowState = interfaceState.overlayByRow.get(rowKey);
+                if (!rowState) {
+                    rowState = {
+                        all: { interface: new Set(), surface: new Set() },
+                        byPartner: new Map(),
+                    };
+                    interfaceState.overlayByRow.set(rowKey, rowState);
+                }
+                rowState.byPartner.set(partnerDomain, partnerState);
+                interfaceState.overlayByInteractionRow.set(interactionRowKey(rowKey, partnerDomain), {
+                    all: partnerState,
+                    byPartner: new Map([[partnerDomain, partnerState]]),
+                });
+                const partnerColumnStats = interfaceState.partnerColumnStats.get(partnerDomain) || {
+                    denominator: 0,
+                    columnCounts: new Map(),
+                };
+                if (partnerState.interface.size > 0) {
+                    partnerColumnStats.denominator += 1;
+                    for (const columnIndex of partnerState.interface) {
+                        partnerColumnStats.columnCounts.set(columnIndex, (partnerColumnStats.columnCounts.get(columnIndex) || 0) + 1);
+                    }
+                }
+                interfaceState.partnerColumnStats.set(partnerDomain, partnerColumnStats);
+                const hadRowInterface = rowState.all.interface.size > 0;
+                for (const columnIndex of partnerState.interface) {
+                    if (!rowState.all.interface.has(columnIndex)) {
+                        rowState.all.interface.add(columnIndex);
+                        interfaceState.allColumnStats.columnCounts.set(columnIndex, (interfaceState.allColumnStats.columnCounts.get(columnIndex) || 0) + 1);
+                    }
+                }
+                for (const columnIndex of partnerState.surface) {
+                    rowState.all.surface.add(columnIndex);
+                }
+                if (!hadRowInterface && rowState.all.interface.size > 0) {
+                    interfaceState.allColumnStats.denominator += 1;
+                }
+            }
+        }
+        interfaceState.partnerDomains = [...existingPartners].sort();
+        interfaceState.overlayRowsTotal = Number(payload.data_row_count || interfaceState.overlayRowsTotal || state.msaRowsTotal || 0);
+        interfaceState.overlayRowsLoaded = Math.max(Number(interfaceState.overlayRowsLoaded || 0), Number(payload.data_offset || 0) + Number(payload.data_loaded || 0));
+        interfaceState.overlayComplete =
+            Boolean(payload.data_complete) ||
+                (interfaceState.overlayRowsTotal > 0 &&
+                    interfaceState.overlayRowsLoaded >= interfaceState.overlayRowsTotal);
+        return true;
+    }
+    function ensureColumnsDomainOverlayLoaded() {
+        if (columnsSourceMode() !== "domains" ||
+            !interfaceSelect.value ||
+            !state.interface ||
+            state.interface.overlayComplete) {
+            return null;
+        }
+        const requestKey = columnsDomainOverlayRequestKey();
+        if (state.columnsDomainOverlayErrorKey === requestKey) {
+            return null;
+        }
+        if (state.columnsDomainOverlayPromise &&
+            state.columnsDomainOverlayRequestKey === requestKey) {
+            return state.columnsDomainOverlayPromise;
+        }
+        state.columnsDomainOverlayLoading = true;
+        state.columnsDomainOverlayRequestKey = requestKey;
+        state.columnsDomainOverlayErrorKey = null;
+        const promise = (async () => {
+            try {
+                const payload = await fetchJson(columnsDomainOverlayUrl());
+                if (state.columnsDomainOverlayRequestKey !== requestKey) {
+                    return;
+                }
+                if (mergeColumnsDomainOverlayPayload(payload)) {
+                    state.columnsChartKey = null;
+                    state.columnsInteractionLayout = null;
+                }
+            }
+            catch (error) {
+                if (state.columnsDomainOverlayRequestKey === requestKey) {
+                    state.columnsDomainOverlayErrorKey = requestKey;
+                    setColumnsInfo(`Could not load all interacting domains: ${error.message}`);
+                }
+            }
+            finally {
+                if (state.columnsDomainOverlayRequestKey === requestKey) {
+                    state.columnsDomainOverlayLoading = false;
+                    state.columnsDomainOverlayPromise = null;
+                    renderColumnsChart();
+                }
+            }
+        })();
+        state.columnsDomainOverlayPromise = promise;
+        return promise;
+    }
     function normalizedDomainColumnsChart() {
         const alignmentLength = columnsAlignmentLength();
         if (!state.interface || alignmentLength <= 0) {
@@ -1814,14 +1985,22 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             requestColumnsRenderNextFrame();
             return;
         }
-        rebuildColumnsChartIfNeeded();
-        renderColumnsClusterLegend();
         const sourceMode = columnsSourceMode();
         const sourceTitle = columnsSourceTitle();
         const sourcePlural = columnsSourcePlural();
         const clusterSource = sourceMode === "clusters";
-        elements.columnsLoading.classList.toggle("hidden", !(clusterSource && state.embeddingClusteringLoading && !(state.columnsChart?.clusters || []).length));
-        elements.columnsLoadingLabel.textContent = "Loading clustering data...";
+        const domainSource = sourceMode === "domains";
+        if (domainSource && state.interface && !state.interface.overlayComplete) {
+            void ensureColumnsDomainOverlayLoaded();
+        }
+        rebuildColumnsChartIfNeeded();
+        renderColumnsClusterLegend();
+        const showClusterLoading = clusterSource && state.embeddingClusteringLoading && !(state.columnsChart?.clusters || []).length;
+        const showDomainLoading = domainSource && state.columnsDomainOverlayLoading && !state.interface?.overlayComplete;
+        elements.columnsLoading.classList.toggle("hidden", !(showClusterLoading || showDomainLoading));
+        elements.columnsLoadingLabel.textContent = showDomainLoading
+            ? "Loading interacting domains..."
+            : "Loading clustering data...";
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, width, height);
         ctx.fillStyle = "#fffdf8";

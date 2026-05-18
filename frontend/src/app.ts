@@ -461,6 +461,10 @@ function resetColumnsChartState() {
   state.columnsClusterOrder = [];
   state.columnsDrag = null;
   state.columnsInteractionLayout = null;
+  state.columnsDomainOverlayLoading = false;
+  state.columnsDomainOverlayRequestKey = null;
+  state.columnsDomainOverlayErrorKey = null;
+  state.columnsDomainOverlayPromise = null;
 }
 
 const dendrogramViewController = createDendrogramViewController({
