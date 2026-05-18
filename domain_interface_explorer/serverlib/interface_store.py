@@ -18,7 +18,9 @@ from .interface_files import directory_interface_json_paths, interface_file_pfam
 from .stats_service import (
     CLEAN_COLUMN_IDENTITY_BATCH_SIZE,
     count_clean_identity_batch,
+    domain_length_from_fragment_key,
     fragment_ranges,
+    histogram_entries_from_counts,
 )
 from .timing import log_event, timed_step
 
@@ -443,8 +445,23 @@ class InterfaceStore:
                 (source_id, *where_args),
             ).fetchone()[0]
         )
+        domain_length_histogram: dict[int, int] = {}
+        for row in connection.execute(
+            f"""
+            SELECT fragment_key
+            FROM interface_rows
+            WHERE source_id = ? AND {where_sql}
+            GROUP BY protein_id, fragment_key
+            """,
+            (source_id, *where_args),
+        ):
+            domain_length = domain_length_from_fragment_key(row[0])
+            if domain_length > 0:
+                domain_length_histogram[domain_length] = (
+                    domain_length_histogram.get(domain_length, 0) + 1
+                )
         unique_interfaces: set[tuple[str, tuple[int, ...]]] = set()
-        histogram: dict[int, int] = {}
+        interface_size_histogram: dict[int, int] = {}
         for row in connection.execute(
             f"""
             SELECT partner_domain, interface_msa_columns_a, interface_residues_a
@@ -458,15 +475,15 @@ class InterfaceStore:
             if interface_size <= 0:
                 continue
             unique_interfaces.add((str(row[0]), tuple(columns)))
-            histogram[interface_size] = histogram.get(interface_size, 0) + 1
+            interface_size_histogram[interface_size] = (
+                interface_size_histogram.get(interface_size, 0) + 1
+            )
         return {
             "dataset_domains": dataset_domains,
             "dataset_interfaces": total_rows,
             "unique_interfaces": len(unique_interfaces),
-            "interface_size_histogram": [
-                {"size": size, "count": count}
-                for size, count in sorted(histogram.items())
-            ],
+            "interface_size_histogram": histogram_entries_from_counts(interface_size_histogram),
+            "domain_length_histogram": histogram_entries_from_counts(domain_length_histogram),
         }
 
     def get_interface_page(
@@ -613,7 +630,7 @@ class InterfaceStore:
         row_offset: int,
         row_limit: int | None,
     ) -> list[dict[str, object]]:
-        limit_sql = "" if row_limit is None else "LIMIT ?"
+        limit_sql = "LIMIT -1" if row_limit is None else "LIMIT ?"
         args: tuple[object, ...] = (source_id, *where_args)
         if row_limit is not None:
             args = (*args, int(row_limit), int(row_offset))
@@ -650,7 +667,7 @@ class InterfaceStore:
         row_offset: int,
         row_limit: int | None,
     ) -> dict[str, dict[str, dict[str, object]]]:
-        limit_sql = "" if row_limit is None else "LIMIT ?"
+        limit_sql = "LIMIT -1" if row_limit is None else "LIMIT ?"
         args: tuple[object, ...] = (source_id, *where_args)
         if row_limit is not None:
             args = (*args, int(row_limit), int(row_offset))
@@ -675,6 +692,83 @@ class InterfaceStore:
                 "surface_msa_columns_a": unpack_uints(row[3]),
             }
         return payload
+
+    def get_histogram_targets(
+        self,
+        path: Path,
+        filter_settings: dict[str, object],
+        *,
+        histogram_type: str,
+        bin_start: int,
+        bin_end: int,
+        partner_domain: str = "",
+    ) -> list[dict[str, object]]:
+        source_id = self.ensure_source_ready(path)
+        min_size = filter_min_interface_size(filter_settings)
+        where_sql, where_args = self.filtered_where(min_size)
+        normalized_partner = str(partner_domain or "").strip()
+        partner_sql = ""
+        args: tuple[object, ...] = (source_id, *where_args)
+        if normalized_partner and normalized_partner != "__all__":
+            partner_sql = " AND partner_domain = ?"
+            args = (*args, normalized_partner)
+        targets: list[dict[str, object]] = []
+        with timed_step(
+            "store",
+            "load histogram targets",
+            file=path.name,
+            histogram_type=histogram_type,
+            bin_start=bin_start,
+            bin_end=bin_end,
+            partner=normalized_partner or "all",
+        ) as timer:
+            with self.connect() as connection:
+                if histogram_type == "domain_length":
+                    rows = connection.execute(
+                        f"""
+                        SELECT partner_domain, interface_row_key, fragment_key
+                        FROM interface_rows
+                        WHERE source_id = ? AND {where_sql}{partner_sql}
+                        ORDER BY row_order
+                        """,
+                        args,
+                    )
+                    for row in rows:
+                        value = domain_length_from_fragment_key(row[2])
+                        if value < bin_start or value > bin_end:
+                            continue
+                        targets.append(
+                            {
+                                "row_key": str(row[1]),
+                                "partner_domain": str(row[0]),
+                                "value": value,
+                            }
+                        )
+                elif histogram_type == "interface_size":
+                    rows = connection.execute(
+                        f"""
+                        SELECT partner_domain, interface_row_key, interface_msa_columns_a
+                        FROM interface_rows
+                        WHERE source_id = ? AND {where_sql}{partner_sql}
+                        ORDER BY row_order
+                        """,
+                        args,
+                    )
+                    for row in rows:
+                        value = len(set(unpack_uints(row[2])))
+                        if value < bin_start or value > bin_end:
+                            continue
+                        targets.append(
+                            {
+                                "row_key": str(row[1]),
+                                "partner_domain": str(row[0]),
+                                "value": value,
+                            }
+                        )
+                else:
+                    raise ValueError("histogram type must be 'interface_size' or 'domain_length'")
+            timer.set(targets=len(targets))
+        return targets
 
     def get_columns_payload(
         self,

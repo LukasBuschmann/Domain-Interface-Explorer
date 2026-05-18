@@ -100,6 +100,8 @@ export const state = {
   embeddingClusteringSettingsDraft: {
     ...DEFAULT_CLUSTERING_SETTINGS,
   },
+  embeddingDomainSizeRangesByPfamId: {},
+  embeddingDomainSizeRangeDraftsByPfamId: {},
   embeddingHierarchicalTargetMemory: {
     nClusters: String(DEFAULT_CLUSTERING_SETTINGS.nClusters),
     distanceThreshold: String(DEFAULT_CLUSTERING_SETTINGS.distanceThreshold),

@@ -501,6 +501,30 @@ def fragment_ranges(fragment_key: str) -> list[tuple[int, int]]:
     return ranges
 
 
+def domain_length_from_fragment_key(fragment_key: object) -> int:
+    try:
+        ranges = fragment_ranges(str(fragment_key or ""))
+    except (TypeError, ValueError):
+        return 0
+    total = 0
+    for start, end in ranges:
+        if end >= start:
+            total += end - start + 1
+    return total
+
+
+def domain_length_from_row_payload(row_key: object, row_payload: object) -> int:
+    if isinstance(row_payload, dict):
+        try:
+            residue_count = int(row_payload.get("n_residues_a", 0))
+        except (TypeError, ValueError):
+            residue_count = 0
+        if residue_count > 0:
+            return residue_count
+    parsed = parse_interface_row_key(str(row_key or ""))
+    return domain_length_from_fragment_key(parsed.get("fragment_key", ""))
+
+
 def fragment_start(fragment_key: str) -> int:
     ranges = fragment_ranges(fragment_key)
     return ranges[0][0] if ranges else 1
@@ -659,7 +683,8 @@ def load_interface_entries(interface_payload: dict[str, dict[str, dict]]) -> lis
     for partner_domain in sorted(interface_payload):
         rows = interface_payload[partner_domain]
         for row_key in sorted(rows):
-            raw_columns = rows[row_key].get("interface_msa_columns_a", [])
+            row_payload = rows[row_key]
+            raw_columns = row_payload.get("interface_msa_columns_a", [])
             columns = tuple(sorted({int(column) for column in raw_columns}))
             if not columns:
                 continue
@@ -668,6 +693,7 @@ def load_interface_entries(interface_payload: dict[str, dict[str, dict]]) -> lis
                     "partner_domain": partner_domain,
                     "row_key": row_key,
                     "columns": columns,
+                    "domain_length": domain_length_from_row_payload(row_key, row_payload),
                 }
             )
     return entries
@@ -732,6 +758,76 @@ def distance_entries_signature(entries: list[dict[str, object]]) -> str:
 
 def condensed_distance_count(entry_count: int) -> int:
     return max(0, entry_count * (entry_count - 1) // 2)
+
+
+def domain_size_filter_from_settings(
+    settings: dict[str, object] | None,
+) -> tuple[int | None, int | None]:
+    if not isinstance(settings, dict):
+        return None, None
+
+    def optional_int(key: str) -> int | None:
+        raw_value = settings.get(key)
+        if raw_value is None or str(raw_value).strip() == "":
+            return None
+        return int(raw_value)
+
+    min_size = optional_int("domain_size_min")
+    max_size = optional_int("domain_size_max")
+    return min_size, max_size
+
+
+def domain_size_filter_is_active(
+    domain_size_filter: tuple[int | None, int | None] | None,
+) -> bool:
+    if domain_size_filter is None:
+        return False
+    min_size, max_size = domain_size_filter
+    return min_size is not None or max_size is not None
+
+
+def domain_size_filter_key(
+    domain_size_filter: tuple[int | None, int | None] | None,
+) -> str:
+    if not domain_size_filter_is_active(domain_size_filter):
+        return ""
+    min_size, max_size = domain_size_filter or (None, None)
+    min_label = "" if min_size is None else str(int(min_size))
+    max_label = "" if max_size is None else str(int(max_size))
+    return f"domain_size:{min_label}:{max_label}"
+
+
+def entry_matches_domain_size_filter(
+    entry: dict[str, object],
+    domain_size_filter: tuple[int | None, int | None] | None,
+) -> bool:
+    if not domain_size_filter_is_active(domain_size_filter):
+        return True
+    min_size, max_size = domain_size_filter or (None, None)
+    try:
+        domain_length = int(entry.get("domain_length", 0))
+    except (TypeError, ValueError):
+        domain_length = 0
+    if domain_length <= 0:
+        return False
+    if min_size is not None and domain_length < min_size:
+        return False
+    if max_size is not None and domain_length > max_size:
+        return False
+    return True
+
+
+def filter_entries_by_domain_size(
+    entries: list[dict[str, object]],
+    domain_size_filter: tuple[int | None, int | None] | None,
+) -> list[dict[str, object]]:
+    if not domain_size_filter_is_active(domain_size_filter):
+        return entries
+    return [
+        entry
+        for entry in entries
+        if entry_matches_domain_size_filter(entry, domain_size_filter)
+    ]
 
 
 def condensed_to_square_distance_matrix(condensed: object, entry_count: int, dtype: object | None = None) -> object:
@@ -866,10 +962,17 @@ def build_compressed_interface_data_uncached(
     log_category: str = "interface",
     parse_message: str = "parse interfaces",
     compress_message: str = "compress identical interfaces",
+    domain_size_filter: tuple[int | None, int | None] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     with timed_step(log_category, parse_message) as timer:
         entries = load_interface_entries(interface_payload)
-        timer.set(interface_count=len(entries))
+        unfiltered_count = len(entries)
+        entries = filter_entries_by_domain_size(entries, domain_size_filter)
+        timer.set(
+            interface_count=len(entries),
+            unfiltered_interface_count=unfiltered_count,
+            domain_size_filter=domain_size_filter_key(domain_size_filter) or "full",
+        )
     if len(entries) < 2:
         raise ValueError("need at least two interfaces with non-empty interface sets")
     with timed_step(log_category, compress_message, interface_count=len(entries)) as timer:
@@ -883,8 +986,13 @@ def load_or_build_compressed_interface_data(
     interface_path: Path,
     interface_payload: dict[str, dict[str, dict]],
     interface_filter_settings: dict[str, object] | None = None,
+    domain_size_filter: tuple[int | None, int | None] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
-    cache_key = compressed_interface_cache_key(interface_path, interface_filter_settings)
+    cache_key = compressed_interface_cache_key(
+        interface_path,
+        interface_filter_settings,
+        domain_size_filter,
+    )
     owner = False
     with COMPRESSED_INTERFACE_CACHE_LOCK:
         cached = COMPRESSED_INTERFACE_CACHE.get(cache_key)
@@ -913,6 +1021,7 @@ def load_or_build_compressed_interface_data(
             log_category="interface",
             parse_message="parse interfaces for shared cache",
             compress_message="compress identical interfaces for shared cache",
+            domain_size_filter=domain_size_filter,
         )
     except Exception as exc:
         with COMPRESSED_INTERFACE_CACHE_LOCK:
@@ -1109,6 +1218,8 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
         "hierarchical_min_cluster_size",
         [str(DEFAULT_HIERARCHICAL_MIN_CLUSTER_SIZE)],
     )[0].strip()
+    domain_size_min_raw = query.get("domain_size_min", [""])[0].strip()
+    domain_size_max_raw = query.get("domain_size_max", [""])[0].strip()
     if method_raw not in {"hdbscan", "hierarchical"}:
         raise ValueError("clustering method must be either 'hdbscan' or 'hierarchical'")
     if distance_raw not in {"jaccard", "dice", "overlap"}:
@@ -1169,6 +1280,22 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
     hierarchical_min_cluster_size = int(hierarchical_min_cluster_size_raw)
     if hierarchical_min_cluster_size <= 0:
         raise ValueError("hierarchical minimal cluster size must be positive")
+    domain_size_min: int | None = None
+    if domain_size_min_raw != "":
+        domain_size_min = int(domain_size_min_raw)
+        if domain_size_min <= 0:
+            raise ValueError("domain size minimum must be positive")
+    domain_size_max: int | None = None
+    if domain_size_max_raw != "":
+        domain_size_max = int(domain_size_max_raw)
+        if domain_size_max <= 0:
+            raise ValueError("domain size maximum must be positive")
+    if (
+        domain_size_min is not None
+        and domain_size_max is not None
+        and domain_size_min > domain_size_max
+    ):
+        raise ValueError("domain size minimum cannot exceed maximum")
     hierarchical_target = hierarchical_target_raw
     if not hierarchical_target:
         if n_clusters is not None and distance_threshold is not None:
@@ -1195,7 +1322,7 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
             raise ValueError(
                 "hierarchical target must be one of 'distance_threshold', 'n_clusters', or 'persistence'"
             )
-    return {
+    settings: dict[str, object] = {
         "method": method_raw,
         "distance": distance_raw,
         "min_cluster_size": min_cluster_size,
@@ -1210,6 +1337,12 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
         "persistence_score_mode": persistence_score_mode,
         "hierarchical_min_cluster_size": hierarchical_min_cluster_size,
     }
+    if method_raw == "hierarchical":
+        if domain_size_min is not None:
+            settings["domain_size_min"] = domain_size_min
+        if domain_size_max is not None:
+            settings["domain_size_max"] = domain_size_max
+    return settings
 
 
 def parse_interface_filter_settings(query: dict[str, list[str]]) -> dict[str, object]:
@@ -1235,16 +1368,19 @@ def interface_filter_settings_key(settings: dict[str, object] | None = None) -> 
 def compressed_interface_cache_key(
     interface_path: Path,
     interface_filter_settings: dict[str, object] | None = None,
+    domain_size_filter: tuple[int | None, int | None] | None = None,
 ) -> str:
     stat = interface_path.stat()
-    return "|".join(
-        (
-            str(interface_path.resolve()),
-            str(stat.st_size),
-            str(stat.st_mtime_ns),
-            interface_filter_settings_key(interface_filter_settings),
-        )
-    )
+    parts = [
+        str(interface_path.resolve()),
+        str(stat.st_size),
+        str(stat.st_mtime_ns),
+        interface_filter_settings_key(interface_filter_settings),
+    ]
+    filter_key = domain_size_filter_key(domain_size_filter)
+    if filter_key:
+        parts.append(filter_key)
+    return "|".join(parts)
 
 
 def interface_residue_count(payload: dict[str, object], side: str = "a") -> int:
@@ -1308,18 +1444,21 @@ def distance_data_cache_key(
     distance_metric: str,
     interface_filter_settings: dict[str, object] | None = None,
     distance_scope: str = "expanded",
+    domain_size_filter: tuple[int | None, int | None] | None = None,
 ) -> str:
     stat = interface_path.stat()
-    return "|".join(
-        (
-            str(interface_path.resolve()),
-            str(stat.st_size),
-            str(stat.st_mtime_ns),
-            distance_metric,
-            distance_scope,
-            interface_filter_settings_key(interface_filter_settings),
-        )
-    )
+    parts = [
+        str(interface_path.resolve()),
+        str(stat.st_size),
+        str(stat.st_mtime_ns),
+        distance_metric,
+        distance_scope,
+        interface_filter_settings_key(interface_filter_settings),
+    ]
+    filter_key = domain_size_filter_key(domain_size_filter)
+    if filter_key:
+        parts.append(filter_key)
+    return "|".join(parts)
 
 
 def distance_matrix_cache_path(
@@ -1328,9 +1467,14 @@ def distance_matrix_cache_path(
     distance_metric: str,
     interface_filter_settings: dict[str, object] | None = None,
     distance_scope: str = "expanded",
+    domain_size_filter: tuple[int | None, int | None] | None = None,
 ) -> Path:
     _ = interface_filter_settings
     pfam_id = interface_file_pfam_id(interface_path)
+    filter_key = domain_size_filter_key(domain_size_filter)
+    if filter_key:
+        filter_hash = hashlib.sha1(filter_key.encode("utf-8")).hexdigest()[:12]
+        return cache_dir / distance_metric / distance_scope / "distance" / f"{pfam_id}.{filter_hash}.distance.npz"
     return cache_dir / distance_metric / distance_scope / "distance" / f"{pfam_id}.distance.npz"
 
 
@@ -1342,6 +1486,7 @@ def load_cached_distance_matrix(
     expected_entry_signature: str | None = None,
     interface_path: Path | None = None,
     interface_filter_settings: dict[str, object] | None = None,
+    domain_size_filter: tuple[int | None, int | None] | None = None,
 ) -> tuple[object, object] | None:
     if not cache_path.exists():
         log_event("distance", "distance matrix disk cache missing", file=str(cache_path))
@@ -1384,8 +1529,14 @@ def load_cached_distance_matrix(
                     if "interface_filter_settings" in data.files
                     else ""
                 )
+                cached_domain_size_filter = (
+                    str(np.asarray(data["domain_size_filter"]).reshape(-1)[0])
+                    if "domain_size_filter" in data.files
+                    else ""
+                )
             expected_count = condensed_distance_count(entry_count)
             expected_filter_settings = interface_filter_settings_key(interface_filter_settings)
+            expected_domain_size_filter = domain_size_filter_key(domain_size_filter)
             source_stat = interface_path.stat() if interface_path is not None else None
             if (
                 format_version != DISTANCE_CACHE_FORMAT_VERSION
@@ -1411,6 +1562,7 @@ def load_cached_distance_matrix(
                     cached_filter_settings
                     and cached_filter_settings != expected_filter_settings
                 )
+                or cached_domain_size_filter != expected_domain_size_filter
             ):
                 log_event(
                     "distance",
@@ -1444,6 +1596,7 @@ def write_distance_matrix_cache(
     entry_signature: str | None = None,
     interface_path: Path | None = None,
     interface_filter_settings: dict[str, object] | None = None,
+    domain_size_filter: tuple[int | None, int | None] | None = None,
 ) -> None:
     import numpy as np
 
@@ -1465,6 +1618,7 @@ def write_distance_matrix_cache(
             "entry_count": np.array([entry_count], dtype=np.uint32),
             "entry_signature": np.array(entry_signature or ""),
             "interface_filter_settings": np.array(interface_filter_settings_key(interface_filter_settings)),
+            "domain_size_filter": np.array(domain_size_filter_key(domain_size_filter)),
             "condensed_distance": quantize_condensed_distances(condensed),
         }
         if interface_path is not None:
@@ -1529,6 +1683,7 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
     cache_dir = interface_payload.get("cache_dir")
     raw_interface_payload = interface_payload["payload"]
     interface_filter_settings = interface_payload.get("interface_filter_settings")
+    domain_size_filter = interface_payload.get("domain_size_filter")
     cache_workers = int(interface_payload.get("cache_workers") or DEFAULT_CACHE_WORKERS)
     distance_scope = str(interface_payload.get("distance_scope") or "expanded")
     if isinstance(interface_path, Path):
@@ -1536,6 +1691,7 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
             interface_path,
             raw_interface_payload,
             interface_filter_settings,
+            domain_size_filter,
         )
     else:
         entries, compression = build_compressed_interface_data_uncached(
@@ -1543,6 +1699,7 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
             log_category="distance",
             parse_message="parse interfaces",
             compress_message="compress identical interfaces",
+            domain_size_filter=domain_size_filter,
         )
     compressed_entries = compression["entries"]
     entry_signature = distance_entries_signature(entries)
@@ -1554,6 +1711,7 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
             distance_metric,
             interface_filter_settings,
             distance_scope="compressed",
+            domain_size_filter=domain_size_filter,
         )
         if isinstance(cache_dir, Path) and isinstance(interface_path, Path)
         else None
@@ -1567,6 +1725,7 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
             expected_entry_signature=compressed_entry_signature,
             interface_path=interface_path,
             interface_filter_settings=interface_filter_settings,
+            domain_size_filter=domain_size_filter,
         )
         if compressed_cache_path is not None
         else None
@@ -1610,6 +1769,7 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
                 entry_signature=compressed_entry_signature,
                 interface_path=interface_path,
                 interface_filter_settings=interface_filter_settings,
+                domain_size_filter=domain_size_filter,
             )
     response: dict[str, object] = {
         "entries": entries,
@@ -1623,6 +1783,8 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
         "compressed_distance_condensed": compressed_distance_condensed,
         "original_sample_count": len(entries),
         "compressed_sample_count": len(compressed_entries),
+        "compressed_signature_hash": str(compression.get("cache_signature_hash") or ""),
+        "domain_size_filter": domain_size_filter_key(domain_size_filter),
     }
     if distance_scope == "compressed":
         return response
@@ -1634,6 +1796,7 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
             distance_metric,
             interface_filter_settings,
             distance_scope="expanded",
+            domain_size_filter=domain_size_filter,
         )
         if isinstance(cache_dir, Path) and isinstance(interface_path, Path)
         else None
@@ -1647,6 +1810,7 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
             expected_entry_signature=entry_signature,
             interface_path=interface_path,
             interface_filter_settings=interface_filter_settings,
+            domain_size_filter=domain_size_filter,
         )
         if expanded_cache_path is not None
         else None
@@ -1685,6 +1849,7 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
                 entry_signature=entry_signature,
                 interface_path=interface_path,
                 interface_filter_settings=interface_filter_settings,
+                domain_size_filter=domain_size_filter,
             )
     response.update(
         {
@@ -1705,12 +1870,14 @@ def load_interface_distance_data(
     interface_filter_settings: dict[str, object] | None = None,
     distance_scope: str = "expanded",
     cache_workers: int = DEFAULT_CACHE_WORKERS,
+    domain_size_filter: tuple[int | None, int | None] | None = None,
 ) -> dict[str, object]:
     cache_key = distance_data_cache_key(
         interface_path,
         distance_metric,
         interface_filter_settings,
         distance_scope,
+        domain_size_filter,
     )
     owner = False
     with DISTANCE_DATA_CACHE_LOCK:
@@ -1756,6 +1923,7 @@ def load_interface_distance_data(
                     "interface_filter_settings": interface_filter_settings,
                     "distance_scope": distance_scope,
                     "cache_workers": cache_workers,
+                    "domain_size_filter": domain_size_filter,
                 }
             )
             timer.set(
@@ -2206,6 +2374,7 @@ def hierarchy_cache_path(
     distance_metric: str,
     linkage_method: str,
     interface_filter_settings: dict[str, object] | None = None,
+    domain_size_filter: tuple[int | None, int | None] | None = None,
 ) -> Path:
     key = hashlib.sha1(
         (
@@ -2216,6 +2385,7 @@ def hierarchy_cache_path(
                 distance_metric,
                 interface_filter_settings,
                 distance_scope="compressed",
+                domain_size_filter=domain_size_filter,
             )
             + "|"
             + str(linkage_method)
@@ -2749,10 +2919,12 @@ def load_or_compute_local_hierarchy(
     distance_metric: str,
     linkage_method: str,
     interface_filter_settings: dict[str, object] | None = None,
+    domain_size_filter: tuple[int | None, int | None] | None = None,
 ) -> dict[str, object]:
     compressed_entries = distance_data["compressed_entries"]
-    leaf_signature_hash = str(compression.get("cache_signature_hash") or "") or compressed_entries_signature_hash(
-        compressed_entries
+    leaf_signature_hash = str(
+        distance_data.get("compressed_signature_hash")
+        or compressed_entries_signature_hash(compressed_entries)
     )
     cache_path = hierarchy_cache_path(
         cache_dir,
@@ -2760,6 +2932,7 @@ def load_or_compute_local_hierarchy(
         distance_metric,
         linkage_method,
         interface_filter_settings,
+        domain_size_filter,
     )
     cached_hierarchy = load_cached_local_hierarchy(cache_path, leaf_signature_hash)
     if cached_hierarchy is not None:
@@ -2792,6 +2965,7 @@ def load_or_compute_local_hierarchy(
                 pfam_id=np.array(interface_file_pfam_id(interface_path)),
                 leaf_count=np.array([int(hierarchy["leaf_count"])], dtype=np.uint32),
                 leaf_signature_hash=np.array(leaf_signature_hash),
+                domain_size_filter=np.array(domain_size_filter_key(domain_size_filter)),
                 children=hierarchy["children"],
                 distance=hierarchy["distances"],
                 count=hierarchy["counts"],
@@ -3093,6 +3267,7 @@ def compute_hierarchical_clustering_payload_from_hierarchy(
     hierarchical_min_cluster_size = int(
         settings.get("hierarchical_min_cluster_size", DEFAULT_HIERARCHICAL_MIN_CLUSTER_SIZE)
     )
+    domain_size_filter = domain_size_filter_from_settings(settings)
     compressed_count = len(compressed_entries)
     leaf_count = int(hierarchy["leaf_count"])
     if compressed_count == 0:
@@ -3217,6 +3392,23 @@ def compute_hierarchical_clustering_payload_from_hierarchy(
             for entry, label in zip(entries, labels_list, strict=True)
         ]
     hierarchy_source = str(hierarchy.get("source", "local_computed"))
+    response_settings: dict[str, object] = {
+        "method": "hierarchical",
+        "distance": distance_metric,
+        "linkage": linkage,
+        "hierarchical_target": hierarchical_target,
+        "n_clusters": n_clusters,
+        "distance_threshold": distance_threshold,
+        "persistence_min_lifetime": persistence_min_lifetime,
+        "persistence_lifetime_weight": persistence_lifetime_weight,
+        "persistence_score_mode": persistence_score_mode,
+        "hierarchical_min_cluster_size": hierarchical_min_cluster_size,
+    }
+    domain_size_min, domain_size_max = domain_size_filter
+    if domain_size_min is not None:
+        response_settings["domain_size_min"] = domain_size_min
+    if domain_size_max is not None:
+        response_settings["domain_size_max"] = domain_size_max
     return {
         "clustering": "hierarchical",
         "distance": distance_metric,
@@ -3228,18 +3420,8 @@ def compute_hierarchical_clustering_payload_from_hierarchy(
         "hierarchy_source": hierarchy_source,
         "hierarchy_precalculated": hierarchy_source == "precalculated",
         "hierarchy_leaf_count": leaf_count,
-        "settings": {
-            "method": "hierarchical",
-            "distance": distance_metric,
-            "linkage": linkage,
-            "hierarchical_target": hierarchical_target,
-            "n_clusters": n_clusters,
-            "distance_threshold": distance_threshold,
-            "persistence_min_lifetime": persistence_min_lifetime,
-            "persistence_lifetime_weight": persistence_lifetime_weight,
-            "persistence_score_mode": persistence_score_mode,
-            "hierarchical_min_cluster_size": hierarchical_min_cluster_size,
-        },
+        "domain_size_filter": domain_size_filter_key(domain_size_filter),
+        "settings": response_settings,
         "points": points,
     }
 
@@ -3396,34 +3578,38 @@ def load_hierarchical_context(
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[int], dict[str, object]]:
     if clustering_settings["method"] != "hierarchical":
         raise ValueError("dendrogram view requires hierarchical clustering")
+    domain_size_filter = domain_size_filter_from_settings(clustering_settings)
     entries, compression = build_compressed_interface_data(
         interface_payload,
         interface_path=interface_path,
         interface_filter_settings=interface_filter_settings,
+        domain_size_filter=domain_size_filter,
     )
     distance_metric = str(clustering_settings["distance"])
     linkage_method = str(clustering_settings["linkage"])
     compressed_entries = compression["entries"]
     group_index_by_entry = compression["group_index_by_entry"]
-    try:
-        hierarchy = load_precomputed_hierarchy(
-            hierarchy_dir,
-            interface_path,
-            distance_metric,
-            linkage_method,
-            compressed_entries,
-            compressed_signature_hash=str(compression.get("cache_signature_hash") or ""),
-        )
-    except ValueError as exc:
-        log_event(
-            "hierarchy",
-            "precalculated hierarchy rejected",
-            file=interface_path.name,
-            metric=distance_metric,
-            linkage=linkage_method,
-            error=exc,
-        )
-        hierarchy = None
+    hierarchy = None
+    if not domain_size_filter_is_active(domain_size_filter):
+        try:
+            hierarchy = load_precomputed_hierarchy(
+                hierarchy_dir,
+                interface_path,
+                distance_metric,
+                linkage_method,
+                compressed_entries,
+                compressed_signature_hash=str(compression.get("cache_signature_hash") or ""),
+            )
+        except ValueError as exc:
+            log_event(
+                "hierarchy",
+                "precalculated hierarchy rejected",
+                file=interface_path.name,
+                metric=distance_metric,
+                linkage=linkage_method,
+                error=exc,
+            )
+            hierarchy = None
     if hierarchy is None:
         distance_data = load_interface_distance_data(
             cache_dir,
@@ -3433,6 +3619,7 @@ def load_hierarchical_context(
             interface_filter_settings,
             distance_scope="compressed",
             cache_workers=cache_workers,
+            domain_size_filter=domain_size_filter,
         )
         entries = distance_data["entries"]
         compressed_entries = distance_data["compressed_entries"]
@@ -3444,6 +3631,7 @@ def load_hierarchical_context(
             distance_metric,
             linkage_method,
             interface_filter_settings,
+            domain_size_filter,
         )
     return entries, compressed_entries, group_index_by_entry, hierarchy
 
@@ -3833,18 +4021,21 @@ def build_compressed_interface_data(
     interface_payload: dict[str, dict[str, dict]],
     interface_path: Path | None = None,
     interface_filter_settings: dict[str, object] | None = None,
+    domain_size_filter: tuple[int | None, int | None] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     if interface_path is not None:
         return load_or_build_compressed_interface_data(
             interface_path,
             interface_payload,
             interface_filter_settings,
+            domain_size_filter,
         )
     return build_compressed_interface_data_uncached(
         interface_payload,
         log_category="clustering",
         parse_message="parse interfaces for hierarchy",
         compress_message="compress interfaces for hierarchy",
+        domain_size_filter=domain_size_filter,
     )
 
 
@@ -3975,43 +4166,50 @@ def hierarchy_status_payload(
         }
     distance_metric = str(clustering_settings["distance"])
     linkage_method = str(clustering_settings["linkage"])
+    domain_size_filter = domain_size_filter_from_settings(clustering_settings)
     entries, compression = build_compressed_interface_data(
         interface_payload,
         interface_path=interface_path,
         interface_filter_settings=interface_filter_settings,
+        domain_size_filter=domain_size_filter,
     )
     compressed_entries = compression["entries"]
     leaf_count = len(compressed_entries)
     precomputed_state = "unavailable"
     precomputed_reason = "hierarchy directory is not configured"
-    try:
-        hierarchy = load_precomputed_hierarchy(
-            hierarchy_dir,
-            interface_path,
-            distance_metric,
-            linkage_method,
-            compressed_entries,
-            compressed_signature_hash=str(compression.get("cache_signature_hash") or ""),
-        )
-        if hierarchy is not None:
-            return {
-                "method": "hierarchical",
-                "distance": distance_metric,
-                "linkage": linkage_method,
-                "source": "precalculated",
-                "local_calculation_required": False,
-                "interface_count": len(entries),
-                "leaf_count": leaf_count,
-                "precalculated": {
-                    "linkage_file": hierarchy.get("linkage_file"),
-                    "resolver_file": hierarchy.get("resolver_file"),
-                },
-            }
-        if hierarchy_dir is not None:
-            precomputed_reason = "no matching precalculated hierarchy files were found"
-    except ValueError as exc:
-        precomputed_state = "mismatch"
-        precomputed_reason = str(exc)
+    if domain_size_filter_is_active(domain_size_filter):
+        precomputed_state = "filtered"
+        precomputed_reason = "domain size filtering requires a filtered local hierarchy"
+    else:
+        try:
+            hierarchy = load_precomputed_hierarchy(
+                hierarchy_dir,
+                interface_path,
+                distance_metric,
+                linkage_method,
+                compressed_entries,
+                compressed_signature_hash=str(compression.get("cache_signature_hash") or ""),
+            )
+            if hierarchy is not None:
+                return {
+                    "method": "hierarchical",
+                    "distance": distance_metric,
+                    "linkage": linkage_method,
+                    "source": "precalculated",
+                    "local_calculation_required": False,
+                    "interface_count": len(entries),
+                    "leaf_count": leaf_count,
+                    "domain_size_filter": domain_size_filter_key(domain_size_filter),
+                    "precalculated": {
+                        "linkage_file": hierarchy.get("linkage_file"),
+                        "resolver_file": hierarchy.get("resolver_file"),
+                    },
+                }
+            if hierarchy_dir is not None:
+                precomputed_reason = "no matching precalculated hierarchy files were found"
+        except ValueError as exc:
+            precomputed_state = "mismatch"
+            precomputed_reason = str(exc)
 
     leaf_signature_hash = compressed_entries_signature_hash(compressed_entries)
     cache_path = hierarchy_cache_path(
@@ -4020,6 +4218,7 @@ def hierarchy_status_payload(
         distance_metric,
         linkage_method,
         interface_filter_settings,
+        domain_size_filter,
     )
     if local_hierarchy_cache_is_valid(cache_path, leaf_signature_hash):
         return {
@@ -4031,6 +4230,7 @@ def hierarchy_status_payload(
             "interface_count": len(entries),
             "leaf_count": leaf_count,
             "local_cache_file": str(cache_path),
+            "domain_size_filter": domain_size_filter_key(domain_size_filter),
             "precomputed": {
                 "state": precomputed_state,
                 "reason": precomputed_reason,
@@ -4059,10 +4259,11 @@ def hierarchy_status_payload(
                     "linkage": linkage_method,
                     "source": "clustering_cache",
                     "local_calculation_required": False,
-                    "interface_count": len(entries),
-                    "leaf_count": leaf_count,
-                    "clustering_cache_file": str(clustering_cache_file),
-                    "precomputed": {
+            "interface_count": len(entries),
+            "leaf_count": leaf_count,
+            "clustering_cache_file": str(clustering_cache_file),
+            "domain_size_filter": domain_size_filter_key(domain_size_filter),
+            "precomputed": {
                         "state": precomputed_state,
                         "reason": precomputed_reason,
                     },
@@ -4083,6 +4284,7 @@ def hierarchy_status_payload(
         "interface_count": len(entries),
         "leaf_count": leaf_count,
         "local_cache_file": str(cache_path),
+        "domain_size_filter": domain_size_filter_key(domain_size_filter),
         "precomputed": {
             "state": precomputed_state,
             "reason": precomputed_reason,
@@ -4119,34 +4321,38 @@ def load_or_compute_clustering_payload(
         interface_filter_settings,
     )
     if clustering_settings["method"] == "hierarchical":
+        domain_size_filter = domain_size_filter_from_settings(clustering_settings)
         entries, compression = build_compressed_interface_data(
             interface_payload,
             interface_path=interface_path,
             interface_filter_settings=interface_filter_settings,
+            domain_size_filter=domain_size_filter,
         )
         distance_metric = str(clustering_settings["distance"])
         linkage_method = str(clustering_settings["linkage"])
         compressed_entries = compression["entries"]
         group_index_by_entry = compression["group_index_by_entry"]
-        try:
-            hierarchy = load_precomputed_hierarchy(
-                hierarchy_dir,
-                interface_path,
-                distance_metric,
-                linkage_method,
-                compressed_entries,
-                compressed_signature_hash=str(compression.get("cache_signature_hash") or ""),
-            )
-        except ValueError as exc:
-            log_event(
-                "hierarchy",
-                "precalculated hierarchy rejected",
-                file=interface_path.name,
-                metric=distance_metric,
-                linkage=linkage_method,
-                error=exc,
-            )
-            hierarchy = None
+        hierarchy = None
+        if not domain_size_filter_is_active(domain_size_filter):
+            try:
+                hierarchy = load_precomputed_hierarchy(
+                    hierarchy_dir,
+                    interface_path,
+                    distance_metric,
+                    linkage_method,
+                    compressed_entries,
+                    compressed_signature_hash=str(compression.get("cache_signature_hash") or ""),
+                )
+            except ValueError as exc:
+                log_event(
+                    "hierarchy",
+                    "precalculated hierarchy rejected",
+                    file=interface_path.name,
+                    metric=distance_metric,
+                    linkage=linkage_method,
+                    error=exc,
+                )
+                hierarchy = None
         if cache_path.exists():
             with timed_step(
                 "clustering",
@@ -4182,6 +4388,7 @@ def load_or_compute_clustering_payload(
                 interface_filter_settings,
                 distance_scope="compressed",
                 cache_workers=cache_workers,
+                domain_size_filter=domain_size_filter,
             )
             entries = distance_data["entries"]
             compressed_entries = distance_data["compressed_entries"]
@@ -4193,6 +4400,7 @@ def load_or_compute_clustering_payload(
                 distance_metric,
                 linkage_method,
                 interface_filter_settings,
+                domain_size_filter,
             )
         clustering_payload = compute_hierarchical_clustering_payload_from_hierarchy(
             entries,

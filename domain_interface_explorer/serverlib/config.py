@@ -13,7 +13,7 @@ DEFAULT_CACHE_DIR = PROJECT_ROOT / "cache"
 DEFAULT_CACHE_WORKERS = 4
 STATIC_DIR = PROJECT_ROOT / "domain_interface_explorer" / "static"
 ALPHAFOLD_API = "https://alphafold.ebi.ac.uk/api/prediction/{accession}"
-SELECTOR_STATS_CACHE_VERSION = "7"
+SELECTOR_STATS_CACHE_VERSION = "8"
 PFAM_METADATA_CACHE_VERSION = "1"
 INTERPRO_PFAM_LIST_API = "https://www.ebi.ac.uk/interpro/api/entry/all/pfam/?format=json&page_size=200"
 PFAM_METADATA_REFRESH_MAX_AGE_SECONDS = 14 * 24 * 60 * 60

@@ -66,6 +66,7 @@ export function createMsaViewController({
   visibleColumnsClusters,
   updatePartnerOptions,
   syncDendrogramControls,
+  syncDomainSizeRangeForSelectedFamily,
 }) {
   const {
     appStatus,
@@ -120,6 +121,7 @@ export function createMsaViewController({
   let cachedMsaClusterCounts = new Map();
   let pfamMetadataPollHandle = 0;
   let pfamMetadataPollAttempts = 0;
+  let histogramClickTimer = 0;
   let currentMsaStreamFilename = "";
   let filesRequestPromise = null;
   const pfamInfoRequests = new Map();
@@ -465,7 +467,7 @@ export function createMsaViewController({
     }
     return entries
       .map((entry) => ({
-        size: Number(entry?.size),
+        size: Number(entry?.size ?? entry?.length),
         count: Number(entry?.count),
       }))
       .filter((entry) => Number.isFinite(entry.size) && entry.size > 0 && Number.isFinite(entry.count) && entry.count > 0)
@@ -476,8 +478,11 @@ export function createMsaViewController({
     if (!summary || typeof summary !== "object") {
       return null;
     }
-    const rawHistogram = summary.interface_size_histogram || summary.histogramEntries;
-    const histogramEntries = normalizeHistogramEntries(rawHistogram);
+    const rawInterfaceHistogram = summary.interface_size_histogram || summary.histogramEntries;
+    const rawDomainLengthHistogram =
+      summary.domain_length_histogram || summary.domainLengthHistogramEntries;
+    const histogramEntries = normalizeHistogramEntries(rawInterfaceHistogram);
+    const domainLengthHistogramEntries = normalizeHistogramEntries(rawDomainLengthHistogram);
     const datasetDomains = Number(summary.dataset_domains ?? summary.datasetDomains);
     const datasetInterfaces = Number(summary.dataset_interfaces ?? summary.datasetInterfaces);
     const uniqueInterfaces = Number(summary.unique_interfaces ?? summary.uniqueInterfaces);
@@ -485,7 +490,8 @@ export function createMsaViewController({
       !Number.isFinite(datasetDomains) &&
       !Number.isFinite(datasetInterfaces) &&
       !Number.isFinite(uniqueInterfaces) &&
-      !Array.isArray(rawHistogram)
+      !Array.isArray(rawInterfaceHistogram) &&
+      !Array.isArray(rawDomainLengthHistogram)
     ) {
       return null;
     }
@@ -493,8 +499,10 @@ export function createMsaViewController({
       datasetDomains,
       datasetInterfaces,
       uniqueInterfaces,
-      histogramAvailable: Array.isArray(rawHistogram),
+      histogramAvailable: Array.isArray(rawInterfaceHistogram),
       histogramEntries,
+      domainLengthHistogramAvailable: Array.isArray(rawDomainLengthHistogram),
+      domainLengthHistogramEntries,
     };
   }
 
@@ -524,6 +532,31 @@ export function createMsaViewController({
     return interfaceColumns.size;
   }
 
+  function fragmentLength(fragmentKey) {
+    let total = 0;
+    for (const part of String(fragmentKey || "").split(",")) {
+      const fragmentPart = part.trim();
+      if (!fragmentPart) {
+        continue;
+      }
+      const [startText, endText] = fragmentPart.split("-", 2);
+      const start = Number(startText);
+      const end = Number(endText);
+      if (Number.isInteger(start) && Number.isInteger(end) && end >= start) {
+        total += end - start + 1;
+      }
+    }
+    return total;
+  }
+
+  function domainLengthFromRow(rowKey, rowPayload = null) {
+    const payloadLength = Number(rowPayload?.n_residues_a);
+    if (Number.isFinite(payloadLength) && payloadLength > 0) {
+      return payloadLength;
+    }
+    return fragmentLength(parseInteractionRowKey(rowKey).fragmentKey);
+  }
+
   function filteredInterfaceEntries(interfacePayload, selectedPartner = state.selectedPartner) {
     const entries = [];
     for (const [partnerDomain, rows] of Object.entries(interfacePayload || {})) {
@@ -544,16 +577,48 @@ export function createMsaViewController({
     return entries;
   }
 
+  function applyHistogramInterfacePayload(payload) {
+    if (!payload?.file) {
+      return;
+    }
+    const maps = buildOverlayMaps(payload.data || {});
+    const partnerDomains = partnerDomainsFromPayload(payload, maps);
+    const partnerInterfaceCounts = partnerCountsFromPayload(payload, maps.partnerInterfaceCounts);
+    const existingInterface = state.interface?.file === payload.file ? state.interface : null;
+    state.interface = {
+      ...(existingInterface || {}),
+      ...payload,
+      ...maps,
+      partnerDomains,
+      partnerInterfaceCounts,
+      overlayRowsLoaded: Number(payload.data_loaded || 0),
+      overlayRowsTotal: Number(payload.data_row_count || payload.row_count || 0),
+      overlayComplete: Boolean(payload.data_complete),
+      partnerColors: existingInterface?.partnerColors || buildPartnerColorMap(partnerDomains),
+    };
+    if (!existingInterface) {
+      updatePartnerOptions();
+    }
+  }
+
   function localInterfaceSummary(interfacePayload, selectedPartner = state.selectedPartner) {
     const entries = filteredInterfaceEntries(interfacePayload, selectedPartner);
     const countsBySize = new Map();
+    const domainLengthsByDomain = new Map();
     const uniqueInterfaces = new Set();
     const datasetDomains = new Set();
     for (const entry of entries) {
       const rowKeyParts = String(entry.rowKey || "").split("_", 2);
       const proteinId = rowKeyParts[0] || "";
       const fragmentKey = rowKeyParts[1] || "";
-      datasetDomains.add(`${proteinId}@@${fragmentKey}`);
+      const domainKey = `${proteinId}@@${fragmentKey}`;
+      datasetDomains.add(domainKey);
+      if (!domainLengthsByDomain.has(domainKey)) {
+        const domainLength = domainLengthFromRow(entry.rowKey, entry.rowPayload);
+        if (domainLength > 0) {
+          domainLengthsByDomain.set(domainKey, domainLength);
+        }
+      }
       const interfaceSize = interfaceSizeFromPayload(entry.rowPayload);
       if (interfaceSize <= 0) {
         continue;
@@ -571,12 +636,19 @@ export function createMsaViewController({
       uniqueInterfaces.add(`${entry.partnerDomain}@@${columns.join(",")}`);
       countsBySize.set(interfaceSize, (countsBySize.get(interfaceSize) || 0) + 1);
     }
+    const countsByDomainLength = new Map();
+    for (const domainLength of domainLengthsByDomain.values()) {
+      countsByDomainLength.set(domainLength, (countsByDomainLength.get(domainLength) || 0) + 1);
+    }
     return {
       datasetDomains: datasetDomains.size,
       datasetInterfaces: entries.length,
       uniqueInterfaces: uniqueInterfaces.size,
       histogramEntries: normalizeHistogramEntries(
         [...countsBySize.entries()].map(([size, count]) => ({ size, count }))
+      ),
+      domainLengthHistogramEntries: normalizeHistogramEntries(
+        [...countsByDomainLength.entries()].map(([size, count]) => ({ size, count }))
       ),
     };
   }
@@ -760,34 +832,123 @@ export function createMsaViewController({
     }
   }
 
-  function histogramTargetsForBin(bin) {
+  function histogramTargetsForBin(
+    bin,
+    valueFromEntry = (_partnerDomain, _rowKey, rowPayload) => interfaceSizeFromPayload(rowPayload)
+  ) {
     const targets = [];
     for (const { partnerDomain, rowKey, rowPayload } of filteredInterfaceEntries(state.interface?.data)) {
-      const interfaceSize = interfaceSizeFromPayload(rowPayload);
-      if (interfaceSize < bin.start || interfaceSize > bin.end) {
+      const value = Number(valueFromEntry(partnerDomain, rowKey, rowPayload));
+      if (!Number.isFinite(value) || value < bin.start || value > bin.end) {
         continue;
       }
       targets.push({
         rowKey: interactionRowKey(rowKey, partnerDomain),
+        interfaceRowKey: String(rowKey || ""),
         partnerDomain: String(partnerDomain || ""),
       });
     }
     return targets;
   }
 
-  async function showRandomInterfaceForHistogramBin(bin) {
-    if (!state.interface?.data || !state.interface?.overlayComplete || !state.msa) {
-      appStatus.textContent = "Open the MSA panel to load row data before sampling from the histogram.";
-      return;
+  function histogramTargetsUrl(bin, targetType) {
+    const params = new URLSearchParams({
+      file: interfaceSelect.value,
+      type: targetType,
+      start: String(bin.start),
+      end: String(bin.end),
+    });
+    appendSelectionSettingsToParams(params, state.selectionSettings);
+    if (state.selectedPartner && state.selectedPartner !== "__all__") {
+      params.set("partner_domain", state.selectedPartner);
     }
-    const candidates = histogramTargetsForBin(bin);
-    if (candidates.length === 0) {
-      appStatus.textContent = "No filtered interfaces are available in that histogram range.";
-      return;
+    return `/api/histogram-targets?${params.toString()}`;
+  }
+
+  async function loadHistogramTargetsForBin(bin, targetType) {
+    const filename = interfaceSelect.value;
+    if (!filename) {
+      appStatus.textContent = "Select a domain family before sampling from the histogram.";
+      return [];
     }
-    const target = candidates[Math.floor(Math.random() * candidates.length)];
-    setLoading(5, "Loading selection", "Picking a random interface from the histogram");
+    setLoading(5, "Loading selection", "Loading histogram examples");
+    const payload = await fetchJson(histogramTargetsUrl(bin, targetType));
+    if (interfaceSelect.value !== filename) {
+      return [];
+    }
+    return (Array.isArray(payload.targets) ? payload.targets : [])
+      .map((target) => {
+        const interfaceRowKey = String(target?.row_key || target?.interface_row_key || "");
+        const partnerDomain = String(target?.partner_domain || "");
+        return {
+          rowKey: interactionRowKey(interfaceRowKey, partnerDomain),
+          interfaceRowKey,
+          partnerDomain,
+        };
+      })
+      .filter((target) => target.interfaceRowKey && target.partnerDomain);
+  }
+
+  async function ensureHistogramInterfaceData() {
+    const filename = interfaceSelect.value;
+    if (!filename) {
+      appStatus.textContent = "Select a domain family before sampling from the histogram.";
+      return false;
+    }
+    if (!state.interface || state.interface.file !== filename) {
+      setLoading(5, "Loading interfaces", "Loading interface examples for the histogram");
+      const payload = await fetchJson(
+        interfacePayloadUrl(filename, {
+          includeRows: false,
+          includeData: true,
+          dataOffset: 0,
+          includeCleanColumnIdentity: false,
+        })
+      );
+      if (interfaceSelect.value !== filename) {
+        return false;
+      }
+      applyHistogramInterfacePayload(payload);
+    }
+    if (!state.interface?.data) {
+      appStatus.textContent = "Interface data is not available for the selected family.";
+      return false;
+    }
+    if (state.interface.overlayComplete) {
+      return true;
+    }
+
+    const requestId = state.msaRowsRequestId;
+    setLoading(8, "Loading interfaces", "Loading all interfaces in this family");
+    const payload = await fetchJson(
+      interfacePayloadUrl(filename, {
+        includeRows: false,
+        includeData: true,
+        dataOffset: 0,
+        includeCleanColumnIdentity: false,
+      })
+    );
+    if (requestId !== state.msaRowsRequestId || interfaceSelect.value !== filename || !state.interface) {
+      return false;
+    }
+    applyInterfaceOverlayPayload(payload);
+    return Boolean(state.interface?.data && state.interface.overlayComplete);
+  }
+
+  async function showRandomInterfaceForHistogramBin(
+    bin,
+    targetType,
+    emptyMessage = "No filtered interfaces are available in that histogram range."
+  ) {
     try {
+      const candidates = await loadHistogramTargetsForBin(bin, targetType);
+      if (candidates.length === 0) {
+        appStatus.textContent = emptyMessage;
+        hideLoading();
+        return;
+      }
+      const target = candidates[Math.floor(Math.random() * candidates.length)];
+      setLoading(5, "Loading selection", "Picking a random interface from the histogram");
       const selectedRow = selectRowByKey(String(target.rowKey || ""));
       if (!selectedRow) {
         throw new Error("The sampled interface is no longer available in the filtered selection.");
@@ -800,21 +961,72 @@ export function createMsaViewController({
     }
   }
 
-  function renderPfamInfoHistogram() {
-    const interfaceSummary = currentInterfaceSummary();
-    const histogramEntries = interfaceSummary?.histogramEntries || [];
+  async function showInterfacesForHistogramBin(
+    bin,
+    targetType,
+    emptyMessage = "No filtered interfaces are available in that histogram range."
+  ) {
+    try {
+      const candidates = (await loadHistogramTargetsForBin(bin, targetType)).sort((left, right) =>
+        String(left.rowKey).localeCompare(String(right.rowKey))
+      );
+      if (candidates.length === 0) {
+        appStatus.textContent = emptyMessage;
+        hideLoading();
+        return;
+      }
+      const members = candidates.map((candidate) => ({
+        row_key: String(candidate.interfaceRowKey || ""),
+        partner_domain: String(candidate.partnerDomain || ""),
+      }));
+      state.embeddingMemberSelection = members.length > 1
+        ? {
+            pointKey: `histogram:${histogramBinLabel(bin)}`,
+            members,
+            index: 0,
+          }
+        : null;
+      syncEmbeddingMemberControls?.();
+      setLoading(5, "Loading selection", "Opening interfaces from the histogram");
+      const selectedRow = selectRowByKey(String(candidates[0].rowKey || ""));
+      if (!selectedRow) {
+        throw new Error("The selected interface is no longer available in the filtered selection.");
+      }
+      await loadInteractiveStructure();
+      setLoading(100, "Structure ready", String(selectedRow.display_row_key || selectedRow.row_key || ""));
+      window.setTimeout(hideLoading, 250);
+    } catch (error) {
+      handleStructureLoadFailure(error);
+    }
+  }
+
+  function histogramCountLabel(count, singularNoun, pluralNoun = `${singularNoun}s`) {
+    return `${formatPfamCount(count)} ${count === 1 ? singularNoun : pluralNoun}`;
+  }
+
+  function renderPfamInfoHistogram({
+    titleText,
+    histogramAvailable,
+    histogramEntries,
+    unavailableText,
+    emptyText,
+    countSingular,
+    countPlural,
+    targetType,
+    noTargetsText,
+  }) {
     const section = document.createElement("section");
     section.className = "pfam-info-histogram";
 
     const title = document.createElement("div");
     title.className = "pfam-info-histogram-title";
-    title.textContent = "Interface size";
+    title.textContent = titleText;
     section.appendChild(title);
 
-    if (!interfaceSummary?.histogramAvailable) {
+    if (!histogramAvailable) {
       const empty = document.createElement("p");
       empty.className = "pfam-info-histogram-empty";
-      empty.textContent = "No server interface-size histogram available.";
+      empty.textContent = unavailableText;
       section.appendChild(empty);
       return section;
     }
@@ -822,7 +1034,7 @@ export function createMsaViewController({
     if (histogramEntries.length === 0) {
       const empty = document.createElement("p");
       empty.className = "pfam-info-histogram-empty";
-      empty.textContent = "No local interfaces pass the current minimum-size filter.";
+      empty.textContent = emptyText;
       section.appendChild(empty);
       return section;
     }
@@ -840,9 +1052,24 @@ export function createMsaViewController({
       const column = document.createElement("button");
       column.type = "button";
       column.className = "pfam-info-histogram-column";
-      column.title = `${histogramBinLabel(bin)} residues: ${formatPfamCount(bin.count)} filtered interfaces`;
-      column.addEventListener("click", () => {
-        void showRandomInterfaceForHistogramBin(bin);
+      column.title = `${histogramBinLabel(bin)} residues: ${histogramCountLabel(
+        bin.count,
+        countSingular,
+        countPlural
+      )}`;
+      column.addEventListener("click", (event) => {
+        if (event.detail !== 1) {
+          return;
+        }
+        window.clearTimeout(histogramClickTimer);
+        histogramClickTimer = window.setTimeout(() => {
+          void showInterfacesForHistogramBin(bin, targetType, noTargetsText);
+        }, 120);
+      });
+      column.addEventListener("dblclick", (event) => {
+        event.preventDefault();
+        window.clearTimeout(histogramClickTimer);
+        void showInterfacesForHistogramBin(bin, targetType, noTargetsText);
       });
 
       const barArea = document.createElement("div");
@@ -877,6 +1104,34 @@ export function createMsaViewController({
     section.appendChild(footer);
 
     return section;
+  }
+
+  function renderPfamInfoInterfaceHistogram(interfaceSummary) {
+    return renderPfamInfoHistogram({
+      titleText: "Interface size",
+      histogramAvailable: interfaceSummary?.histogramAvailable,
+      histogramEntries: interfaceSummary?.histogramEntries || [],
+      unavailableText: "No server interface-size histogram available.",
+      emptyText: "No local interfaces pass the current minimum-size filter.",
+      countSingular: "filtered interface",
+      countPlural: "filtered interfaces",
+      targetType: "interface_size",
+      noTargetsText: "No filtered interfaces are available in that histogram range.",
+    });
+  }
+
+  function renderPfamInfoDomainLengthHistogram(interfaceSummary) {
+    return renderPfamInfoHistogram({
+      titleText: "Domain A length",
+      histogramAvailable: interfaceSummary?.domainLengthHistogramAvailable,
+      histogramEntries: interfaceSummary?.domainLengthHistogramEntries || [],
+      unavailableText: "No server domain-length histogram available.",
+      emptyText: "No local domains pass the current minimum-size filter.",
+      countSingular: "filtered domain",
+      countPlural: "filtered domains",
+      targetType: "domain_length",
+      noTargetsText: "No filtered domains are available in that histogram range.",
+    });
   }
 
   function renderInfoPanel() {
@@ -972,7 +1227,8 @@ export function createMsaViewController({
       hero.appendChild(status);
     }
     shell.appendChild(hero);
-    shell.appendChild(renderPfamInfoHistogram());
+    shell.appendChild(renderPfamInfoInterfaceHistogram(interfaceSummary));
+    shell.appendChild(renderPfamInfoDomainLengthHistogram(interfaceSummary));
 
     const metaGrid = document.createElement("section");
     metaGrid.className = "pfam-info-meta-grid";
@@ -1888,6 +2144,9 @@ export function createMsaViewController({
   function interfacePayloadUrl(filename, options = {}) {
     const params = new URLSearchParams({ file: filename });
     appendSelectionSettingsToParams(params, state.selectionSettings);
+    if (options.includeRows !== undefined) {
+      params.set("include_rows", options.includeRows ? "1" : "0");
+    }
     if (options.rowOffset !== undefined) {
       params.set("row_offset", String(options.rowOffset));
     }
@@ -2483,6 +2742,7 @@ export function createMsaViewController({
     const selectedMsa = msaSelect.value;
     const matchingPair = state.files.pairs.find((pair) => pair.msaFile === selectedMsa);
     interfaceSelect.value = matchingPair ? matchingPair.interfaceFile : "";
+    syncDomainSizeRangeForSelectedFamily?.();
   }
 
   function updateSelectedRowUi() {
@@ -2497,11 +2757,11 @@ export function createMsaViewController({
   }
 
   function getSelectedRow() {
-    if (!state.msa || !state.selectedRowKey) {
+    if (!state.selectedRowKey) {
       return null;
     }
     return (
-      state.msa.rows.find((row) => row.row_key === state.selectedRowKey) ||
+      state.msa?.rows?.find((row) => row.row_key === state.selectedRowKey) ||
       (state.selectedRowSnapshot?.row_key === state.selectedRowKey ? state.selectedRowSnapshot : null)
     );
   }
@@ -2570,10 +2830,10 @@ export function createMsaViewController({
   }
 
   function selectRowByKey(rowKey) {
-    if (!state.msa || !rowKey) {
+    if (!rowKey) {
       return null;
     }
-    const row = state.msa.rows.find((entry) => entry.row_key === rowKey) || null;
+    const row = state.msa?.rows?.find((entry) => entry.row_key === rowKey) || null;
     const selectedRow = row || syntheticStructureRowFromKey(rowKey);
     if (!selectedRow) {
       return null;
@@ -2583,9 +2843,9 @@ export function createMsaViewController({
     clearEmbeddingMemberSelectionUnlessSelected(selectedRow.row_key);
     updateSelectedRowUi();
     resetStructurePanel("Click a row name or use the button to open the structure.");
-    if (activeMsaPanelView() === "msa") {
+    if (activeMsaPanelView() === "msa" && state.msa) {
       drawGrid();
-    } else {
+    } else if (activeMsaPanelView() === "embeddings") {
       renderEmbeddingPlot();
     }
     return selectedRow;

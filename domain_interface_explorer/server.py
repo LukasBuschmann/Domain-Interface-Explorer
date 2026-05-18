@@ -36,6 +36,9 @@ from domain_interface_explorer.serverlib.interface_embedding import (
     filter_interface_payload,
     hierarchy_status_payload,
     collect_interface_alignment_row_metadata,
+    domain_length_from_row_payload,
+    domain_size_filter_from_settings,
+    interface_residue_count,
     interface_filter_settings_key,
     load_interface_distance_data,
     load_interface_point_data,
@@ -332,6 +335,9 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/pfam-info":
             self._handle_pfam_info(parse_qs(parsed.query))
             return
+        if parsed.path == "/api/histogram-targets":
+            self._handle_histogram_targets(parse_qs(parsed.query))
+            return
         if parsed.path == "/api/embedding":
             self._handle_embedding(parse_qs(parsed.query))
             return
@@ -565,6 +571,122 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 data_limit=data_limit if data_limit is not None else "all",
             )
         self._send_json(response_payload)
+
+    def _histogram_targets_from_payload(
+        self,
+        interface_payload: dict[str, dict[str, dict]],
+        histogram_type: str,
+        bin_start: int,
+        bin_end: int,
+        partner_domain: str = "",
+    ) -> list[dict[str, object]]:
+        normalized_partner = str(partner_domain or "").strip()
+        targets: list[dict[str, object]] = []
+        for current_partner, rows in sorted(interface_payload.items()):
+            if normalized_partner and normalized_partner != "__all__" and current_partner != normalized_partner:
+                continue
+            if not isinstance(rows, dict):
+                continue
+            for row_key, row_payload in sorted(rows.items()):
+                if not isinstance(row_payload, dict):
+                    continue
+                if histogram_type == "interface_size":
+                    value = interface_residue_count(row_payload, "a")
+                elif histogram_type == "domain_length":
+                    value = domain_length_from_row_payload(row_key, row_payload)
+                else:
+                    raise ValueError("histogram type must be 'interface_size' or 'domain_length'")
+                if value < bin_start or value > bin_end:
+                    continue
+                targets.append(
+                    {
+                        "row_key": str(row_key),
+                        "partner_domain": str(current_partner),
+                        "value": int(value),
+                    }
+                )
+        return targets
+
+    def _handle_histogram_targets(self, query: dict[str, list[str]]) -> None:
+        filename = query.get("file", [""])[0]
+        resolved_file = self._resolve_interface_file_and_filter(filename, query)
+        if resolved_file is None:
+            return
+        path, interface_filter_settings = resolved_file
+        histogram_type = query.get("type", ["interface_size"])[0].strip().lower()
+        partner_domain = query.get("partner_domain", [""])[0].strip()
+        try:
+            bin_start = query_non_negative_int(query, "start", 0)
+            bin_end = query_non_negative_int(query, "end", bin_start)
+            if bin_end < bin_start:
+                raise ValueError("histogram end cannot be smaller than start")
+            if histogram_type not in {"interface_size", "domain_length"}:
+                raise ValueError("histogram type must be 'interface_size' or 'domain_length'")
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        targets: list[dict[str, object]]
+        if self.interface_store is not None:
+            try:
+                targets = self.interface_store.get_histogram_targets(
+                    path,
+                    interface_filter_settings,
+                    histogram_type=histogram_type,
+                    bin_start=bin_start,
+                    bin_end=bin_end,
+                    partner_domain=partner_domain,
+                )
+                self._send_json(
+                    {
+                        "file": path.name,
+                        "pfam_id": interface_file_pfam_id(path),
+                        "filter_settings": interface_filter_settings,
+                        "type": histogram_type,
+                        "start": bin_start,
+                        "end": bin_end,
+                        "partner_domain": partner_domain,
+                        "target_count": len(targets),
+                        "targets": targets,
+                    }
+                )
+                return
+            except Exception as exc:
+                log_event("store", "histogram targets fallback", file=path.name, error=exc)
+        try:
+            _cache_key, _raw_payload, interface_payload, _cache_entry = load_cached_interface_view(
+                path,
+                interface_filter_settings,
+            )
+            targets = self._histogram_targets_from_payload(
+                interface_payload,
+                histogram_type,
+                bin_start,
+                bin_end,
+                partner_domain,
+            )
+        except (RuntimeError, ValueError) as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as exc:  # pragma: no cover
+            self._send_json(
+                {"error": f"Unexpected histogram target error: {exc}"},
+                status=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+            return
+        self._send_json(
+            {
+                "file": path.name,
+                "pfam_id": interface_file_pfam_id(path),
+                "filter_settings": interface_filter_settings,
+                "type": histogram_type,
+                "start": bin_start,
+                "end": bin_end,
+                "partner_domain": partner_domain,
+                "target_count": len(targets),
+                "targets": targets,
+            }
+        )
 
     def _handle_pfam_info(self, query: dict[str, list[str]]) -> None:
         pfam_id = query.get("pfam_id", [""])[0]
@@ -925,6 +1047,11 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 interface_filter_settings,
                 distance_scope=distance_scope,
                 cache_workers=self.cache_workers,
+                domain_size_filter=(
+                    domain_size_filter_from_settings(clustering_settings)
+                    if clustering_settings["method"] == "hierarchical"
+                    else None
+                ),
             )
             clustering_payload = load_or_compute_clustering_payload(
                 self.cache_dir,

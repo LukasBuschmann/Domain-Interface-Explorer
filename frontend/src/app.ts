@@ -40,7 +40,13 @@ import {
   columnStateDistribution as getColumnStateDistribution,
   topResiduesForColumn as getTopResiduesForColumn,
 } from "./msaModel.js";
-import { buildOverlayMaps, buildPairs, interactionRowKey, parseInteractionRowKey } from "./interfaceModel.js";
+import {
+  buildOverlayMaps,
+  buildPairs,
+  interactionRowKey,
+  interfaceFilePfamId,
+  parseInteractionRowKey,
+} from "./interfaceModel.js";
 import { appendSelectionSettingsToParams, parseSelectionSettingsDraft } from "./selectionSettings.js";
 
 applyUiPreferences(state);
@@ -59,6 +65,8 @@ const {
   embeddingRoot,
   embeddingClusterDistanceInput,
   embeddingClusterDistanceThresholdInput,
+  embeddingClusterDomainSizeMaxInput,
+  embeddingClusterDomainSizeMinInput,
   embeddingClusterEpsilonInput,
   embeddingClusterHierarchicalMinSizeInput,
   embeddingClusterLifetimeThresholdInput,
@@ -465,6 +473,102 @@ function scheduleUiPreferencesSave() {
   }, 120);
 }
 
+function currentDomainFamilyKey() {
+  return String(interfaceFilePfamId(interfaceSelect.value) || state.interface?.pfam_id || "").trim();
+}
+
+function positiveIntegerString(value) {
+  const text = String(value ?? "").trim();
+  if (text === "") {
+    return "";
+  }
+  const numberValue = Number.parseInt(text, 10);
+  return Number.isFinite(numberValue) && numberValue > 0 ? String(numberValue) : "";
+}
+
+function normalizedDomainSizeRangeFromSettings(settings = {}) {
+  let domainSizeMin = positiveIntegerString(settings.domainSizeMin);
+  let domainSizeMax = positiveIntegerString(settings.domainSizeMax);
+  if (
+    domainSizeMin !== "" &&
+    domainSizeMax !== "" &&
+    Number(domainSizeMin) > Number(domainSizeMax)
+  ) {
+    [domainSizeMin, domainSizeMax] = [domainSizeMax, domainSizeMin];
+  }
+  return { domainSizeMin, domainSizeMax };
+}
+
+function domainSizeRangeIsFull(range) {
+  return (
+    String(range?.domainSizeMin ?? "").trim() === "" &&
+    String(range?.domainSizeMax ?? "").trim() === ""
+  );
+}
+
+function rangeMapHasFamily(map, familyKey) {
+  return Object.prototype.hasOwnProperty.call(map || {}, familyKey);
+}
+
+function setDomainSizeRangeMapEntry(map, familyKey, range, { keepFull = false } = {}) {
+  if (!familyKey || !map || typeof map !== "object") {
+    return;
+  }
+  const normalized = normalizedDomainSizeRangeFromSettings(range);
+  if (!keepFull && domainSizeRangeIsFull(normalized)) {
+    delete map[familyKey];
+    return;
+  }
+  map[familyKey] = normalized;
+}
+
+function familyDomainSizeRange(map, familyKey) {
+  return rangeMapHasFamily(map, familyKey)
+    ? normalizedDomainSizeRangeFromSettings(map[familyKey])
+    : { domainSizeMin: "", domainSizeMax: "" };
+}
+
+function saveDomainSizeRangeDraftForCurrentFamily(settings = state.embeddingClusteringSettingsDraft) {
+  setDomainSizeRangeMapEntry(
+    state.embeddingDomainSizeRangeDraftsByPfamId,
+    currentDomainFamilyKey(),
+    settings,
+    { keepFull: true }
+  );
+}
+
+function saveDomainSizeRangeForCurrentFamily(settings = state.embeddingClusteringSettings) {
+  const familyKey = currentDomainFamilyKey();
+  const range = normalizedDomainSizeRangeFromSettings(settings);
+  setDomainSizeRangeMapEntry(state.embeddingDomainSizeRangesByPfamId, familyKey, range);
+  setDomainSizeRangeMapEntry(
+    state.embeddingDomainSizeRangeDraftsByPfamId,
+    familyKey,
+    range,
+    { keepFull: true }
+  );
+}
+
+function syncDomainSizeRangeForSelectedFamily() {
+  const familyKey = currentDomainFamilyKey();
+  const appliedRange = familyDomainSizeRange(state.embeddingDomainSizeRangesByPfamId, familyKey);
+  const draftRange = rangeMapHasFamily(state.embeddingDomainSizeRangeDraftsByPfamId, familyKey)
+    ? familyDomainSizeRange(state.embeddingDomainSizeRangeDraftsByPfamId, familyKey)
+    : appliedRange;
+  state.embeddingClusteringSettings = {
+    ...state.embeddingClusteringSettings,
+    ...appliedRange,
+  };
+  state.embeddingClusteringSettingsDraft = {
+    ...state.embeddingClusteringSettingsDraft,
+    ...draftRange,
+  };
+  state.hierarchyStatus = null;
+  state.hierarchyStatusLoadingKey = null;
+  state.hierarchyStatusPromise = null;
+  syncEmbeddingSettingsUi();
+}
+
 function representativeLens() {
   return state.representativeLens;
 }
@@ -852,6 +956,14 @@ function appendClusteringSettingsToParams(params) {
         "persistence_score_mode",
         scoreMode === "integral" ? "integral" : "rectangle"
       );
+    }
+    const domainSizeMin = String(state.embeddingClusteringSettings.domainSizeMin ?? "").trim();
+    const domainSizeMax = String(state.embeddingClusteringSettings.domainSizeMax ?? "").trim();
+    if (domainSizeMin !== "") {
+      params.set("domain_size_min", domainSizeMin);
+    }
+    if (domainSizeMax !== "") {
+      params.set("domain_size_max", domainSizeMax);
     }
   } else {
     params.set("min_cluster_size", String(state.embeddingClusteringSettings.minClusterSize));
@@ -1687,11 +1799,11 @@ function updatePartnerOptions() {
 }
 
 function getSelectedRow() {
-  if (!state.msa || !state.selectedRowKey) {
+  if (!state.selectedRowKey) {
     return null;
   }
   return (
-    state.msa.rows.find((row) => row.row_key === state.selectedRowKey) ||
+    state.msa?.rows?.find((row) => row.row_key === state.selectedRowKey) ||
     (state.selectedRowSnapshot?.row_key === state.selectedRowKey ? state.selectedRowSnapshot : null)
   );
 }
@@ -2181,6 +2293,7 @@ const msaViewController = createMsaViewController({
   visibleColumnsClusters,
   updatePartnerOptions,
   syncDendrogramControls,
+  syncDomainSizeRangeForSelectedFamily,
 });
 const {
   clearViewer,
@@ -2405,7 +2518,11 @@ function hierarchyDraftMatchesApplied() {
     state.embeddingClusteringSettings.method === "hierarchical" &&
     state.embeddingClusteringSettingsDraft.method === "hierarchical" &&
     state.embeddingClusteringSettings.distance === state.embeddingClusteringSettingsDraft.distance &&
-    state.embeddingClusteringSettings.linkage === state.embeddingClusteringSettingsDraft.linkage
+    state.embeddingClusteringSettings.linkage === state.embeddingClusteringSettingsDraft.linkage &&
+    String(state.embeddingClusteringSettings.domainSizeMin ?? "") ===
+      String(state.embeddingClusteringSettingsDraft.domainSizeMin ?? "") &&
+    String(state.embeddingClusteringSettings.domainSizeMax ?? "") ===
+      String(state.embeddingClusteringSettingsDraft.domainSizeMax ?? "")
   );
 }
 
@@ -2740,6 +2857,112 @@ embeddingClusterHierarchicalMinSizeInput.addEventListener("input", () => {
   scheduleLiveHierarchicalClusteringUpdate();
 });
 
+function handleDomainSizeRangeInput() {
+  state.embeddingClusteringSettingsDraft = readEmbeddingClusteringDraftInputs();
+  saveDomainSizeRangeDraftForCurrentFamily(state.embeddingClusteringSettingsDraft);
+  syncEmbeddingSettingsUi();
+  scheduleUiPreferencesSave();
+  scheduleHierarchyStatusUpdate();
+}
+
+function domainSizePointerValue(event, control, minValue, maxValue) {
+  const track = control.querySelector(".embedding-settings-dual-range-track") || control;
+  const rect = track.getBoundingClientRect();
+  const ratio = Math.max(
+    0,
+    Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width))
+  );
+  return Math.round(minValue + ratio * Math.max(0, maxValue - minValue));
+}
+
+function updateDomainSizeRangeFromPointer(event, activeInput) {
+  const minInput = embeddingClusterDomainSizeMinInput;
+  const maxInput = embeddingClusterDomainSizeMaxInput;
+  const control = minInput?.closest(".embedding-settings-dual-range");
+  if (!minInput || !maxInput || !control || minInput.disabled || maxInput.disabled) {
+    return;
+  }
+  const minBound = Number.parseInt(minInput.min || "1", 10);
+  const maxBound = Number.parseInt(maxInput.max || minInput.max || "1", 10);
+  if (!Number.isFinite(minBound) || !Number.isFinite(maxBound) || minBound >= maxBound) {
+    return;
+  }
+  const currentMin = Number.parseInt(minInput.value || String(minBound), 10);
+  const currentMax = Number.parseInt(maxInput.value || String(maxBound), 10);
+  const nextValue = domainSizePointerValue(event, control, minBound, maxBound);
+  if (activeInput === minInput) {
+    minInput.value = String(Math.max(minBound, Math.min(nextValue, currentMax)));
+  } else {
+    maxInput.value = String(Math.min(maxBound, Math.max(nextValue, currentMin)));
+  }
+  handleDomainSizeRangeInput();
+}
+
+function domainSizeRangeInputForPointer(event) {
+  const minInput = embeddingClusterDomainSizeMinInput;
+  const maxInput = embeddingClusterDomainSizeMaxInput;
+  const control = minInput?.closest(".embedding-settings-dual-range");
+  if (!minInput || !maxInput || !control) {
+    return null;
+  }
+  const minBound = Number.parseInt(minInput.min || "1", 10);
+  const maxBound = Number.parseInt(maxInput.max || minInput.max || "1", 10);
+  const currentMin = Number.parseInt(minInput.value || String(minBound), 10);
+  const currentMax = Number.parseInt(maxInput.value || String(maxBound), 10);
+  const pointerValue = domainSizePointerValue(event, control, minBound, maxBound);
+  const minDistance = Math.abs(pointerValue - currentMin);
+  const maxDistance = Math.abs(pointerValue - currentMax);
+  if (minDistance === maxDistance) {
+    return pointerValue <= (currentMin + currentMax) / 2 ? minInput : maxInput;
+  }
+  return minDistance < maxDistance ? minInput : maxInput;
+}
+
+function handleDomainSizeRangePointerDown(event) {
+  const minInput = embeddingClusterDomainSizeMinInput;
+  const maxInput = embeddingClusterDomainSizeMaxInput;
+  const control = minInput?.closest(".embedding-settings-dual-range");
+  if (!minInput || !maxInput || !control || minInput.disabled || maxInput.disabled) {
+    return;
+  }
+  if (event.target.closest?.(".embedding-settings-dual-range-value")) {
+    return;
+  }
+  const activeInput = domainSizeRangeInputForPointer(event);
+  if (!activeInput) {
+    return;
+  }
+  event.preventDefault();
+  updateDomainSizeRangeFromPointer(event, activeInput);
+  const pointerId = event.pointerId;
+  control.setPointerCapture?.(pointerId);
+  const handleMove = (moveEvent) => {
+    if (moveEvent.pointerId !== pointerId) {
+      return;
+    }
+    moveEvent.preventDefault();
+    updateDomainSizeRangeFromPointer(moveEvent, activeInput);
+  };
+  const handleEnd = (endEvent) => {
+    if (endEvent.pointerId !== pointerId) {
+      return;
+    }
+    control.releasePointerCapture?.(pointerId);
+    control.removeEventListener("pointermove", handleMove);
+    control.removeEventListener("pointerup", handleEnd);
+    control.removeEventListener("pointercancel", handleEnd);
+  };
+  control.addEventListener("pointermove", handleMove);
+  control.addEventListener("pointerup", handleEnd);
+  control.addEventListener("pointercancel", handleEnd);
+}
+
+embeddingClusterDomainSizeMinInput?.addEventListener("input", handleDomainSizeRangeInput);
+embeddingClusterDomainSizeMaxInput?.addEventListener("input", handleDomainSizeRangeInput);
+embeddingClusterDomainSizeMinInput
+  ?.closest(".embedding-settings-dual-range")
+  ?.addEventListener("pointerdown", handleDomainSizeRangePointerDown);
+
 elements.dendrogramDepthSlider?.addEventListener("input", () => {
   state.dendrogramDepth = Number(elements.dendrogramDepthSlider.value || 5);
   scheduleUiPreferencesSave();
@@ -2864,6 +3087,7 @@ embeddingClusteringApply.addEventListener("click", async () => {
     state.embeddingClusteringSettingsDraft = {
       ...nextSettings,
     };
+    saveDomainSizeRangeForCurrentFamily(nextSettings);
     if (nextSettings.method === "hierarchical") {
       state.hierarchyStatus = null;
       state.hierarchyStatusLoadingKey = null;
@@ -2872,6 +3096,10 @@ embeddingClusteringApply.addEventListener("click", async () => {
     state.embeddingSettingsOpen = false;
     persistUiPreferences();
     syncEmbeddingSettingsUi();
+    if (nextSettings.method === "hierarchical") {
+      await ensureHierarchyStatusLoaded({ force: true });
+      syncEmbeddingLoadingUi();
+    }
     const representativeDependsOnClustering =
       state.representativeScope === "cluster" || representativeLens() === "cluster";
     if (
@@ -2897,7 +3125,7 @@ embeddingPartnerLegend.addEventListener("click", (event) => {
   const modeButton = event.target.closest("[data-legend-mode]");
   if (modeButton) {
     const nextMode = modeButton.dataset.legendMode;
-    if (!nextMode || nextMode === state.embeddingColorMode) {
+    if (!["domain", "cluster", "size"].includes(nextMode) || nextMode === state.embeddingColorMode) {
       return;
     }
     state.embeddingColorMode = nextMode;

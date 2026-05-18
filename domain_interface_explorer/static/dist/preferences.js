@@ -100,7 +100,47 @@ function normalizeClusteringSettings(rawSettings = {}, fallback = DEFAULT_CLUSTE
             ? enumValue(source.persistenceScoreMode, ["rectangle", "integral"], fallback.persistenceScoreMode || DEFAULT_CLUSTERING_SETTINGS.persistenceScoreMode)
             : "",
         hierarchicalMinClusterSize: positiveInteger(source.hierarchicalMinClusterSize, fallback.hierarchicalMinClusterSize),
+        domainSizeMin: optionalPositiveInteger(source.domainSizeMin, fallback.domainSizeMin || ""),
+        domainSizeMax: optionalPositiveInteger(source.domainSizeMax, fallback.domainSizeMax || ""),
     };
+}
+function normalizeDomainSizeRange(rawRange = {}) {
+    const source = isRecord(rawRange) ? rawRange : {};
+    let domainSizeMin = optionalPositiveInteger(source.domainSizeMin);
+    let domainSizeMax = optionalPositiveInteger(source.domainSizeMax);
+    if (domainSizeMin !== "" &&
+        domainSizeMax !== "" &&
+        Number(domainSizeMin) > Number(domainSizeMax)) {
+        [domainSizeMin, domainSizeMax] = [domainSizeMax, domainSizeMin];
+    }
+    return {
+        domainSizeMin: domainSizeMin === "" ? "" : String(domainSizeMin),
+        domainSizeMax: domainSizeMax === "" ? "" : String(domainSizeMax),
+    };
+}
+function domainSizeRangeIsFull(range) {
+    return (String(range?.domainSizeMin ?? "").trim() === "" &&
+        String(range?.domainSizeMax ?? "").trim() === "");
+}
+function normalizeDomainSizeRangeMap(rawMap = {}, { keepFull = false } = {}) {
+    const source = isRecord(rawMap) ? rawMap : {};
+    const normalized = {};
+    for (const [pfamId, rawRange] of Object.entries(source)) {
+        const key = String(pfamId || "").trim();
+        if (!key) {
+            continue;
+        }
+        const range = normalizeDomainSizeRange(rawRange);
+        if (!keepFull && domainSizeRangeIsFull(range)) {
+            continue;
+        }
+        normalized[key] = range;
+    }
+    return normalized;
+}
+function clusteringSettingsWithoutDomainSize(settings = {}) {
+    const { domainSizeMin: _domainSizeMin, domainSizeMax: _domainSizeMax, ...rest } = settings || {};
+    return rest;
 }
 function normalizeHierarchicalTargetMemory(rawMemory = {}) {
     const source = isRecord(rawMemory) ? rawMemory : {};
@@ -166,10 +206,20 @@ export function applyUiPreferences(state) {
     state.selectionSettingsDraft = { ...state.selectionSettings };
     state.embeddingSettings = normalizeEmbeddingSettings(preferences.embeddingSettings);
     state.embeddingSettingsDraft = normalizeEmbeddingSettings(preferences.embeddingSettingsDraft || state.embeddingSettings, state.embeddingSettings);
-    state.embeddingClusteringSettings = normalizeClusteringSettings(preferences.embeddingClusteringSettings);
-    state.embeddingClusteringSettingsDraft = normalizeClusteringSettings(preferences.embeddingClusteringSettingsDraft || state.embeddingClusteringSettings, state.embeddingClusteringSettings);
+    state.embeddingClusteringSettings = {
+        ...normalizeClusteringSettings(preferences.embeddingClusteringSettings),
+        domainSizeMin: "",
+        domainSizeMax: "",
+    };
+    state.embeddingClusteringSettingsDraft = {
+        ...normalizeClusteringSettings(preferences.embeddingClusteringSettingsDraft || state.embeddingClusteringSettings, state.embeddingClusteringSettings),
+        domainSizeMin: "",
+        domainSizeMax: "",
+    };
+    state.embeddingDomainSizeRangesByPfamId = normalizeDomainSizeRangeMap(preferences.embeddingDomainSizeRangesByPfamId);
+    state.embeddingDomainSizeRangeDraftsByPfamId = normalizeDomainSizeRangeMap(preferences.embeddingDomainSizeRangeDraftsByPfamId, { keepFull: true });
     state.embeddingHierarchicalTargetMemory = normalizeHierarchicalTargetMemory(preferences.embeddingHierarchicalTargetMemory);
-    state.embeddingColorMode = enumValue(preferences.embeddingColorMode, ["cluster", "domain"], state.embeddingColorMode);
+    state.embeddingColorMode = enumValue(preferences.embeddingColorMode, ["cluster", "domain", "size"], state.embeddingColorMode);
     const uiState = isRecord(preferences.uiState) ? preferences.uiState : {};
     state.msaPanelView = enumValue(uiState.msaPanelView ?? preferences.msaPanelView, PANEL_VIEWS, state.msaPanelView);
     state.selectionSettingsOpen =
@@ -228,8 +278,10 @@ function preferencesPayload(state) {
         selectionSettings: state.selectionSettings,
         embeddingSettings: state.embeddingSettings,
         embeddingSettingsDraft: state.embeddingSettingsDraft,
-        embeddingClusteringSettings: state.embeddingClusteringSettings,
-        embeddingClusteringSettingsDraft: state.embeddingClusteringSettingsDraft,
+        embeddingClusteringSettings: clusteringSettingsWithoutDomainSize(state.embeddingClusteringSettings),
+        embeddingClusteringSettingsDraft: clusteringSettingsWithoutDomainSize(state.embeddingClusteringSettingsDraft),
+        embeddingDomainSizeRangesByPfamId: state.embeddingDomainSizeRangesByPfamId || {},
+        embeddingDomainSizeRangeDraftsByPfamId: state.embeddingDomainSizeRangeDraftsByPfamId || {},
         embeddingHierarchicalTargetMemory: state.embeddingHierarchicalTargetMemory,
         embeddingColorMode: state.embeddingColorMode,
         uiState: {

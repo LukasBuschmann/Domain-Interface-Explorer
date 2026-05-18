@@ -401,10 +401,41 @@ def interface_size_from_payload(row_payload: object) -> int:
     return len(interface_columns_from_payload(row_payload))
 
 
+def domain_length_from_fragment_key(fragment_key: object) -> int:
+    try:
+        ranges = fragment_ranges(str(fragment_key or ""))
+    except (TypeError, ValueError):
+        return 0
+    total = 0
+    for start, end in ranges:
+        if end >= start:
+            total += end - start + 1
+    return total
+
+
+def domain_a_length_from_payload(row_payload: object, fragment_key: object) -> int:
+    if isinstance(row_payload, dict):
+        try:
+            residue_count = int(row_payload.get("n_residues_a", 0))
+        except (TypeError, ValueError):
+            residue_count = 0
+        if residue_count > 0:
+            return residue_count
+    return domain_length_from_fragment_key(fragment_key)
+
+
+def histogram_entries_from_counts(counts: dict[int, int]) -> list[dict[str, int]]:
+    return [
+        {"size": size, "count": count}
+        for size, count in sorted(counts.items())
+    ]
+
+
 def interface_summary_from_payload(interface_payload: object) -> dict[str, object]:
     dataset_domains: set[tuple[str, str]] = set()
+    domain_lengths_by_domain: dict[tuple[str, str], int] = {}
     unique_interfaces: set[tuple[str, tuple[int, ...]]] = set()
-    histogram: dict[int, int] = {}
+    interface_size_histogram: dict[int, int] = {}
     dataset_interfaces = 0
     if not isinstance(interface_payload, dict):
         return {
@@ -412,6 +443,7 @@ def interface_summary_from_payload(interface_payload: object) -> dict[str, objec
             "dataset_interfaces": 0,
             "unique_interfaces": 0,
             "interface_size_histogram": [],
+            "domain_length_histogram": [],
         }
     for partner_domain, rows in interface_payload.items():
         if not isinstance(rows, dict):
@@ -423,21 +455,29 @@ def interface_summary_from_payload(interface_payload: object) -> dict[str, objec
             row_key_parts = str(row_key or "").split("_", 2)
             protein_id = row_key_parts[0] if len(row_key_parts) > 0 else ""
             fragment_key = row_key_parts[1] if len(row_key_parts) > 1 else ""
-            dataset_domains.add((protein_id, fragment_key))
+            domain_key = (protein_id, fragment_key)
+            dataset_domains.add(domain_key)
+            if domain_key not in domain_lengths_by_domain:
+                domain_length = domain_a_length_from_payload(row_payload, fragment_key)
+                if domain_length > 0:
+                    domain_lengths_by_domain[domain_key] = domain_length
             columns = interface_columns_from_payload(row_payload)
             interface_size = len(columns)
             if interface_size <= 0:
                 continue
             unique_interfaces.add((str(partner_domain), tuple(columns)))
-            histogram[interface_size] = histogram.get(interface_size, 0) + 1
+            interface_size_histogram[interface_size] = (
+                interface_size_histogram.get(interface_size, 0) + 1
+            )
+    domain_length_histogram: dict[int, int] = {}
+    for domain_length in domain_lengths_by_domain.values():
+        domain_length_histogram[domain_length] = domain_length_histogram.get(domain_length, 0) + 1
     return {
         "dataset_domains": len(dataset_domains),
         "dataset_interfaces": dataset_interfaces,
         "unique_interfaces": len(unique_interfaces),
-        "interface_size_histogram": [
-            {"size": size, "count": count}
-            for size, count in sorted(histogram.items())
-        ],
+        "interface_size_histogram": histogram_entries_from_counts(interface_size_histogram),
+        "domain_length_histogram": histogram_entries_from_counts(domain_length_histogram),
     }
 
 
@@ -445,6 +485,7 @@ def compute_pfam_option_stat(task: tuple[str, list[str]]) -> tuple[str, dict[str
     pfam_id, path_strings = task
     interface_columns_by_row: dict[str, set[int]] = {}
     dataset_domains: set[tuple[str, str]] = set()
+    domain_lengths_by_domain: dict[tuple[str, str], int] = {}
     unique_interfaces: set[tuple[str, str, tuple[int, ...]]] = set()
     interface_size_histogram: dict[int, int] = {}
     interaction_partners: set[str] = set()
@@ -465,7 +506,12 @@ def compute_pfam_option_stat(task: tuple[str, list[str]]) -> tuple[str, dict[str
                 row_key_parts = str(row_key or "").split("_", 2)
                 protein_id = row_key_parts[0] if len(row_key_parts) > 0 else ""
                 fragment_key = row_key_parts[1] if len(row_key_parts) > 1 else ""
-                dataset_domains.add((protein_id, fragment_key))
+                domain_key = (protein_id, fragment_key)
+                dataset_domains.add(domain_key)
+                if domain_key not in domain_lengths_by_domain:
+                    domain_length = domain_a_length_from_payload(row_payload, fragment_key)
+                    if domain_length > 0:
+                        domain_lengths_by_domain[domain_key] = domain_length
                 row_columns = interface_columns_by_row.setdefault(row_key, set())
                 interface_columns = interface_columns_from_payload(row_payload)
                 row_columns.update(interface_columns)
@@ -479,17 +525,20 @@ def compute_pfam_option_stat(task: tuple[str, list[str]]) -> tuple[str, dict[str
     interface_rows = len(interface_columns_by_row)
     avg_interface_residues_per_row = 0.0
     if interface_rows:
-        avg_interface_residues_per_row = sum(len(columns) for columns in interface_columns_by_row.values()) / interface_rows
+        avg_interface_residues_per_row = (
+            sum(len(columns) for columns in interface_columns_by_row.values()) / interface_rows
+        )
+    domain_length_histogram: dict[int, int] = {}
+    for domain_length in domain_lengths_by_domain.values():
+        domain_length_histogram[domain_length] = domain_length_histogram.get(domain_length, 0) + 1
     return pfam_id, {
         "alignment_length": alignment_length,
         "dataset_domains": len(dataset_domains),
         "interface_rows": interface_rows,
         "dataset_interfaces": dataset_interfaces,
         "unique_interfaces": len(unique_interfaces),
-        "interface_size_histogram": [
-            {"size": size, "count": count}
-            for size, count in sorted(interface_size_histogram.items())
-        ],
+        "interface_size_histogram": histogram_entries_from_counts(interface_size_histogram),
+        "domain_length_histogram": histogram_entries_from_counts(domain_length_histogram),
         "interaction_partners": len(interaction_partners),
         "avg_interface_residues_per_row": round(avg_interface_residues_per_row, 2),
     }

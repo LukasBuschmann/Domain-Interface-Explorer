@@ -5,7 +5,7 @@ import {
   DEFAULT_EMBEDDING_SETTINGS,
 } from "./constants.js";
 import { fetchJson } from "./api.js";
-import { interactionRowKey } from "./interfaceModel.js";
+import { interactionRowKey, interfaceFilePfamId, parseInteractionRowKey } from "./interfaceModel.js";
 import {
   appendSelectionSettingsToParams,
   selectionSettingsKey,
@@ -23,6 +23,15 @@ export function createEmbeddingViewController({
 }) {
   let columnsRenderFrameId = 0;
   let embeddingRenderFrameId = 0;
+  const SIZE_RAINBOW_PALETTE = [
+    "#d7191c",
+    "#fdae61",
+    "#ffffbf",
+    "#66bd63",
+    "#00a6ca",
+    "#2c7bb6",
+    "#7b3294",
+  ];
   const emptyEmbeddingPoints = [];
   const emptyClusteringPoints = [];
   const embeddingAnnotationCache = {
@@ -80,6 +89,128 @@ export function createEmbeddingViewController({
     return memoryMode === "integral" ? "integral" : "rectangle";
   }
 
+  function normalizeDomainLengthHistogram(entries) {
+    if (!Array.isArray(entries)) {
+      return [];
+    }
+    return entries
+      .map((entry) => ({
+        size: Number(entry?.size ?? entry?.length),
+        count: Number(entry?.count),
+      }))
+      .filter((entry) => Number.isFinite(entry.size) && entry.size > 0 && Number.isFinite(entry.count) && entry.count > 0)
+      .sort((left, right) => left.size - right.size);
+  }
+
+  function fragmentLength(fragmentKey) {
+    return String(fragmentKey || "")
+      .split(";")
+      .reduce((total, fragmentPart) => {
+        const [startText, endText] = fragmentPart.split("-", 2);
+        const start = Number(startText);
+        const end = Number(endText);
+        return Number.isInteger(start) && Number.isInteger(end) && end >= start
+          ? total + end - start + 1
+          : total;
+      }, 0);
+  }
+
+  function domainLengthFromRowKey(rowKey) {
+    return fragmentLength(parseInteractionRowKey(rowKey).fragmentKey);
+  }
+
+  function embeddingPointDomainSize(point, members = null) {
+    const pointMembers = members || embeddingPointMembers(point);
+    const rows = [
+      ...pointMembers,
+      { row_key: String(point?.row_key || ""), partner_domain: String(point?.partner_domain || "") },
+    ];
+    const seenRows = new Set();
+    const sizes = rows
+      .filter((member) => {
+        const rowKey = String(member?.row_key || "");
+        if (!rowKey || seenRows.has(rowKey)) {
+          return false;
+        }
+        seenRows.add(rowKey);
+        return true;
+      })
+      .map((member) => domainLengthFromRowKey(member.row_key))
+      .filter((size) => Number.isFinite(size) && size > 0)
+      .sort((left, right) => left - right);
+    if (sizes.length === 0) {
+      return domainLengthFromRowKey(point?.row_key);
+    }
+    return sizes[Math.floor((sizes.length - 1) / 2)];
+  }
+
+  function currentDomainLengthBounds() {
+    const pfamId = state.interface?.pfam_id || interfaceFilePfamId(interfaceSelect.value);
+    const optionStats = state.files?.pfam_option_stats?.[pfamId] || null;
+    const summary = state.interface?.pfam_id === pfamId ? state.interface?.interface_summary : null;
+    const histogram = normalizeDomainLengthHistogram(
+      summary?.domain_length_histogram || optionStats?.domain_length_histogram
+    );
+    if (histogram.length === 0) {
+      return { min: 1, max: 1, available: false };
+    }
+    return {
+      min: histogram[0].size,
+      max: histogram[histogram.length - 1].size,
+      available: true,
+    };
+  }
+
+  function domainSizeDisplayRange(settings = state.embeddingClusteringSettingsDraft) {
+    const bounds = currentDomainLengthBounds();
+    const rawMin = String(settings?.domainSizeMin ?? "").trim();
+    const rawMax = String(settings?.domainSizeMax ?? "").trim();
+    let minValue = rawMin === "" ? bounds.min : Number.parseInt(rawMin, 10);
+    let maxValue = rawMax === "" ? bounds.max : Number.parseInt(rawMax, 10);
+    if (!Number.isFinite(minValue)) {
+      minValue = bounds.min;
+    }
+    if (!Number.isFinite(maxValue)) {
+      maxValue = bounds.max;
+    }
+    minValue = Math.max(bounds.min, Math.min(bounds.max, minValue));
+    maxValue = Math.max(bounds.min, Math.min(bounds.max, maxValue));
+    if (minValue > maxValue) {
+      [minValue, maxValue] = [maxValue, minValue];
+    }
+    return {
+      ...bounds,
+      minValue,
+      maxValue,
+      active: bounds.available && (minValue > bounds.min || maxValue < bounds.max),
+    };
+  }
+
+  function domainSizeFilterFromInputs() {
+    const range = domainSizeDisplayRange({
+      domainSizeMin: elements.embeddingClusterDomainSizeMinInput?.value || "",
+      domainSizeMax: elements.embeddingClusterDomainSizeMaxInput?.value || "",
+    });
+    if (!range.available || !range.active) {
+      return { domainSizeMin: "", domainSizeMax: "" };
+    }
+    return {
+      domainSizeMin: String(range.minValue),
+      domainSizeMax: String(range.maxValue),
+    };
+  }
+
+  function appendDomainSizeFilterParams(params, settings) {
+    const minSize = String(settings?.domainSizeMin ?? "").trim();
+    const maxSize = String(settings?.domainSizeMax ?? "").trim();
+    if (minSize !== "") {
+      params.set("domain_size_min", minSize);
+    }
+    if (maxSize !== "") {
+      params.set("domain_size_max", maxSize);
+    }
+  }
+
   function appendHierarchicalClusteringParams(params, settings) {
     const hierarchicalTarget = currentHierarchicalTarget(settings);
     params.set("linkage", String(settings.linkage));
@@ -116,6 +247,7 @@ export function createEmbeddingViewController({
       );
       params.set("persistence_score_mode", scoreMode);
     }
+    appendDomainSizeFilterParams(params, settings);
   }
 
   function currentEmbeddingQuery() {
@@ -219,7 +351,59 @@ export function createEmbeddingViewController({
       settings.persistenceLifetimeWeight,
       currentPersistenceScoreMode(settings),
       settings.hierarchicalMinClusterSize,
+      settings.domainSizeMin,
+      settings.domainSizeMax,
     ].join("|");
+  }
+
+  function domainSizeFilterIsActive(settings = state.embeddingClusteringSettingsDraft) {
+    return (
+      String(settings?.domainSizeMin ?? "").trim() !== "" ||
+      String(settings?.domainSizeMax ?? "").trim() !== ""
+    );
+  }
+
+  function currentHierarchyStatus() {
+    const requestKey = currentHierarchyStatusRequestKey();
+    return state.hierarchyStatus?.requestKey === requestKey ? state.hierarchyStatus : null;
+  }
+
+  function hierarchyLoadingLabel() {
+    if (state.embeddingClusteringSettings.method !== "hierarchical") {
+      return "Loading clustering...";
+    }
+    const status = currentHierarchyStatus();
+    if (status?.local_calculation_required) {
+      return "Creating hierarchy...";
+    }
+    if (status && !status.local_calculation_required) {
+      return "Applying hierarchy cutthrough...";
+    }
+    if (state.hierarchyStatusLoadingKey === currentHierarchyStatusRequestKey()) {
+      return "Checking hierarchy cache...";
+    }
+    if (domainSizeFilterIsActive(state.embeddingClusteringSettings)) {
+      return "Preparing filtered hierarchy...";
+    }
+    return "Applying hierarchy cutthrough...";
+  }
+
+  function hierarchyLoadingInfoMessage() {
+    if (state.embeddingClusteringSettings.method !== "hierarchical") {
+      return `Loading ${clusteringMethodLabel(state.embeddingClusteringSettings.method)} clustering (${embeddingDistanceLabel(state.embeddingClusteringSettings.distance)} distance)...`;
+    }
+    const status = currentHierarchyStatus();
+    const distanceLabel = embeddingDistanceLabel(state.embeddingClusteringSettings.distance);
+    if (status?.local_calculation_required) {
+      return `Creating the ${distanceLabel} hierarchy, then applying the selected cutthrough.`;
+    }
+    if (status && !status.local_calculation_required) {
+      return `Applying the selected hierarchy cutthrough using the cached ${distanceLabel} hierarchy.`;
+    }
+    if (domainSizeFilterIsActive(state.embeddingClusteringSettings)) {
+      return `Preparing a filtered ${distanceLabel} hierarchy for the selected Domain A size range.`;
+    }
+    return `Applying the selected hierarchy cutthrough using ${distanceLabel} distances.`;
   }
 
   function syncEmbeddingLoadingUi() {
@@ -228,7 +412,7 @@ export function createEmbeddingViewController({
     const isVisible = showEmbeddingLoading || showClusteringLoading;
     elements.embeddingLoading.classList.toggle("hidden", !isVisible);
     elements.embeddingLoadingLabel.textContent = showClusteringLoading
-      ? "Loading clustering..."
+      ? hierarchyLoadingLabel()
       : "Loading embeddings...";
     elements.embeddingTsneApply.disabled = state.embeddingLoading;
     elements.embeddingClusteringApply.disabled = state.embeddingClusteringLoading;
@@ -282,9 +466,30 @@ export function createEmbeddingViewController({
         : "";
     const showWarning =
       state.embeddingClusteringSettingsDraft.method === "hierarchical" &&
-      state.hierarchyStatus?.requestKey === currentRequestKey &&
-      Boolean(state.hierarchyStatus?.local_calculation_required);
-    const message = showWarning ? hierarchyWarningMessage() : "";
+      (
+        (
+          state.hierarchyStatus?.requestKey === currentRequestKey &&
+          Boolean(state.hierarchyStatus?.local_calculation_required)
+        ) ||
+        state.hierarchyStatusLoadingKey === currentRequestKey ||
+        (
+          state.hierarchyStatus?.requestKey !== currentRequestKey &&
+          domainSizeFilterIsActive(state.embeddingClusteringSettingsDraft)
+        )
+      );
+    let message = "";
+    if (showWarning) {
+      if (
+        state.hierarchyStatus?.requestKey === currentRequestKey &&
+        state.hierarchyStatus?.local_calculation_required
+      ) {
+        message = hierarchyWarningMessage();
+      } else if (state.hierarchyStatusLoadingKey === currentRequestKey) {
+        message = "Checking whether this hierarchy is already cached.";
+      } else {
+        message = "Domain A size filtering may require building a filtered local hierarchy.";
+      }
+    }
     elements.embeddingClusteringApplyWarning.classList.toggle("hidden", !showWarning);
     elements.embeddingClusteringApplyWarning.title = message;
     elements.embeddingHierarchyWarning.classList.toggle("hidden", !showWarning);
@@ -339,7 +544,36 @@ export function createEmbeddingViewController({
     );
   }
 
+  function syncDomainSizeRangeUi() {
+    const minInput = elements.embeddingClusterDomainSizeMinInput;
+    const maxInput = elements.embeddingClusterDomainSizeMaxInput;
+    const valueOutput = elements.embeddingClusterDomainSizeValue;
+    if (!minInput || !maxInput || !valueOutput) {
+      return;
+    }
+    const range = domainSizeDisplayRange();
+    for (const input of [minInput, maxInput]) {
+      input.min = String(range.min);
+      input.max = String(range.max);
+      input.disabled = !range.available || range.min === range.max;
+    }
+    minInput.value = String(range.minValue);
+    maxInput.value = String(range.maxValue);
+    const denominator = Math.max(1, range.max - range.min);
+    const startPercent = ((range.minValue - range.min) / denominator) * 100;
+    const endPercent = ((range.maxValue - range.min) / denominator) * 100;
+    const control = minInput.closest(".embedding-settings-dual-range");
+    control?.style.setProperty("--range-start", `${Math.max(0, Math.min(100, startPercent))}%`);
+    control?.style.setProperty("--range-end", `${Math.max(0, Math.min(100, endPercent))}%`);
+    valueOutput.textContent = range.available
+      ? `${range.minValue}-${range.maxValue}`
+      : "n/a";
+    minInput.setAttribute("aria-valuetext", `${range.minValue} residues`);
+    maxInput.setAttribute("aria-valuetext", `${range.maxValue} residues`);
+  }
+
   function readEmbeddingClusteringDraftInputs() {
+    const domainSizeFilter = domainSizeFilterFromInputs();
     return {
       ...state.embeddingClusteringSettingsDraft,
       distance:
@@ -358,6 +592,7 @@ export function createEmbeddingViewController({
       persistenceScoreMode: currentPersistenceScoreMode(),
       hierarchicalMinClusterSize:
         elements.embeddingClusterHierarchicalMinSizeInput.value.trim(),
+      ...domainSizeFilter,
     };
   }
 
@@ -566,6 +801,7 @@ export function createEmbeddingViewController({
     elements.embeddingClusterHierarchicalMinSizeInput.value = String(
       state.embeddingClusteringSettingsDraft.hierarchicalMinClusterSize
     );
+    syncDomainSizeRangeUi();
     [...elements.embeddingSettingsPanel.querySelectorAll("[data-clustering-method]")].forEach((button) => {
       const isActive =
         button.dataset.clusteringMethod === state.embeddingClusteringSettingsDraft.method;
@@ -688,6 +924,9 @@ export function createEmbeddingViewController({
     if (!Number.isFinite(hierarchicalMinClusterSize) || hierarchicalMinClusterSize <= 0) {
       throw new Error("Minimal hierarchical cluster size must be a positive integer.");
     }
+    const domainSizeFilter = method === "hierarchical"
+      ? domainSizeFilterFromInputs()
+      : { domainSizeMin: "", domainSizeMax: "" };
     if (method === "hierarchical") {
       if (hierarchicalTarget === "n_clusters") {
         if (nClusters === "") {
@@ -757,6 +996,7 @@ export function createEmbeddingViewController({
       persistenceScoreMode:
         hierarchicalTarget === "persistence" ? persistenceScoreMode : "",
       hierarchicalMinClusterSize,
+      ...domainSizeFilter,
     };
     if (
       options.preserveAppliedHierarchy &&
@@ -917,10 +1157,104 @@ export function createEmbeddingViewController({
 
   function embeddingClusterColor(clusterLabel) {
     const numericLabel = Number(clusterLabel);
+    if (!Number.isFinite(numericLabel)) {
+      return "#8a847a";
+    }
     if (numericLabel < 0) {
       return "#8a847a";
     }
     return CLUSTER_COLOR_PALETTE[numericLabel % CLUSTER_COLOR_PALETTE.length];
+  }
+
+  function sizeBracketColor(index, bracketCount) {
+    if (bracketCount <= 1) {
+      return SIZE_RAINBOW_PALETTE[Math.floor(SIZE_RAINBOW_PALETTE.length / 2)];
+    }
+    const paletteIndex = Math.round(
+      (Math.max(0, Math.min(bracketCount - 1, index)) * (SIZE_RAINBOW_PALETTE.length - 1)) /
+        (bracketCount - 1)
+    );
+    return SIZE_RAINBOW_PALETTE[paletteIndex];
+  }
+
+  function sizeBracketLabel(bracket) {
+    if (!bracket || bracket.key === "unknown") {
+      return "Unknown size";
+    }
+    return bracket.start === bracket.end
+      ? `${bracket.start} residues`
+      : `${bracket.start}-${bracket.end} residues`;
+  }
+
+  function embeddingSizeBrackets(points = annotatedEmbeddingPoints()) {
+    const sizes = points
+      .map((point) => Number(point.domainSize))
+      .filter((size) => Number.isFinite(size) && size > 0)
+      .sort((left, right) => left - right);
+    if (sizes.length === 0) {
+      return [
+        {
+          key: "unknown",
+          start: null,
+          end: null,
+          color: "#8a847a",
+          count: points.length,
+        },
+      ];
+    }
+    const minSize = sizes[0];
+    const maxSize = sizes[sizes.length - 1];
+    const uniqueCount = new Set(sizes).size;
+    const bracketCount = minSize === maxSize
+      ? 1
+      : Math.min(SIZE_RAINBOW_PALETTE.length, Math.max(2, uniqueCount));
+    const width = Math.max(1, Math.ceil((maxSize - minSize + 1) / bracketCount));
+    const brackets = [];
+    for (let index = 0; index < bracketCount; index += 1) {
+      const start = minSize + index * width;
+      const end = index === bracketCount - 1
+        ? maxSize
+        : Math.min(maxSize, start + width - 1);
+      if (start > maxSize) {
+        break;
+      }
+      brackets.push({
+        key: `size:${start}:${end}`,
+        start,
+        end,
+        color: sizeBracketColor(index, bracketCount),
+        count: 0,
+      });
+    }
+    for (const point of points) {
+      const bracket = sizeBracketForPoint(point, brackets);
+      if (bracket) {
+        bracket.count += Number(point.memberCount || 1);
+      }
+    }
+    return brackets;
+  }
+
+  function sizeBracketForPoint(point, brackets) {
+    const size = Number(point?.domainSize);
+    if (!Number.isFinite(size) || size <= 0) {
+      return brackets.find((bracket) => bracket.key === "unknown") || null;
+    }
+    return brackets.find((bracket) =>
+      bracket.key !== "unknown" &&
+      size >= Number(bracket.start) &&
+      size <= Number(bracket.end)
+    ) || null;
+  }
+
+  function embeddingPointColor(point, colorMode, sizeBrackets) {
+    if (colorMode === "cluster") {
+      return embeddingClusterColor(point.clusterLabel);
+    }
+    if (colorMode === "size") {
+      return sizeBracketForPoint(point, sizeBrackets)?.color || "#8a847a";
+    }
+    return partnerColor(point.partner_domain);
   }
 
   function colorToRgb(color) {
@@ -982,7 +1316,8 @@ export function createEmbeddingViewController({
     const clusterKeys = Array.from(
       new Set((state.embeddingClustering?.points || []).map((point) => String(point.cluster_label)))
     ).sort((left, right) => Number(left) - Number(right));
-    if (partners.length === 0) {
+    const sizeBrackets = colorMode === "size" ? embeddingSizeBrackets() : [];
+    if (partners.length === 0 && colorMode !== "size") {
       elements.embeddingPartnerLegend.innerHTML = "";
       return;
     }
@@ -991,6 +1326,7 @@ export function createEmbeddingViewController({
         <div class="embedding-legend-mode" role="tablist" aria-label="Embedding color mode">
           <button type="button" class="embedding-legend-mode-button ${colorMode === "domain" ? "active" : ""}" data-legend-mode="domain" aria-pressed="${colorMode === "domain"}">Domains</button>
           <button type="button" class="embedding-legend-mode-button ${colorMode === "cluster" ? "active" : ""}" data-legend-mode="cluster" aria-pressed="${colorMode === "cluster"}">Clusters</button>
+          <button type="button" class="embedding-legend-mode-button ${colorMode === "size" ? "active" : ""}" data-legend-mode="size" aria-pressed="${colorMode === "size"}">Size</button>
         </div>
       </div>
     `;
@@ -1008,6 +1344,20 @@ export function createEmbeddingViewController({
         `
               )
               .join("")
+        : colorMode === "size"
+          ? (state.embedding?.points || []).length === 0
+            ? '<p class="embedding-legend-empty">Embedding not loaded yet.</p>'
+            : sizeBrackets
+                .map(
+                  (bracket) => `
+          <div class="embedding-partner-chip embedding-size-chip active" title="${sizeBracketLabel(bracket)}">
+            <span class="representative-partner-filter-swatch" style="background: ${bracket.color};"></span>
+            <span class="embedding-partner-chip-label">${sizeBracketLabel(bracket)}</span>
+            <span class="embedding-partner-chip-value">${bracket.count}</span>
+          </div>
+        `
+                )
+                .join("")
         : partners
             .map(
               (partner) => `
@@ -2135,12 +2485,14 @@ export function createEmbeddingViewController({
       const normalizedMemberKeys = memberKeys.includes(representativeKey)
         ? memberKeys
         : [representativeKey].concat(memberKeys);
+      const domainSize = embeddingPointDomainSize(point, members);
       return {
         ...point,
         members,
         memberCount: embeddingPointMemberCount(point, members),
         memberKeys: normalizedMemberKeys,
         interactionRowKey: representativeKey,
+        domainSize,
         clusterLabel: clusterLabelForEmbeddingPoint(normalizedMemberKeys, clusterByRowKey),
       };
     });
@@ -2351,12 +2703,15 @@ export function createEmbeddingViewController({
       return;
     }
     const annotatedPoints = annotatedEmbeddingPoints();
+    const sizeBrackets = colorMode === "size" ? embeddingSizeBrackets(annotatedPoints) : [];
     const visibleClusters = visibleEmbeddingClusters();
     const visiblePartners = visibleEmbeddingPartners();
     const filteredPoints =
       colorMode === "cluster"
         ? annotatedPoints.filter((point) => visibleClusters.includes(String(point.clusterLabel)))
-        : annotatedPoints.filter((point) => visiblePartners.includes(point.partner_domain));
+        : colorMode === "domain"
+          ? annotatedPoints.filter((point) => visiblePartners.includes(point.partner_domain))
+          : annotatedPoints;
     if (filteredPoints.length === 0) {
       state.embeddingProjectedPoints = [];
       syncEmbeddingMemberControls([]);
@@ -2369,14 +2724,18 @@ export function createEmbeddingViewController({
       ctx.fillText(
         colorMode === "cluster"
           ? "Select at least one cluster in the legend."
-          : "Select at least one partner in the legend.",
+          : colorMode === "domain"
+            ? "Select at least one partner in the legend."
+            : "No size-bracketed embedding points are visible.",
         centerX,
         centerY
       );
       setEmbeddingInfo(
         colorMode === "cluster"
           ? "Clustering filter hides all clusters. Click legend items to show them again."
-          : "Embedding filter hides all partners. Click legend items to show them again."
+          : colorMode === "domain"
+            ? "Embedding filter hides all partners. Click legend items to show them again."
+            : "Domain A size brackets are unavailable for this embedding."
       );
       return;
     }
@@ -2403,10 +2762,7 @@ export function createEmbeddingViewController({
     syncEmbeddingMemberControls(projectedPoints);
     ctx.textAlign = "center";
     for (const point of projectedPoints) {
-      const color =
-        colorMode === "cluster"
-          ? embeddingClusterColor(point.clusterLabel)
-          : partnerColor(point.partner_domain);
+      const color = embeddingPointColor(point, colorMode, sizeBrackets);
       const isSelected = point.memberKeys.includes(state.selectedRowKey);
       const isRepresentative = point.memberKeys.includes(state.representativeRowKey);
       const isHovered = point.memberKeys.includes(state.embeddingHoverRowKey);
@@ -2426,10 +2782,16 @@ export function createEmbeddingViewController({
         Number(hoveredPoint.memberCount || 1) > 1
           ? ` | compressed interfaces: ${hoveredPoint.memberCount}`
           : "";
+      const sizeText = Number.isFinite(Number(hoveredPoint.domainSize)) && Number(hoveredPoint.domainSize) > 0
+        ? ` | Domain A size: ${hoveredPoint.domainSize} residues`
+        : "";
+      const bracketText = colorMode === "size"
+        ? ` | ${sizeBracketLabel(sizeBracketForPoint(hoveredPoint, sizeBrackets))}`
+        : "";
       setEmbeddingInfo(
         `${hoveredPoint.row_key} | ${hoveredPoint.partner_domain} | ${embeddingClusterLabel(
           hoveredPoint.clusterLabel
-        )} | interface columns: ${hoveredPoint.interface_size}${compressionText}`
+        )}${sizeText}${bracketText} | interface columns: ${hoveredPoint.interface_size}${compressionText}`
       );
     } else {
       const distanceLabel = embeddingDistanceLabel(
@@ -2445,13 +2807,17 @@ export function createEmbeddingViewController({
         colorMode === "cluster" && state.embeddingClustering
           ? ` ${clusteringMethod} on ${clusteringDistanceLabel} distance: ${state.embeddingClustering.cluster_count} clusters, ${state.embeddingClustering.noise_count} noise points.`
           : "";
+      const sizeSummary =
+        colorMode === "size" && sizeBrackets.length > 0
+          ? ` Domain A size coloring uses ${sizeBrackets.length} rainbow brackets.`
+          : "";
       const methodLabel = pointMethodLabel(state.embedding?.method || state.embeddingSettings.method);
       const representedCount = filteredPoints.reduce(
         (total, point) => total + Number(point.memberCount || 1),
         0
       );
       setEmbeddingInfo(
-        `3D ${methodLabel} points on ${distanceLabel} input. ${filteredPoints.length} visible points representing ${representedCount} interface rows. Drag to rotate.${clusteringSummary}`
+        `3D ${methodLabel} points on ${distanceLabel} input. ${filteredPoints.length} visible points representing ${representedCount} interface rows. Drag to rotate.${clusteringSummary}${sizeSummary}`
       );
     }
   }
@@ -2688,9 +3054,7 @@ export function createEmbeddingViewController({
     renderEmbeddingLegend();
     renderEmbeddingPlot();
     renderRepresentativeClusterLegend();
-    setEmbeddingInfo(
-      `Loading ${clusteringMethodLabel(state.embeddingClusteringSettings.method)} clustering (${embeddingDistanceLabel(state.embeddingClusteringSettings.distance)} distance)...`
-    );
+    setEmbeddingInfo(hierarchyLoadingInfoMessage());
     state.embeddingClusteringPromise = (async () => {
       try {
         const payload = await fetchJson(currentEmbeddingClusteringQuery());

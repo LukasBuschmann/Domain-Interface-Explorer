@@ -30,6 +30,8 @@ export const DEFAULT_CLUSTERING_SETTINGS = {
   persistenceLifetimeWeight: 0.5,
   persistenceScoreMode: "rectangle",
   hierarchicalMinClusterSize: 10,
+  domainSizeMin: "",
+  domainSizeMax: "",
 };
 
 export const DEFAULT_SELECTION_SETTINGS = {

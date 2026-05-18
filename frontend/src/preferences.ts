@@ -148,7 +148,55 @@ function normalizeClusteringSettings(rawSettings = {}, fallback = DEFAULT_CLUSTE
       source.hierarchicalMinClusterSize,
       fallback.hierarchicalMinClusterSize,
     ),
+    domainSizeMin: optionalPositiveInteger(source.domainSizeMin, fallback.domainSizeMin || ""),
+    domainSizeMax: optionalPositiveInteger(source.domainSizeMax, fallback.domainSizeMax || ""),
   };
+}
+
+function normalizeDomainSizeRange(rawRange = {}) {
+  const source = isRecord(rawRange) ? rawRange : {};
+  let domainSizeMin = optionalPositiveInteger(source.domainSizeMin);
+  let domainSizeMax = optionalPositiveInteger(source.domainSizeMax);
+  if (
+    domainSizeMin !== "" &&
+    domainSizeMax !== "" &&
+    Number(domainSizeMin) > Number(domainSizeMax)
+  ) {
+    [domainSizeMin, domainSizeMax] = [domainSizeMax, domainSizeMin];
+  }
+  return {
+    domainSizeMin: domainSizeMin === "" ? "" : String(domainSizeMin),
+    domainSizeMax: domainSizeMax === "" ? "" : String(domainSizeMax),
+  };
+}
+
+function domainSizeRangeIsFull(range) {
+  return (
+    String(range?.domainSizeMin ?? "").trim() === "" &&
+    String(range?.domainSizeMax ?? "").trim() === ""
+  );
+}
+
+function normalizeDomainSizeRangeMap(rawMap = {}, { keepFull = false } = {}) {
+  const source = isRecord(rawMap) ? rawMap : {};
+  const normalized = {};
+  for (const [pfamId, rawRange] of Object.entries(source)) {
+    const key = String(pfamId || "").trim();
+    if (!key) {
+      continue;
+    }
+    const range = normalizeDomainSizeRange(rawRange);
+    if (!keepFull && domainSizeRangeIsFull(range)) {
+      continue;
+    }
+    normalized[key] = range;
+  }
+  return normalized;
+}
+
+function clusteringSettingsWithoutDomainSize(settings = {}) {
+  const { domainSizeMin: _domainSizeMin, domainSizeMax: _domainSizeMax, ...rest } = settings || {};
+  return rest;
 }
 
 function normalizeHierarchicalTargetMemory(rawMemory = {}) {
@@ -231,12 +279,27 @@ export function applyUiPreferences(state) {
     state.embeddingSettings,
   );
 
-  state.embeddingClusteringSettings = normalizeClusteringSettings(
-    preferences.embeddingClusteringSettings,
+  state.embeddingClusteringSettings = {
+    ...normalizeClusteringSettings(
+      preferences.embeddingClusteringSettings,
+    ),
+    domainSizeMin: "",
+    domainSizeMax: "",
+  };
+  state.embeddingClusteringSettingsDraft = {
+    ...normalizeClusteringSettings(
+      preferences.embeddingClusteringSettingsDraft || state.embeddingClusteringSettings,
+      state.embeddingClusteringSettings,
+    ),
+    domainSizeMin: "",
+    domainSizeMax: "",
+  };
+  state.embeddingDomainSizeRangesByPfamId = normalizeDomainSizeRangeMap(
+    preferences.embeddingDomainSizeRangesByPfamId,
   );
-  state.embeddingClusteringSettingsDraft = normalizeClusteringSettings(
-    preferences.embeddingClusteringSettingsDraft || state.embeddingClusteringSettings,
-    state.embeddingClusteringSettings,
+  state.embeddingDomainSizeRangeDraftsByPfamId = normalizeDomainSizeRangeMap(
+    preferences.embeddingDomainSizeRangeDraftsByPfamId,
+    { keepFull: true },
   );
   state.embeddingHierarchicalTargetMemory = normalizeHierarchicalTargetMemory(
     preferences.embeddingHierarchicalTargetMemory,
@@ -244,7 +307,7 @@ export function applyUiPreferences(state) {
 
   state.embeddingColorMode = enumValue(
     preferences.embeddingColorMode,
-    ["cluster", "domain"],
+    ["cluster", "domain", "size"],
     state.embeddingColorMode,
   );
   const uiState = isRecord(preferences.uiState) ? preferences.uiState : {};
@@ -334,8 +397,10 @@ function preferencesPayload(state) {
     selectionSettings: state.selectionSettings,
     embeddingSettings: state.embeddingSettings,
     embeddingSettingsDraft: state.embeddingSettingsDraft,
-    embeddingClusteringSettings: state.embeddingClusteringSettings,
-    embeddingClusteringSettingsDraft: state.embeddingClusteringSettingsDraft,
+    embeddingClusteringSettings: clusteringSettingsWithoutDomainSize(state.embeddingClusteringSettings),
+    embeddingClusteringSettingsDraft: clusteringSettingsWithoutDomainSize(state.embeddingClusteringSettingsDraft),
+    embeddingDomainSizeRangesByPfamId: state.embeddingDomainSizeRangesByPfamId || {},
+    embeddingDomainSizeRangeDraftsByPfamId: state.embeddingDomainSizeRangeDraftsByPfamId || {},
     embeddingHierarchicalTargetMemory: state.embeddingHierarchicalTargetMemory,
     embeddingColorMode: state.embeddingColorMode,
     uiState: {

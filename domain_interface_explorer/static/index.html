@@ -446,6 +446,46 @@
                         <option value="single">Single</option>
                       </select>
                     </label>
+                    <label data-clustering-panel="hierarchical" class="embedding-settings-section-hidden">
+                      <span>
+                        Domain A Size
+                        <span
+                          class="embedding-settings-help"
+                          tabindex="0"
+                          title="Restricts hierarchy construction to interfaces whose Domain A residue count is inside this range. The full range uses existing full-size hierarchy files."
+                        >?</span>
+                      </span>
+                      <div class="embedding-settings-dual-range">
+                        <div class="embedding-settings-dual-range-track" aria-hidden="true">
+                          <div class="embedding-settings-dual-range-fill"></div>
+                        </div>
+                        <input
+                          id="embedding-cluster-domain-size-min"
+                          class="embedding-settings-input embedding-settings-range embedding-settings-dual-range-input"
+                          type="range"
+                          step="1"
+                          min="1"
+                          max="1"
+                          value="1"
+                          aria-label="Minimum Domain A size"
+                        >
+                        <input
+                          id="embedding-cluster-domain-size-max"
+                          class="embedding-settings-input embedding-settings-range embedding-settings-dual-range-input"
+                          type="range"
+                          step="1"
+                          min="1"
+                          max="1"
+                          value="1"
+                          aria-label="Maximum Domain A size"
+                        >
+                        <output
+                          id="embedding-cluster-domain-size-value"
+                          class="embedding-settings-range-value embedding-settings-dual-range-value"
+                          for="embedding-cluster-domain-size-min embedding-cluster-domain-size-max"
+                        >all</output>
+                      </div>
+                    </label>
                     <button id="embedding-clustering-apply" class="embedding-settings-apply" type="button">
                       <span
                         id="embedding-clustering-apply-warning"
