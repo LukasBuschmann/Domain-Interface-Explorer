@@ -605,7 +605,7 @@ class DomainMolstarViewer {
     async addMarkerResidues(residueColorMap, settings) {
         for (const [color, residueIds] of residueColorMap.entries()) {
             const keyColor = String(color).replace(/[^a-z0-9]/gi, "");
-            await this.addResidueSpacefill(residueIds, color, settings, `structure-marker-spacefill-${keyColor}`, "Selected column residue", { alpha: 0.38, sizeFactor: 0.64 });
+            await this.addResidueSpacefill(residueIds, color, settings, `structure-marker-spacefill-${keyColor}`, "Selected column residue", { alpha: 0.65, sizeFactor: 0.64 });
         }
     }
     async addResidueCartoon(residueIds, color, settings, key, label, options = {}) {

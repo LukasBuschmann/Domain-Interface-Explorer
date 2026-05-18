@@ -537,6 +537,84 @@ def alignment_fragment_key(fragment_key: str) -> str:
     return f"{ranges[0][0]}-{ranges[-1][1]}"
 
 
+def _coerce_int_list(values: object) -> list[int]:
+    if not isinstance(values, (list, tuple)):
+        return []
+    coerced: list[int] = []
+    for value in values:
+        try:
+            coerced.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return coerced
+
+
+def _alignment_column_offsets(aligned_sequence: str) -> dict[int, int]:
+    offsets: dict[int, int] = {}
+    residue_offset = 0
+    for column_index, char in enumerate(aligned_sequence):
+        if not char.isalpha():
+            continue
+        offsets[column_index] = residue_offset
+        residue_offset += 1
+    return offsets
+
+
+def infer_alignment_start_from_row_payload(
+    aligned_sequence: str,
+    exact_fragment: str,
+    row_payload: object,
+) -> int:
+    default_start = fragment_start(alignment_fragment_key(exact_fragment))
+    if not aligned_sequence or not isinstance(row_payload, dict):
+        return default_start
+
+    column_offsets = _alignment_column_offsets(aligned_sequence)
+    if not column_offsets:
+        return default_start
+
+    votes: dict[int, int] = {}
+    evidence_fields = (
+        ("interface_residues_a", "interface_msa_columns_a"),
+        ("surface_residue_ids_a", "surface_msa_columns_a"),
+    )
+    for residue_field, column_field in evidence_fields:
+        residue_ids = _coerce_int_list(row_payload.get(residue_field))
+        columns = _coerce_int_list(row_payload.get(column_field))
+        if not residue_ids or len(residue_ids) != len(columns):
+            continue
+        for residue_id, column in zip(residue_ids, columns):
+            offset = column_offsets.get(column)
+            if offset is None:
+                continue
+            candidate_start = residue_id - offset
+            if candidate_start <= 0:
+                continue
+            votes[candidate_start] = votes.get(candidate_start, 0) + 1
+
+    if not votes:
+        return default_start
+    max_votes = max(votes.values())
+    candidates = [start for start, vote_count in votes.items() if vote_count == max_votes]
+    return min(candidates, key=lambda start: (abs(start - default_start), start))
+
+
+def alignment_fragment_key_for_row_payload(
+    aligned_sequence: str,
+    exact_fragment: str,
+    row_payload: object,
+) -> str:
+    residue_count = sum(1 for char in aligned_sequence if char.isalpha())
+    if residue_count <= 0:
+        return alignment_fragment_key(exact_fragment)
+    inferred_start = infer_alignment_start_from_row_payload(
+        aligned_sequence,
+        exact_fragment,
+        row_payload,
+    )
+    return f"{inferred_start}-{inferred_start + residue_count - 1}"
+
+
 def mask_alignment_to_fragment_ranges(
     aligned_sequence: str,
     alignment_fragment: str,
@@ -593,6 +671,10 @@ def collect_interface_alignment_row_metadata(
                         **parsed,
                         "partner_domain": str(partner_domain),
                         "aligned_sequence": aligned_sequence,
+                        "interface_residues_a": list(payload.get("interface_residues_a") or []),
+                        "surface_residue_ids_a": list(payload.get("surface_residue_ids_a") or []),
+                        "interface_msa_columns_a": list(payload.get("interface_msa_columns_a") or []),
+                        "surface_msa_columns_a": list(payload.get("surface_msa_columns_a") or []),
                     }
                 )
         total_rows = len(raw_rows)
@@ -631,9 +713,14 @@ def build_interface_alignment_rows_from_metadata(
             protein_id = str(raw_row["protein_id"])
             partner_domain = str(raw_row["partner_domain"])
             fragment_key = str(raw_row["fragment_key"])
-            alignment_key = alignment_fragment_key(fragment_key)
+            raw_aligned_sequence = str(raw_row["aligned_sequence"] or "")
+            alignment_key = alignment_fragment_key_for_row_payload(
+                raw_aligned_sequence,
+                fragment_key,
+                raw_row,
+            )
             aligned_sequence, residue_ids = mask_alignment_to_fragment_ranges(
-                str(raw_row["aligned_sequence"] or ""),
+                raw_aligned_sequence,
                 alignment_key,
                 fragment_key,
             )

@@ -754,7 +754,7 @@ class DomainMolstarViewer {
         settings,
         `structure-marker-spacefill-${keyColor}`,
         "Selected column residue",
-        { alpha: 0.38, sizeFactor: 0.64 }
+        { alpha: 0.65, sizeFactor: 0.64 }
       );
     }
   }

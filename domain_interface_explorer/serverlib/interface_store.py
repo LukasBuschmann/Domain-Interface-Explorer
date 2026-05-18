@@ -644,11 +644,17 @@ class InterfaceStore:
                 "partner_fragment_key": str(row[3]),
                 "partner_domain": str(row[4]),
                 "aligned_sequence": str(row[5] or ""),
+                "interface_residues_a": unpack_uints(row[6]),
+                "surface_residue_ids_a": unpack_uints(row[7]),
+                "interface_msa_columns_a": unpack_uints(row[8]),
+                "surface_msa_columns_a": unpack_uints(row[9]),
             }
             for row in connection.execute(
                 f"""
                 SELECT interface_row_key, protein_id, fragment_key,
-                       partner_fragment_key, partner_domain, aligned_seq
+                       partner_fragment_key, partner_domain, aligned_seq,
+                       interface_residues_a, surface_residue_ids_a,
+                       interface_msa_columns_a, surface_msa_columns_a
                 FROM interface_rows
                 WHERE source_id = ? AND {where_sql}
                 ORDER BY row_order
@@ -849,7 +855,8 @@ class InterfaceStore:
                     f"""
                     SELECT interface_row_key, protein_id, fragment_key,
                            partner_fragment_key, partner_domain, aligned_seq,
-                           interface_msa_columns_a
+                           interface_residues_a, surface_residue_ids_a,
+                           interface_msa_columns_a, surface_msa_columns_a
                     FROM interface_rows
                     WHERE source_id = ? AND {where_sql}
                     ORDER BY row_order
@@ -864,7 +871,10 @@ class InterfaceStore:
                             "partner_fragment_key": str(row[3]),
                             "partner_domain": str(row[4]),
                             "aligned_sequence": str(row[5] or ""),
-                            "interface_msa_columns_a": unpack_uints(row[6]),
+                            "interface_residues_a": unpack_uints(row[6]),
+                            "surface_residue_ids_a": unpack_uints(row[7]),
+                            "interface_msa_columns_a": unpack_uints(row[8]),
+                            "surface_msa_columns_a": unpack_uints(row[9]),
                         }
                     )
             timer.set(rows=len(candidates), alignment_length=alignment_length)
@@ -892,7 +902,8 @@ class InterfaceStore:
                     SELECT partner_domain, interface_row_key,
                            interface_residues_a, surface_residue_ids_a,
                            interface_residues_b, surface_residue_ids_b,
-                           residue_contacts, fragments_b, aligned_seq
+                           residue_contacts, fragments_b, aligned_seq,
+                           interface_msa_columns_a, surface_msa_columns_a
                     FROM interface_rows
                     WHERE source_id = ? AND {where_sql}
                       AND interface_row_key = ?
@@ -911,6 +922,8 @@ class InterfaceStore:
                         "residue_contacts": unpack_uint_pairs(row[6]),
                         "fragments_b": unpack_uint_pairs(row[7]),
                         "aligned_sequence": str(row[8] or ""),
+                        "interface_msa_columns_a": unpack_uints(row[9]),
+                        "surface_msa_columns_a": unpack_uints(row[10]),
                     }
             timer.set(rows=sum(len(rows) for rows in payload.values()))
             return payload

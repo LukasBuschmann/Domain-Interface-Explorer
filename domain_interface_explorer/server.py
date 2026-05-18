@@ -28,7 +28,7 @@ from domain_interface_explorer.serverlib.interface_files import (
 from domain_interface_explorer.serverlib.interface_store import InterfaceStore
 from domain_interface_explorer.serverlib.interface_embedding import (
     build_interface_alignment_rows_from_metadata,
-    alignment_fragment_key,
+    alignment_fragment_key_for_row_payload,
     compute_columns_chart_payload,
     compute_cluster_compare_payload,
     compute_embedding_payload,
@@ -322,6 +322,7 @@ def alignment_payload_for_structure_row(
     fragment_key: str,
 ) -> dict[str, object]:
     aligned_sequence = ""
+    matched_payload: dict | None = None
     for partner_domain, rows in interface_data.items():
         if partner_filter != "__all__" and partner_domain != partner_filter:
             continue
@@ -334,12 +335,18 @@ def alignment_payload_for_structure_row(
             row_payload.get("aligned_sequence") or row_payload.get("aligned_seq") or ""
         )
         if aligned_sequence:
+            matched_payload = row_payload
             break
     if not aligned_sequence:
         return {"aligned_sequence": "", "residue_ids": []}
+    alignment_key = alignment_fragment_key_for_row_payload(
+        aligned_sequence,
+        fragment_key,
+        matched_payload or {},
+    )
     masked_sequence, residue_ids = mask_alignment_to_fragment_ranges(
         aligned_sequence,
-        alignment_fragment_key(fragment_key),
+        alignment_key,
         fragment_key,
     )
     return {
@@ -1147,8 +1154,23 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 candidates.append(
                     {
                         **raw_row,
+                        "interface_residues_a": (
+                            row_payload.get("interface_residues_a", [])
+                            if isinstance(row_payload, dict)
+                            else []
+                        ),
+                        "surface_residue_ids_a": (
+                            row_payload.get("surface_residue_ids_a", [])
+                            if isinstance(row_payload, dict)
+                            else []
+                        ),
                         "interface_msa_columns_a": (
                             row_payload.get("interface_msa_columns_a", [])
+                            if isinstance(row_payload, dict)
+                            else []
+                        ),
+                        "surface_msa_columns_a": (
+                            row_payload.get("surface_msa_columns_a", [])
                             if isinstance(row_payload, dict)
                             else []
                         ),
