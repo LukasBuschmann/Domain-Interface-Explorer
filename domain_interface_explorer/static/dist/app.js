@@ -195,6 +195,7 @@ const embeddingViewController = createEmbeddingViewController({
     elements,
     interfaceSelect,
     partnerColor,
+    openColumnsCellStructures,
     renderRepresentativeClusterLegend,
     renderRepresentativeStructure: () => {
         void renderRepresentativeStructure();
@@ -202,7 +203,7 @@ const embeddingViewController = createEmbeddingViewController({
     syncRepresentativeScopeControls,
     representativeLens,
 });
-const { allEmbeddingClusterLabels, allColumnsClusterLabels, allRepresentativeClusterLabels, clusteringMethodLabel, currentClusterCompareQuery, currentEmbeddingClusteringQuery, currentEmbeddingClusteringRequestKey, currentEmbeddingQuery, currentEmbeddingRequestKey, currentHierarchicalTarget, embeddingClusterColor, embeddingClusterLabel, embeddingClusteringSettingsKey, embeddingDistanceLabel, embeddingLegendMode, embeddingPointAt, embeddingSettingsKey, ensureEmbeddingClusteringLoaded, ensureEmbeddingDataLoaded, ensureHierarchyStatusLoaded, handleColumnsPointerDown, handleColumnsPointerMove, handleColumnsPointerUp, handleColumnsScroll, handleColumnsWheel, normalizeHierarchicalDraft, parseEmbeddingClusteringSettingsDraft, parseEmbeddingSettingsDraft, readEmbeddingClusteringDraftInputs, renderEmbeddingLegend, renderEmbeddingPlot, requestEmbeddingRender, renderColumnsChart, renderColumnsClusterLegend, resetColumnsClusterSelection, resetEmbeddingClusterSelection, resetEmbeddingPartnerSelection, resetRepresentativeClusterSelection, resizeColumnsCanvas, resizeEmbeddingCanvas, setEmbeddingInfo, setColumnsInfo, syncEmbeddingLoadingUi, syncEmbeddingMemberControls, syncDistanceThresholdValueUi, syncPersistenceMinLifetimeValueUi, syncPersistenceStabilityWeightValueUi, syncEmbeddingSettingsUi, syncHierarchicalTargetMemoryFromDraft, syncHierarchicalTargetUi, visibleColumnsClusters, visibleRepresentativeClusters, } = embeddingViewController;
+const { allEmbeddingClusterLabels, allColumnsClusterLabels, allRepresentativeClusterLabels, clusteringMethodLabel, currentClusterCompareQuery, currentEmbeddingClusteringQuery, currentEmbeddingClusteringRequestKey, currentEmbeddingQuery, currentEmbeddingRequestKey, currentHierarchicalTarget, embeddingClusterColor, embeddingClusterLabel, embeddingClusteringSettingsKey, embeddingDistanceLabel, embeddingLegendMode, embeddingPointAt, embeddingSettingsKey, ensureEmbeddingClusteringLoaded, ensureEmbeddingDataLoaded, ensureHierarchyStatusLoaded, handleColumnsDoubleClick, handleColumnsPointerDown, handleColumnsPointerMove, handleColumnsPointerUp, handleColumnsScroll, handleColumnsWheel, normalizeHierarchicalDraft, parseEmbeddingClusteringSettingsDraft, parseEmbeddingSettingsDraft, readEmbeddingClusteringDraftInputs, renderEmbeddingLegend, renderEmbeddingPlot, requestEmbeddingRender, renderColumnsChart, renderColumnsClusterLegend, resetColumnsClusterSelection, resetEmbeddingClusterSelection, resetEmbeddingPartnerSelection, resetRepresentativeClusterSelection, resizeColumnsCanvas, resizeEmbeddingCanvas, setEmbeddingInfo, setColumnsInfo, syncEmbeddingLoadingUi, syncEmbeddingMemberControls, syncDistanceThresholdValueUi, syncPersistenceMinLifetimeValueUi, syncPersistenceStabilityWeightValueUi, syncEmbeddingSettingsUi, syncHierarchicalTargetMemoryFromDraft, syncHierarchicalTargetUi, visibleColumnsClusters, visibleRepresentativeClusters, } = embeddingViewController;
 function syncColumnsSettingsUi() {
     const open = Boolean(state.columnsSettingsOpen);
     elements.columnsSettingsToggle?.setAttribute("aria-expanded", String(open));
@@ -239,6 +240,38 @@ function resetColumnsChartState() {
     state.columnsDomainOverlayRequestKey = null;
     state.columnsDomainOverlayErrorKey = null;
     state.columnsDomainOverlayPromise = null;
+}
+async function openColumnsCellStructures({ source = "clusters", seriesLabel = "", seriesColor = "#2d6a4f", columnIndex, members = [], } = {}) {
+    const normalizedMembers = members
+        .map((member) => ({
+        row_key: String(member?.row_key || ""),
+        partner_domain: String(member?.partner_domain || ""),
+    }))
+        .filter((member) => member.row_key && member.partner_domain);
+    if (normalizedMembers.length === 0) {
+        return;
+    }
+    const targetKey = embeddingMemberKey(normalizedMembers[0]);
+    const selectedRow = selectRowByKey(targetKey);
+    if (!selectedRow) {
+        throw new Error("The selected interface is no longer available in the filtered selection.");
+    }
+    const normalizedColumnIndex = Number(columnIndex);
+    state.embeddingMemberSelection = {
+        pointKey: `columns:${source}:${seriesLabel}:${normalizedColumnIndex}`,
+        members: normalizedMembers,
+        index: 0,
+        columnMarker: {
+            columnIndex: Number.isInteger(normalizedColumnIndex) ? normalizedColumnIndex : null,
+            residueId: null,
+            residueName: "",
+            color: seriesColor || "#2d6a4f",
+        },
+    };
+    syncEmbeddingMemberControls([]);
+    appStatus.textContent =
+        `Opening ${normalizedMembers.length} interfaces at MSA column ${normalizedColumnIndex}.`;
+    await loadInteractiveStructure();
 }
 const dendrogramViewController = createDendrogramViewController({
     state,
@@ -2504,6 +2537,9 @@ elements.columnsCanvas?.addEventListener("pointermove", handleColumnsPointerMove
 elements.columnsCanvas?.addEventListener("pointerup", handleColumnsPointerUp);
 elements.columnsCanvas?.addEventListener("pointercancel", handleColumnsPointerUp);
 elements.columnsCanvas?.addEventListener("wheel", handleColumnsWheel, { passive: false });
+elements.columnsCanvas?.addEventListener("dblclick", (event) => {
+    void handleColumnsDoubleClick(event).catch(handleStructureLoadFailure);
+});
 elements.columnsScroll?.addEventListener("scroll", handleColumnsScroll);
 elements.columnsSettingsToggle?.addEventListener("click", () => {
     state.columnsSettingsOpen = !state.columnsSettingsOpen;

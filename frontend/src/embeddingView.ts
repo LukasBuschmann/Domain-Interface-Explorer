@@ -16,6 +16,7 @@ export function createEmbeddingViewController({
   elements,
   interfaceSelect,
   partnerColor,
+  openColumnsCellStructures = () => {},
   renderRepresentativeClusterLegend,
   renderRepresentativeStructure,
   syncRepresentativeScopeControls = () => {},
@@ -1659,7 +1660,6 @@ export function createEmbeddingViewController({
 
   function ensureColumnsDomainOverlayLoaded() {
     if (
-      columnsSourceMode() !== "domains" ||
       !interfaceSelect.value ||
       !state.interface ||
       state.interface.overlayComplete
@@ -2138,6 +2138,73 @@ export function createEmbeddingViewController({
     return layout.rows.find((row) => point.y >= row.y && point.y <= row.y + row.height) || null;
   }
 
+  function columnsCellAtPoint(point) {
+    const layout = state.columnsInteractionLayout;
+    if (
+      !layout ||
+      point.x < layout.chartLeft ||
+      point.x > layout.chartRight ||
+      point.y < layout.rowsTop ||
+      point.y > layout.rowsBottom
+    ) {
+      return null;
+    }
+    const row = columnsRowAtPoint(point);
+    if (!row) {
+      return null;
+    }
+    const ratio = Math.max(0, Math.min(1, (point.x - layout.chartLeft) / Math.max(1, layout.chartWidth)));
+    const binCount = Math.max(1, Number(layout.binCount || 1));
+    const binIndex = Math.max(0, Math.min(binCount - 1, Math.floor(ratio * binCount)));
+    if (layout.interfaceOnly) {
+      const interfaceColumns = Array.isArray(layout.interfaceColumns) ? layout.interfaceColumns : [];
+      if (interfaceColumns.length === 0) {
+        return null;
+      }
+      const startOrdinal = Math.floor((binIndex * interfaceColumns.length) / binCount);
+      const endOrdinal = Math.max(
+        startOrdinal + 1,
+        Math.ceil(((binIndex + 1) * interfaceColumns.length) / binCount)
+      );
+      const pointerOrdinal = Math.max(
+        0,
+        Math.min(interfaceColumns.length - 1, Math.floor(ratio * interfaceColumns.length))
+      );
+      const columnIndex = Number(interfaceColumns[pointerOrdinal]);
+      if (!Number.isInteger(columnIndex)) {
+        return null;
+      }
+      return {
+        row,
+        columnIndex,
+        bucketColumns: interfaceColumns.slice(startOrdinal, endOrdinal),
+      };
+    }
+
+    const alignmentLength = Math.max(1, Number(layout.alignmentLength || 1));
+    const range = layout.range || { start: 0, end: alignmentLength, span: alignmentLength };
+    const startColumn = Math.max(
+      0,
+      Math.min(alignmentLength - 1, Math.floor(range.start + (binIndex * range.span) / binCount))
+    );
+    const endColumn = Math.max(
+      startColumn + 1,
+      Math.min(alignmentLength, Math.ceil(range.start + ((binIndex + 1) * range.span) / binCount))
+    );
+    const columnIndex = Math.max(
+      0,
+      Math.min(alignmentLength - 1, Math.floor(range.start + ratio * range.span))
+    );
+    return {
+      row,
+      columnIndex,
+      bucketColumns: Array.from(
+        { length: Math.max(0, endColumn - startColumn) },
+        (_value, index) => startColumn + index
+      ),
+    };
+  }
+
   function moveColumnsCluster(clusterLabel, targetLabel, insertAfter = false) {
     const labels = allColumnsClusterLabels();
     const fromIndex = labels.indexOf(clusterLabel);
@@ -2155,6 +2222,157 @@ export function createEmbeddingViewController({
     targetIndex = Math.max(0, Math.min(labels.length, targetIndex));
     labels.splice(targetIndex, 0, clusterLabel);
     state.columnsClusterOrder = labels;
+  }
+
+  function columnsMemberKey(member) {
+    return interactionRowKey(member?.row_key || "", member?.partner_domain || "");
+  }
+
+  function columnsPointMembers(point) {
+    const members = embeddingPointMembers(point);
+    const rowKey = String(point?.row_key || "");
+    const partnerDomain = String(point?.partner_domain || "");
+    if (!rowKey || !partnerDomain) {
+      return members;
+    }
+    const directMember = { row_key: rowKey, partner_domain: partnerDomain };
+    const directKey = columnsMemberKey(directMember);
+    return members.some((member) => columnsMemberKey(member) === directKey)
+      ? members
+      : [directMember].concat(members);
+  }
+
+  function payloadHasInterfaceColumn(rowPayload, columnIndex) {
+    if (!rowPayload || typeof rowPayload !== "object") {
+      return false;
+    }
+    const columns = rowPayload.interface_msa_columns_a || [];
+    if (columns instanceof Set) {
+      return columns.has(columnIndex) || columns.has(String(columnIndex));
+    }
+    return Array.isArray(columns) && columns.some((value) => Number(value) === columnIndex);
+  }
+
+  function interactionPayloadForMember(member) {
+    const rowKey = String(member?.row_key || "");
+    const partnerDomain = String(member?.partner_domain || "");
+    if (!rowKey || !partnerDomain) {
+      return null;
+    }
+    return state.interface?.data?.[partnerDomain]?.[rowKey] || null;
+  }
+
+  function uniqueSortedColumns(columns, preferredColumn) {
+    const preferred = Number(preferredColumn);
+    const uniqueColumns = Array.from(
+      new Set(
+        [preferred].concat(columns || [])
+          .map((column) => Number(column))
+          .filter((column) => Number.isInteger(column) && column >= 0)
+      )
+    );
+    return uniqueColumns.sort(
+      (left, right) =>
+        Math.abs(left - preferred) - Math.abs(right - preferred) ||
+        left - right
+    );
+  }
+
+  function domainMembersForColumn(partnerDomain, columnIndex) {
+    const rowsByKey = state.interface?.data?.[partnerDomain];
+    if (!rowsByKey || typeof rowsByKey !== "object") {
+      return [];
+    }
+    return Object.entries(rowsByKey)
+      .filter(([_rowKey, rowPayload]) => payloadHasInterfaceColumn(rowPayload, columnIndex))
+      .map(([rowKey]) => ({
+        row_key: String(rowKey),
+        partner_domain: String(partnerDomain),
+      }));
+  }
+
+  function clusterMembersForColumn(clusterLabel, columnIndex) {
+    const numericClusterLabel = Number(clusterLabel);
+    if (!Number.isFinite(numericClusterLabel)) {
+      return [];
+    }
+    const members = [];
+    const seen = new Set();
+    for (const point of state.embeddingClustering?.points || []) {
+      if (Number(point?.cluster_label) !== numericClusterLabel) {
+        continue;
+      }
+      for (const member of columnsPointMembers(point)) {
+        if (!payloadHasInterfaceColumn(interactionPayloadForMember(member), columnIndex)) {
+          continue;
+        }
+        const key = columnsMemberKey(member);
+        if (!key || seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        members.push({
+          row_key: String(member.row_key),
+          partner_domain: String(member.partner_domain),
+        });
+      }
+    }
+    return members;
+  }
+
+  function membersForColumnsCell(cell) {
+    const candidateColumns = uniqueSortedColumns(cell.bucketColumns, cell.columnIndex);
+    for (const columnIndex of candidateColumns) {
+      const members = columnsSourceMode() === "domains"
+        ? domainMembersForColumn(String(cell.row.clusterLabel), columnIndex)
+        : clusterMembersForColumn(cell.row.clusterLabel, columnIndex);
+      if (members.length > 0) {
+        return {
+          columnIndex,
+          members: members.sort(
+            (left, right) =>
+              left.partner_domain.localeCompare(right.partner_domain) ||
+              left.row_key.localeCompare(right.row_key)
+          ),
+        };
+      }
+    }
+    return { columnIndex: cell.columnIndex, members: [] };
+  }
+
+  async function handleColumnsDoubleClick(event) {
+    if (!state.columnsChart?.alignmentLength) {
+      return;
+    }
+    const point = columnsCanvasPoint(event);
+    const cell = columnsCellAtPoint(point);
+    if (!cell) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const overlayPromise = ensureColumnsDomainOverlayLoaded();
+    if (overlayPromise) {
+      setColumnsInfo("Loading interface examples for the selected column...");
+      await overlayPromise;
+    }
+    const resolved = membersForColumnsCell(cell);
+    if (resolved.members.length === 0) {
+      setColumnsInfo(
+        `No interfaces found for ${columnsSourceTitle().toLowerCase()} ${cell.row.clusterLabel} at MSA column ${cell.columnIndex}.`
+      );
+      return;
+    }
+    await openColumnsCellStructures({
+      source: columnsSourceMode(),
+      seriesLabel: String(cell.row.clusterLabel),
+      seriesColor: columnsSeriesColor(cell.row.clusterLabel),
+      columnIndex: resolved.columnIndex,
+      members: resolved.members,
+    });
+    setColumnsInfo(
+      `Opening ${resolved.members.length} ${columnsSourcePlural()} examples at MSA column ${resolved.columnIndex}.`
+    );
   }
 
   function handleColumnsPointerDown(event) {
@@ -2618,6 +2836,8 @@ export function createEmbeddingViewController({
       range,
       alignmentLength,
       interfaceOnly,
+      interfaceColumns,
+      binCount,
       rows,
     };
 
@@ -3493,6 +3713,7 @@ export function createEmbeddingViewController({
     ensureEmbeddingClusteringLoaded,
     ensureEmbeddingDataLoaded,
     ensureHierarchyStatusLoaded,
+    handleColumnsDoubleClick,
     handleColumnsPointerDown,
     handleColumnsPointerMove,
     handleColumnsPointerUp,
