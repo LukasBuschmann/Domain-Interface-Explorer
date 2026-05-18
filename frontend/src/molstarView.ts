@@ -706,7 +706,7 @@ class DomainMolstarViewer {
         "Main interface"
       );
     }
-    await this.addResiduesByColor(stylesToColorMap(markerResidueStyles), settings, "structure-marker");
+    await this.addMarkerResidues(stylesToColorMap(markerResidueStyles), settings);
     await this.addResidueCartoon(
       partnerDomainOnlyResidues,
       PARTNER_DOMAIN_COLOR,
@@ -758,6 +758,26 @@ class DomainMolstarViewer {
     }
   }
 
+  async addMarkerResidues(residueColorMap, settings) {
+    for (const [color, residueIds] of residueColorMap.entries()) {
+      const keyColor = String(color).replace(/[^a-z0-9]/gi, "");
+      await this.addResidueCartoon(
+        residueIds,
+        color,
+        settings,
+        `structure-marker-cartoon-${keyColor}`,
+        "Selected column residue"
+      );
+      await this.addResidueSpacefill(
+        residueIds,
+        color,
+        settings,
+        `structure-marker-spacefill-${keyColor}`,
+        "Selected column residue"
+      );
+    }
+  }
+
   async addResidueCartoon(residueIds, color, settings, key, label, options = {}) {
     const ids = numberList(residueIds);
     if (ids.length === 0) {
@@ -785,6 +805,41 @@ class DomainMolstarViewer {
       });
     } catch (_error) {
       // A missing residue range should not make the whole tile unavailable.
+    }
+  }
+
+  async addResidueSpacefill(residueIds, color, settings, key, label, options = {}) {
+    const ids = numberList(residueIds);
+    if (ids.length === 0) {
+      return;
+    }
+    const expression = residueExpression(ids);
+    if (!expression) {
+      return;
+    }
+    try {
+      const component = await this.plugin.builders.structure.tryCreateComponentFromExpression(
+        this.structureRef,
+        expression,
+        key,
+        { label }
+      );
+      if (!component) {
+        return;
+      }
+      await this.plugin.builders.structure.representation.addRepresentation(component, {
+        type: "spacefill",
+        typeParams: typeParamsFor(settings, {
+          alpha: options.alpha ?? 1,
+          extra: {
+            sizeFactor: options.sizeFactor ?? 0.58,
+          },
+        }),
+        color: "uniform",
+        colorParams: { value: colorFromHex(color) },
+      });
+    } catch (_error) {
+      // Marker decoration is optional and should not block structure rendering.
     }
   }
 

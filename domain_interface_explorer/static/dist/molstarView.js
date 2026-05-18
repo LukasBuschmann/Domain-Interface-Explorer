@@ -594,7 +594,7 @@ class DomainMolstarViewer {
             await this.addResidueCartoon(surfaceOnlyResidues, MAIN_SURFACE_COLOR, settings, "main-surface", "Main surface");
             await this.addResidueCartoon(visibleInterfaceResidues, MAIN_INTERFACE_COLOR, settings, "main-interface", "Main interface");
         }
-        await this.addResiduesByColor(stylesToColorMap(markerResidueStyles), settings, "structure-marker");
+        await this.addMarkerResidues(stylesToColorMap(markerResidueStyles), settings);
         await this.addResidueCartoon(partnerDomainOnlyResidues, PARTNER_DOMAIN_COLOR, settings, "partner-domain", "Partner domain");
         await this.addResidueCartoon(partnerSurfaceOnlyResidues, PARTNER_SURFACE_COLOR, settings, "partner-surface", "Partner surface");
         await this.addResidueCartoon(partnerInterfaceResidues, PARTNER_INTERFACE_COLOR, settings, "partner-interface", "Partner interface");
@@ -611,6 +611,13 @@ class DomainMolstarViewer {
     async addResiduesByColor(residueColorMap, settings, keyPrefix) {
         for (const [color, residueIds] of residueColorMap.entries()) {
             await this.addResidueCartoon(residueIds, color, settings, `${keyPrefix}-${String(color).replace(/[^a-z0-9]/gi, "")}`, "Residue group");
+        }
+    }
+    async addMarkerResidues(residueColorMap, settings) {
+        for (const [color, residueIds] of residueColorMap.entries()) {
+            const keyColor = String(color).replace(/[^a-z0-9]/gi, "");
+            await this.addResidueCartoon(residueIds, color, settings, `structure-marker-cartoon-${keyColor}`, "Selected column residue");
+            await this.addResidueSpacefill(residueIds, color, settings, `structure-marker-spacefill-${keyColor}`, "Selected column residue");
         }
     }
     async addResidueCartoon(residueIds, color, settings, key, label, options = {}) {
@@ -630,6 +637,35 @@ class DomainMolstarViewer {
             await this.plugin.builders.structure.representation.addRepresentation(component, {
                 type: "cartoon",
                 typeParams: typeParamsFor(settings, { alpha: options.alpha ?? 1 }),
+                color: "uniform",
+                colorParams: { value: colorFromHex(color) },
+            });
+        }
+        catch (_error) {
+        }
+    }
+    async addResidueSpacefill(residueIds, color, settings, key, label, options = {}) {
+        const ids = numberList(residueIds);
+        if (ids.length === 0) {
+            return;
+        }
+        const expression = residueExpression(ids);
+        if (!expression) {
+            return;
+        }
+        try {
+            const component = await this.plugin.builders.structure.tryCreateComponentFromExpression(this.structureRef, expression, key, { label });
+            if (!component) {
+                return;
+            }
+            await this.plugin.builders.structure.representation.addRepresentation(component, {
+                type: "spacefill",
+                typeParams: typeParamsFor(settings, {
+                    alpha: options.alpha ?? 1,
+                    extra: {
+                        sizeFactor: options.sizeFactor ?? 0.58,
+                    },
+                }),
                 color: "uniform",
                 colorParams: { value: colorFromHex(color) },
             });

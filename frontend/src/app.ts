@@ -396,6 +396,7 @@ const {
   ensureEmbeddingDataLoaded,
   ensureHierarchyStatusLoaded,
   handleColumnsDoubleClick,
+  handleColumnsPointerLeave,
   handleColumnsPointerDown,
   handleColumnsPointerMove,
   handleColumnsPointerUp,
@@ -462,6 +463,7 @@ function resetColumnsChartState() {
   state.columnsVisibleClusters = new Set();
   state.columnsClusterOrder = [];
   state.columnsDrag = null;
+  state.columnsHoverCell = null;
   state.columnsInteractionLayout = null;
   state.columnsDomainOverlayLoading = false;
   state.columnsDomainOverlayRequestKey = null;
@@ -1222,16 +1224,31 @@ function activeStructureColumnMarker() {
 
 function structureMarkerResidueStyles(residueLookup) {
   const marker = activeStructureColumnMarker();
-  if (!marker || !(residueLookup instanceof Map)) {
+  if (!marker) {
     return [];
   }
   const styles = [];
-  for (const entry of residueLookup.values()) {
-    if (entry.columnIndex !== marker.columnIndex) {
-      continue;
+  if (residueLookup instanceof Map) {
+    for (const entry of residueLookup.values()) {
+      if (entry.columnIndex !== marker.columnIndex) {
+        continue;
+      }
+      styles.push({
+        residueId: entry.residueId,
+        color: marker.color,
+        intensity: 1,
+        columnIndex: marker.columnIndex,
+      });
     }
+  }
+  if (styles.length > 0) {
+    return styles;
+  }
+  const payloadResidueId = state.structureData?.payload?.residue_ids?.[marker.columnIndex];
+  const residueId = Number(payloadResidueId);
+  if (Number.isFinite(residueId)) {
     styles.push({
-      residueId: entry.residueId,
+      residueId,
       color: marker.color,
       intensity: 1,
       columnIndex: marker.columnIndex,
@@ -3187,6 +3204,7 @@ elements.columnsCanvas?.addEventListener("pointerdown", handleColumnsPointerDown
 elements.columnsCanvas?.addEventListener("pointermove", handleColumnsPointerMove);
 elements.columnsCanvas?.addEventListener("pointerup", handleColumnsPointerUp);
 elements.columnsCanvas?.addEventListener("pointercancel", handleColumnsPointerUp);
+elements.columnsCanvas?.addEventListener("pointerleave", handleColumnsPointerLeave);
 elements.columnsCanvas?.addEventListener("wheel", handleColumnsWheel, { passive: false });
 elements.columnsCanvas?.addEventListener("dblclick", (event) => {
   void handleColumnsDoubleClick(event).catch(handleStructureLoadFailure);

@@ -42,6 +42,7 @@ export const state = {
   columnsDomainOverlayPromise: null,
   columnsClusterOrder: [],
   columnsDrag: null,
+  columnsHoverCell: null,
   columnsInteractionLayout: null,
   dendrogram: null,
   dendrogramRequestId: 0,

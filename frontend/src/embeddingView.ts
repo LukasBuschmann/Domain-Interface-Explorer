@@ -23,6 +23,8 @@ export function createEmbeddingViewController({
   representativeLens,
 }) {
   let columnsRenderFrameId = 0;
+  let columnsHoverTimer = 0;
+  let columnsHoverTargetKey = "";
   let embeddingRenderFrameId = 0;
   const SIZE_RAINBOW_PALETTE = [
     "#d7191c",
@@ -1687,6 +1689,7 @@ export function createEmbeddingViewController({
         }
         if (mergeColumnsDomainOverlayPayload(payload)) {
           state.columnsChartKey = null;
+          state.columnsHoverCell = null;
           state.columnsInteractionLayout = null;
         }
       } catch (error) {
@@ -1774,6 +1777,7 @@ export function createEmbeddingViewController({
       state.columnsVisibleClusters = new Set();
       state.columnsClusterOrder = [];
       state.columnsDrag = null;
+      state.columnsHoverCell = null;
       state.columnsInteractionLayout = null;
       return;
     }
@@ -2096,6 +2100,24 @@ export function createEmbeddingViewController({
     }
   }
 
+  function drawColumnsHoverCell(ctx, hoverCell) {
+    const rect = hoverCell?.rect;
+    if (!rect) {
+      return;
+    }
+    const x = Math.floor(Number(rect.x || 0)) + 0.5;
+    const y = Math.floor(Number(rect.y || 0)) + 0.5;
+    const width = Math.max(2, Math.round(Number(rect.width || 0)) - 1);
+    const height = Math.max(2, Math.round(Number(rect.height || 0)) - 1);
+    ctx.save();
+    ctx.fillStyle = "rgba(45, 106, 79, 0.08)";
+    ctx.fillRect(x, y, width, height);
+    ctx.strokeStyle = "#2d6a4f";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, width, height);
+    ctx.restore();
+  }
+
   function panColumnsByPixels(pixelDelta, chartWidth, alignmentLength, visibleClusters = null) {
     if (state.columnsInterfaceOnly) {
       const interfaceColumns = allVisibleInterfaceColumns(
@@ -2156,6 +2178,13 @@ export function createEmbeddingViewController({
     const ratio = Math.max(0, Math.min(1, (point.x - layout.chartLeft) / Math.max(1, layout.chartWidth)));
     const binCount = Math.max(1, Number(layout.binCount || 1));
     const binIndex = Math.max(0, Math.min(binCount - 1, Math.floor(ratio * binCount)));
+    const binWidth = layout.chartWidth / binCount;
+    const rect = {
+      x: layout.chartLeft + binIndex * binWidth,
+      y: row.y,
+      width: binWidth,
+      height: row.height,
+    };
     if (layout.interfaceOnly) {
       const interfaceColumns = Array.isArray(layout.interfaceColumns) ? layout.interfaceColumns : [];
       if (interfaceColumns.length === 0) {
@@ -2177,6 +2206,8 @@ export function createEmbeddingViewController({
       return {
         row,
         columnIndex,
+        binIndex,
+        rect,
         bucketColumns: interfaceColumns.slice(startOrdinal, endOrdinal),
       };
     }
@@ -2198,6 +2229,8 @@ export function createEmbeddingViewController({
     return {
       row,
       columnIndex,
+      binIndex,
+      rect,
       bucketColumns: Array.from(
         { length: Math.max(0, endColumn - startColumn) },
         (_value, index) => startColumn + index
@@ -2222,6 +2255,62 @@ export function createEmbeddingViewController({
     targetIndex = Math.max(0, Math.min(labels.length, targetIndex));
     labels.splice(targetIndex, 0, clusterLabel);
     state.columnsClusterOrder = labels;
+  }
+
+  function clearColumnsHoverCell() {
+    if (columnsHoverTimer) {
+      window.clearTimeout(columnsHoverTimer);
+      columnsHoverTimer = 0;
+    }
+    columnsHoverTargetKey = "";
+    if (state.columnsHoverCell) {
+      state.columnsHoverCell = null;
+      requestColumnsRenderNextFrame();
+    }
+  }
+
+  function columnsHoverCellKey(cell) {
+    if (!cell) {
+      return "";
+    }
+    return [
+      columnsSourceMode(),
+      cell.row?.clusterLabel ?? "",
+      cell.binIndex ?? "",
+      cell.columnIndex ?? "",
+    ].join("|");
+  }
+
+  function scheduleColumnsHoverCell(cell) {
+    const key = columnsHoverCellKey(cell);
+    if (!key) {
+      clearColumnsHoverCell();
+      return;
+    }
+    if (state.columnsHoverCell?.key === key) {
+      return;
+    }
+    if (columnsHoverTargetKey === key && columnsHoverTimer) {
+      return;
+    }
+    if (columnsHoverTimer) {
+      window.clearTimeout(columnsHoverTimer);
+    }
+    columnsHoverTargetKey = key;
+    columnsHoverTimer = window.setTimeout(() => {
+      columnsHoverTimer = 0;
+      if (columnsHoverTargetKey !== key) {
+        return;
+      }
+      state.columnsHoverCell = {
+        key,
+        source: columnsSourceMode(),
+        seriesLabel: String(cell.row?.clusterLabel ?? ""),
+        columnIndex: cell.columnIndex,
+        rect: cell.rect,
+      };
+      requestColumnsRenderNextFrame();
+    }, 200);
   }
 
   function columnsMemberKey(member) {
@@ -2378,6 +2467,7 @@ export function createEmbeddingViewController({
     if (event.button !== 0 || !state.columnsChart?.alignmentLength) {
       return;
     }
+    clearColumnsHoverCell();
     const point = columnsCanvasPoint(event);
     const layout = state.columnsInteractionLayout;
     if (!layout) {
@@ -2413,6 +2503,9 @@ export function createEmbeddingViewController({
 
   function handleColumnsPointerMove(event) {
     if (!state.columnsDrag || !state.columnsChart?.alignmentLength) {
+      if (state.columnsChart?.alignmentLength) {
+        scheduleColumnsHoverCell(columnsCellAtPoint(columnsCanvasPoint(event)));
+      }
       return;
     }
     const point = columnsCanvasPoint(event);
@@ -2448,10 +2541,15 @@ export function createEmbeddingViewController({
     elements.columnsCanvas?.releasePointerCapture?.(event.pointerId);
   }
 
+  function handleColumnsPointerLeave() {
+    clearColumnsHoverCell();
+  }
+
   function handleColumnsWheel(event) {
     if (!state.columnsChart?.alignmentLength) {
       return;
     }
+    clearColumnsHoverCell();
     if (!event.ctrlKey && !event.metaKey && !event.altKey) {
       if (!elements.columnsScroll) {
         return;
@@ -2518,6 +2616,7 @@ export function createEmbeddingViewController({
   }
 
   function handleColumnsScroll() {
+    clearColumnsHoverCell();
     const scrollElement = elements.columnsScroll;
     if (!scrollElement || !state.columnsChart?.alignmentLength) {
       requestColumnsRenderNextFrame();
@@ -2930,6 +3029,7 @@ export function createEmbeddingViewController({
         ctx.fillRect(0, rowY + drawHeight, chartRight, 1);
       }
     }
+    drawColumnsHoverCell(ctx, state.columnsHoverCell);
 
     const startLabel = interfaceOnly ? interfaceColumns[0] : Math.round(range.start);
     const endLabel = interfaceOnly
@@ -3546,6 +3646,7 @@ export function createEmbeddingViewController({
       state.columnsVisibleClusters = new Set();
       state.columnsClusterOrder = [];
       state.columnsDrag = null;
+      state.columnsHoverCell = null;
       state.columnsInteractionLayout = null;
       state.representativeClusterSummaries = null;
       state.representativeVisibleClusters = new Set();
@@ -3624,6 +3725,7 @@ export function createEmbeddingViewController({
         state.columnsView = { start: 0, end: null };
         state.columnsInterfaceView = { start: 0, end: null };
         state.columnsDrag = null;
+        state.columnsHoverCell = null;
         state.columnsInteractionLayout = null;
         resetEmbeddingClusterSelection();
         resetColumnsClusterSelection();
@@ -3647,6 +3749,7 @@ export function createEmbeddingViewController({
         state.columnsVisibleClusters = new Set();
         state.columnsClusterOrder = [];
         state.columnsDrag = null;
+        state.columnsHoverCell = null;
         state.columnsInteractionLayout = null;
         state.representativeClusterSummaries = null;
         state.representativeVisibleClusters = new Set();
@@ -3713,6 +3816,7 @@ export function createEmbeddingViewController({
     ensureEmbeddingDataLoaded,
     ensureHierarchyStatusLoaded,
     handleColumnsDoubleClick,
+    handleColumnsPointerLeave,
     handleColumnsPointerDown,
     handleColumnsPointerMove,
     handleColumnsPointerUp,

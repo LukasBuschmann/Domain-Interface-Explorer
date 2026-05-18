@@ -28,6 +28,7 @@ from domain_interface_explorer.serverlib.interface_files import (
 from domain_interface_explorer.serverlib.interface_store import InterfaceStore
 from domain_interface_explorer.serverlib.interface_embedding import (
     build_interface_alignment_rows_from_metadata,
+    alignment_fragment_key,
     compute_columns_chart_payload,
     compute_cluster_compare_payload,
     compute_embedding_payload,
@@ -44,6 +45,7 @@ from domain_interface_explorer.serverlib.interface_embedding import (
     load_interface_point_data,
     load_or_compute_clustering_payload,
     load_or_compute_dendrogram_payload,
+    mask_alignment_to_fragment_ranges,
     parse_clustering_settings,
     parse_embedding_settings,
     parse_interface_filter_settings,
@@ -311,6 +313,39 @@ def compact_interface_payload_for_client(
                 compact_payload[str(partner_domain)] = compact_rows
         timer.set(rows=row_count, partner_domains=len(compact_payload))
         return compact_payload
+
+
+def alignment_payload_for_structure_row(
+    interface_data: dict[str, dict[str, dict]],
+    row_key: str,
+    partner_filter: str,
+    fragment_key: str,
+) -> dict[str, object]:
+    aligned_sequence = ""
+    for partner_domain, rows in interface_data.items():
+        if partner_filter != "__all__" and partner_domain != partner_filter:
+            continue
+        if not isinstance(rows, dict):
+            continue
+        row_payload = rows.get(row_key)
+        if not isinstance(row_payload, dict):
+            continue
+        aligned_sequence = str(
+            row_payload.get("aligned_sequence") or row_payload.get("aligned_seq") or ""
+        )
+        if aligned_sequence:
+            break
+    if not aligned_sequence:
+        return {"aligned_sequence": "", "residue_ids": []}
+    masked_sequence, residue_ids = mask_alignment_to_fragment_ranges(
+        aligned_sequence,
+        alignment_fragment_key(fragment_key),
+        fragment_key,
+    )
+    return {
+        "aligned_sequence": masked_sequence,
+        "residue_ids": residue_ids,
+    }
 
 
 class ViewerRequestHandler(BaseHTTPRequestHandler):
@@ -1354,6 +1389,12 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         fragment_start, fragment_end = fragment_bounds(fragment_key_name)
         fragment_residue_ids = sorted(expand_fragment_key_to_residue_ids(fragment_key_name))
         fragment_ranges = fragment_key_to_ranges(fragment_key_name)
+        row_alignment = alignment_payload_for_structure_row(
+            interface_data,
+            row_key,
+            partner,
+            fragment_key_name,
+        )
         try:
             model_path, prediction = ensure_alphafold_model(self.cache_dir, uniprot_id, fragment_start, fragment_end)
         except (FileNotFoundError, HTTPError, URLError, RuntimeError) as exc:
@@ -1452,6 +1493,8 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 "fragment_end": fragment_end,
                 "fragment_residue_ids": fragment_residue_ids,
                 "fragment_ranges": fragment_ranges,
+                "aligned_sequence": row_alignment["aligned_sequence"],
+                "residue_ids": row_alignment["residue_ids"],
                 "partner": partner,
                 "matched_partners": row_structure["matched_partners"],
                 "interface_residue_ids": row_structure["interface_residue_ids"],

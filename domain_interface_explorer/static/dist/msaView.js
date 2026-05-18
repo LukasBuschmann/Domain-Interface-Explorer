@@ -2005,6 +2005,7 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         state.columnsView = { start: 0, end: null };
         state.columnsClusterOrder = [];
         state.columnsDrag = null;
+        state.columnsHoverCell = null;
         state.columnsInteractionLayout = null;
         state.columnsDomainOverlayLoading = false;
         state.columnsDomainOverlayRequestKey = null;
@@ -2244,6 +2245,7 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         state.columnsView = { start: 0, end: null };
         state.columnsClusterOrder = [];
         state.columnsDrag = null;
+        state.columnsHoverCell = null;
         state.columnsInteractionLayout = null;
         state.columnsDomainOverlayLoading = false;
         state.columnsDomainOverlayRequestKey = null;

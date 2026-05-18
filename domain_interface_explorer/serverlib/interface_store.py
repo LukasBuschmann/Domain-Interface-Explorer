@@ -892,7 +892,7 @@ class InterfaceStore:
                     SELECT partner_domain, interface_row_key,
                            interface_residues_a, surface_residue_ids_a,
                            interface_residues_b, surface_residue_ids_b,
-                           residue_contacts, fragments_b
+                           residue_contacts, fragments_b, aligned_seq
                     FROM interface_rows
                     WHERE source_id = ? AND {where_sql}
                       AND interface_row_key = ?
@@ -910,6 +910,7 @@ class InterfaceStore:
                         "surface_residue_ids_b": unpack_uints(row[5]),
                         "residue_contacts": unpack_uint_pairs(row[6]),
                         "fragments_b": unpack_uint_pairs(row[7]),
+                        "aligned_sequence": str(row[8] or ""),
                     }
             timer.set(rows=sum(len(rows) for rows in payload.values()))
             return payload
