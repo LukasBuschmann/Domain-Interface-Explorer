@@ -241,7 +241,7 @@ function resetColumnsChartState() {
     state.columnsDomainOverlayErrorKey = null;
     state.columnsDomainOverlayPromise = null;
 }
-async function openColumnsCellStructures({ source = "clusters", seriesLabel = "", seriesColor = "#2d6a4f", columnIndex, members = [], } = {}) {
+async function openColumnsCellStructures({ source = "clusters", seriesLabel = "", columnIndex, members = [], } = {}) {
     const normalizedMembers = members
         .map((member) => ({
         row_key: String(member?.row_key || ""),
@@ -265,7 +265,7 @@ async function openColumnsCellStructures({ source = "clusters", seriesLabel = ""
             columnIndex: Number.isInteger(normalizedColumnIndex) ? normalizedColumnIndex : null,
             residueId: null,
             residueName: "",
-            color: seriesColor || "#2d6a4f",
+            color: "#2d6a4f",
         },
     };
     syncEmbeddingMemberControls([]);

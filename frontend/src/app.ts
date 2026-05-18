@@ -472,7 +472,6 @@ function resetColumnsChartState() {
 async function openColumnsCellStructures({
   source = "clusters",
   seriesLabel = "",
-  seriesColor = "#2d6a4f",
   columnIndex,
   members = [],
 } = {}) {
@@ -499,7 +498,7 @@ async function openColumnsCellStructures({
       columnIndex: Number.isInteger(normalizedColumnIndex) ? normalizedColumnIndex : null,
       residueId: null,
       residueName: "",
-      color: seriesColor || "#2d6a4f",
+      color: "#2d6a4f",
     },
   };
   syncEmbeddingMemberControls([]);

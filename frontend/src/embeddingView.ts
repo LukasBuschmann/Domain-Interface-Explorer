@@ -2366,7 +2366,6 @@ export function createEmbeddingViewController({
     await openColumnsCellStructures({
       source: columnsSourceMode(),
       seriesLabel: String(cell.row.clusterLabel),
-      seriesColor: columnsSeriesColor(cell.row.clusterLabel),
       columnIndex: resolved.columnIndex,
       members: resolved.members,
     });
