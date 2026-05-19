@@ -481,8 +481,11 @@ export function createMsaViewController({
     const rawInterfaceHistogram = summary.interface_size_histogram || summary.histogramEntries;
     const rawDomainLengthHistogram =
       summary.domain_length_histogram || summary.domainLengthHistogramEntries;
+    const rawPfamRowCoverageHistogram =
+      summary.pfam_row_coverage_histogram || summary.pfamRowCoverageHistogramEntries;
     const histogramEntries = normalizeHistogramEntries(rawInterfaceHistogram);
     const domainLengthHistogramEntries = normalizeHistogramEntries(rawDomainLengthHistogram);
+    const pfamRowCoverageHistogramEntries = normalizeHistogramEntries(rawPfamRowCoverageHistogram);
     const datasetDomains = Number(summary.dataset_domains ?? summary.datasetDomains);
     const datasetInterfaces = Number(summary.dataset_interfaces ?? summary.datasetInterfaces);
     const uniqueInterfaces = Number(summary.unique_interfaces ?? summary.uniqueInterfaces);
@@ -491,7 +494,8 @@ export function createMsaViewController({
       !Number.isFinite(datasetInterfaces) &&
       !Number.isFinite(uniqueInterfaces) &&
       !Array.isArray(rawInterfaceHistogram) &&
-      !Array.isArray(rawDomainLengthHistogram)
+      !Array.isArray(rawDomainLengthHistogram) &&
+      !Array.isArray(rawPfamRowCoverageHistogram)
     ) {
       return null;
     }
@@ -503,6 +507,8 @@ export function createMsaViewController({
       histogramEntries,
       domainLengthHistogramAvailable: Array.isArray(rawDomainLengthHistogram),
       domainLengthHistogramEntries,
+      pfamRowCoverageHistogramAvailable: Array.isArray(rawPfamRowCoverageHistogram),
+      pfamRowCoverageHistogramEntries,
     };
   }
 
@@ -557,6 +563,16 @@ export function createMsaViewController({
     return fragmentLength(parseInteractionRowKey(rowKey).fragmentKey);
   }
 
+  function pfamRowCoverageFromRow(rowKey, rowPayload = null) {
+    const domainLength = domainLengthFromRow(rowKey, rowPayload);
+    const alignedSequence = String(rowPayload?.aligned_seq || rowPayload?.aligned_sequence || "");
+    const rowResidueCount = Array.from(alignedSequence).filter((char) => /^[A-Za-z]$/.test(char)).length;
+    if (domainLength <= 0 || rowResidueCount <= 0) {
+      return 0;
+    }
+    return Math.max(0, Math.min(100, Math.round((domainLength / rowResidueCount) * 100)));
+  }
+
   function filteredInterfaceEntries(interfacePayload, selectedPartner = state.selectedPartner) {
     const entries = [];
     for (const [partnerDomain, rows] of Object.entries(interfacePayload || {})) {
@@ -604,6 +620,7 @@ export function createMsaViewController({
   function localInterfaceSummary(interfacePayload, selectedPartner = state.selectedPartner) {
     const entries = filteredInterfaceEntries(interfacePayload, selectedPartner);
     const countsBySize = new Map();
+    const countsByPfamRowCoverage = new Map();
     const domainLengthsByDomain = new Map();
     const uniqueInterfaces = new Set();
     const datasetDomains = new Set();
@@ -618,6 +635,13 @@ export function createMsaViewController({
         if (domainLength > 0) {
           domainLengthsByDomain.set(domainKey, domainLength);
         }
+      }
+      const pfamRowCoverage = pfamRowCoverageFromRow(entry.rowKey, entry.rowPayload);
+      if (pfamRowCoverage > 0) {
+        countsByPfamRowCoverage.set(
+          pfamRowCoverage,
+          (countsByPfamRowCoverage.get(pfamRowCoverage) || 0) + 1
+        );
       }
       const interfaceSize = interfaceSizeFromPayload(entry.rowPayload);
       if (interfaceSize <= 0) {
@@ -649,6 +673,9 @@ export function createMsaViewController({
       ),
       domainLengthHistogramEntries: normalizeHistogramEntries(
         [...countsByDomainLength.entries()].map(([size, count]) => ({ size, count }))
+      ),
+      pfamRowCoverageHistogramEntries: normalizeHistogramEntries(
+        [...countsByPfamRowCoverage.entries()].map(([size, count]) => ({ size, count }))
       ),
     };
   }
@@ -685,8 +712,10 @@ export function createMsaViewController({
     return [...buckets.values()].sort((left, right) => left.start - right.start);
   }
 
-  function histogramBinLabel(bin) {
-    return bin.start === bin.end ? String(bin.start) : `${bin.start}-${bin.end}`;
+  function histogramBinLabel(bin, valueFormatter = (value) => String(value)) {
+    return bin.start === bin.end
+      ? valueFormatter(bin.start)
+      : `${valueFormatter(bin.start)}-${valueFormatter(bin.end)}`;
   }
 
   function uniprotEntryUrl(accession) {
@@ -1014,6 +1043,8 @@ export function createMsaViewController({
     countPlural,
     targetType,
     noTargetsText,
+    valueFormatter = (value) => String(value),
+    valueUnitLabel = "residues",
   }) {
     const section = document.createElement("section");
     section.className = "pfam-info-histogram";
@@ -1049,10 +1080,11 @@ export function createMsaViewController({
     }
 
     for (const bin of chartBins) {
+      const binLabel = histogramBinLabel(bin, valueFormatter);
       const column = document.createElement("button");
       column.type = "button";
       column.className = "pfam-info-histogram-column";
-      column.title = `${histogramBinLabel(bin)} residues: ${histogramCountLabel(
+      column.title = `${binLabel}${valueUnitLabel ? ` ${valueUnitLabel}` : ""}: ${histogramCountLabel(
         bin.count,
         countSingular,
         countPlural
@@ -1082,7 +1114,7 @@ export function createMsaViewController({
 
       const label = document.createElement("span");
       label.className = "pfam-info-histogram-bin-label";
-      label.textContent = histogramBinLabel(bin);
+      label.textContent = binLabel;
 
       column.appendChild(barArea);
       column.appendChild(label);
@@ -1093,11 +1125,11 @@ export function createMsaViewController({
     const footer = document.createElement("div");
     footer.className = "pfam-info-histogram-axis";
     const minLabel = document.createElement("span");
-    minLabel.textContent = histogramBinLabel(chartBins[0]);
+    minLabel.textContent = histogramBinLabel(chartBins[0], valueFormatter);
     const midLabel = document.createElement("span");
-    midLabel.textContent = histogramBinLabel(chartBins[Math.floor(chartBins.length / 2)]);
+    midLabel.textContent = histogramBinLabel(chartBins[Math.floor(chartBins.length / 2)], valueFormatter);
     const maxLabel = document.createElement("span");
-    maxLabel.textContent = histogramBinLabel(chartBins[chartBins.length - 1]);
+    maxLabel.textContent = histogramBinLabel(chartBins[chartBins.length - 1], valueFormatter);
     footer.appendChild(minLabel);
     footer.appendChild(midLabel);
     footer.appendChild(maxLabel);
@@ -1131,6 +1163,22 @@ export function createMsaViewController({
       countPlural: "filtered domains",
       targetType: "domain_length",
       noTargetsText: "No filtered domains are available in that histogram range.",
+    });
+  }
+
+  function renderPfamInfoPfamRowCoverageHistogram(interfaceSummary) {
+    return renderPfamInfoHistogram({
+      titleText: "PFAM row coverage",
+      histogramAvailable: interfaceSummary?.pfamRowCoverageHistogramAvailable,
+      histogramEntries: interfaceSummary?.pfamRowCoverageHistogramEntries || [],
+      unavailableText: "No server PFAM-row coverage histogram available.",
+      emptyText: "No local interfaces have PFAM-row coverage data.",
+      countSingular: "filtered interface",
+      countPlural: "filtered interfaces",
+      targetType: "pfam_row_coverage",
+      noTargetsText: "No filtered interfaces are available in that coverage range.",
+      valueFormatter: (value) => `${value}%`,
+      valueUnitLabel: "",
     });
   }
 
@@ -1229,6 +1277,7 @@ export function createMsaViewController({
     shell.appendChild(hero);
     shell.appendChild(renderPfamInfoInterfaceHistogram(interfaceSummary));
     shell.appendChild(renderPfamInfoDomainLengthHistogram(interfaceSummary));
+    shell.appendChild(renderPfamInfoPfamRowCoverageHistogram(interfaceSummary));
 
     const metaGrid = document.createElement("section");
     metaGrid.className = "pfam-info-meta-grid";

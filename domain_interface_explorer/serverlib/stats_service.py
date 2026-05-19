@@ -424,6 +424,30 @@ def domain_a_length_from_payload(row_payload: object, fragment_key: object) -> i
     return domain_length_from_fragment_key(fragment_key)
 
 
+def aligned_sequence_residue_count(aligned_sequence: object) -> int:
+    if not isinstance(aligned_sequence, str):
+        return 0
+    return sum(1 for char in aligned_sequence if char.isalpha())
+
+
+def pfam_row_coverage_percent(domain_residue_count: int, aligned_sequence: object) -> int:
+    row_residue_count = aligned_sequence_residue_count(aligned_sequence)
+    if domain_residue_count <= 0 or row_residue_count <= 0:
+        return 0
+    percent = int(round((float(domain_residue_count) / float(row_residue_count)) * 100.0))
+    return max(0, min(100, percent))
+
+
+def pfam_row_coverage_percent_from_payload(row_payload: object, fragment_key: object) -> int:
+    if not isinstance(row_payload, dict):
+        return 0
+    domain_residue_count = domain_a_length_from_payload(row_payload, fragment_key)
+    aligned_sequence = row_payload.get("aligned_seq")
+    if not isinstance(aligned_sequence, str):
+        aligned_sequence = row_payload.get("aligned_sequence")
+    return pfam_row_coverage_percent(domain_residue_count, aligned_sequence)
+
+
 def histogram_entries_from_counts(counts: dict[int, int]) -> list[dict[str, int]]:
     return [
         {"size": size, "count": count}
@@ -436,6 +460,7 @@ def interface_summary_from_payload(interface_payload: object) -> dict[str, objec
     domain_lengths_by_domain: dict[tuple[str, str], int] = {}
     unique_interfaces: set[tuple[str, tuple[int, ...]]] = set()
     interface_size_histogram: dict[int, int] = {}
+    pfam_row_coverage_histogram: dict[int, int] = {}
     dataset_interfaces = 0
     if not isinstance(interface_payload, dict):
         return {
@@ -444,6 +469,7 @@ def interface_summary_from_payload(interface_payload: object) -> dict[str, objec
             "unique_interfaces": 0,
             "interface_size_histogram": [],
             "domain_length_histogram": [],
+            "pfam_row_coverage_histogram": [],
         }
     for partner_domain, rows in interface_payload.items():
         if not isinstance(rows, dict):
@@ -461,6 +487,11 @@ def interface_summary_from_payload(interface_payload: object) -> dict[str, objec
                 domain_length = domain_a_length_from_payload(row_payload, fragment_key)
                 if domain_length > 0:
                     domain_lengths_by_domain[domain_key] = domain_length
+            coverage_percent = pfam_row_coverage_percent_from_payload(row_payload, fragment_key)
+            if coverage_percent > 0:
+                pfam_row_coverage_histogram[coverage_percent] = (
+                    pfam_row_coverage_histogram.get(coverage_percent, 0) + 1
+                )
             columns = interface_columns_from_payload(row_payload)
             interface_size = len(columns)
             if interface_size <= 0:
@@ -478,6 +509,7 @@ def interface_summary_from_payload(interface_payload: object) -> dict[str, objec
         "unique_interfaces": len(unique_interfaces),
         "interface_size_histogram": histogram_entries_from_counts(interface_size_histogram),
         "domain_length_histogram": histogram_entries_from_counts(domain_length_histogram),
+        "pfam_row_coverage_histogram": histogram_entries_from_counts(pfam_row_coverage_histogram),
     }
 
 
@@ -488,6 +520,7 @@ def compute_pfam_option_stat(task: tuple[str, list[str]]) -> tuple[str, dict[str
     domain_lengths_by_domain: dict[tuple[str, str], int] = {}
     unique_interfaces: set[tuple[str, str, tuple[int, ...]]] = set()
     interface_size_histogram: dict[int, int] = {}
+    pfam_row_coverage_histogram: dict[int, int] = {}
     interaction_partners: set[str] = set()
     alignment_length = 0
     dataset_interfaces = 0
@@ -512,6 +545,11 @@ def compute_pfam_option_stat(task: tuple[str, list[str]]) -> tuple[str, dict[str
                     domain_length = domain_a_length_from_payload(row_payload, fragment_key)
                     if domain_length > 0:
                         domain_lengths_by_domain[domain_key] = domain_length
+                coverage_percent = pfam_row_coverage_percent_from_payload(row_payload, fragment_key)
+                if coverage_percent > 0:
+                    pfam_row_coverage_histogram[coverage_percent] = (
+                        pfam_row_coverage_histogram.get(coverage_percent, 0) + 1
+                    )
                 row_columns = interface_columns_by_row.setdefault(row_key, set())
                 interface_columns = interface_columns_from_payload(row_payload)
                 row_columns.update(interface_columns)
@@ -539,6 +577,7 @@ def compute_pfam_option_stat(task: tuple[str, list[str]]) -> tuple[str, dict[str
         "unique_interfaces": len(unique_interfaces),
         "interface_size_histogram": histogram_entries_from_counts(interface_size_histogram),
         "domain_length_histogram": histogram_entries_from_counts(domain_length_histogram),
+        "pfam_row_coverage_histogram": histogram_entries_from_counts(pfam_row_coverage_histogram),
         "interaction_partners": len(interaction_partners),
         "avg_interface_residues_per_row": round(avg_interface_residues_per_row, 2),
     }

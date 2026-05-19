@@ -486,6 +486,46 @@
                         >all</output>
                       </div>
                     </label>
+                    <label data-clustering-panel="hierarchical" class="embedding-settings-section-hidden">
+                      <span>
+                        PFAM Coverage
+                        <span
+                          class="embedding-settings-help"
+                          tabindex="0"
+                          title="Restricts hierarchy construction to interfaces whose Domain A residue count covers this percentage of the mapped PFAM-A row. The full range uses existing full-size hierarchy files."
+                        >?</span>
+                      </span>
+                      <div class="embedding-settings-dual-range">
+                        <div class="embedding-settings-dual-range-track" aria-hidden="true">
+                          <div class="embedding-settings-dual-range-fill"></div>
+                        </div>
+                        <input
+                          id="embedding-cluster-pfam-coverage-min"
+                          class="embedding-settings-input embedding-settings-range embedding-settings-dual-range-input"
+                          type="range"
+                          step="1"
+                          min="0"
+                          max="100"
+                          value="0"
+                          aria-label="Minimum PFAM coverage"
+                        >
+                        <input
+                          id="embedding-cluster-pfam-coverage-max"
+                          class="embedding-settings-input embedding-settings-range embedding-settings-dual-range-input"
+                          type="range"
+                          step="1"
+                          min="0"
+                          max="100"
+                          value="100"
+                          aria-label="Maximum PFAM coverage"
+                        >
+                        <output
+                          id="embedding-cluster-pfam-coverage-value"
+                          class="embedding-settings-range-value embedding-settings-dual-range-value"
+                          for="embedding-cluster-pfam-coverage-min embedding-cluster-pfam-coverage-max"
+                        >all</output>
+                      </div>
+                    </label>
                     <button id="embedding-clustering-apply" class="embedding-settings-apply" type="button">
                       <span
                         id="embedding-clustering-apply-warning"

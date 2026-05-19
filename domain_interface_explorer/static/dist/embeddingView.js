@@ -78,6 +78,22 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             .filter((entry) => Number.isFinite(entry.size) && entry.size > 0 && Number.isFinite(entry.count) && entry.count > 0)
             .sort((left, right) => left.size - right.size);
     }
+    function normalizePfamRowCoverageHistogram(entries) {
+        if (!Array.isArray(entries)) {
+            return [];
+        }
+        return entries
+            .map((entry) => ({
+            coverage: Number(entry?.coverage ?? entry?.percent ?? entry?.value ?? entry?.size),
+            count: Number(entry?.count),
+        }))
+            .filter((entry) => Number.isFinite(entry.coverage) &&
+            entry.coverage >= 0 &&
+            entry.coverage <= 100 &&
+            Number.isFinite(entry.count) &&
+            entry.count > 0)
+            .sort((left, right) => left.coverage - right.coverage);
+    }
     function fragmentLength(fragmentKey) {
         return String(fragmentKey || "")
             .split(";")
@@ -131,10 +147,48 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             available: true,
         };
     }
+    function currentPfamRowCoverageBounds() {
+        const pfamId = state.interface?.pfam_id || interfaceFilePfamId(interfaceSelect.value);
+        const optionStats = state.files?.pfam_option_stats?.[pfamId] || null;
+        const summary = state.interface?.pfam_id === pfamId ? state.interface?.interface_summary : null;
+        const histogram = normalizePfamRowCoverageHistogram(summary?.pfam_row_coverage_histogram || optionStats?.pfam_row_coverage_histogram);
+        if (histogram.length === 0) {
+            return { min: 0, max: 100, available: false };
+        }
+        return {
+            min: histogram[0].coverage,
+            max: histogram[histogram.length - 1].coverage,
+            available: true,
+        };
+    }
     function domainSizeDisplayRange(settings = state.embeddingClusteringSettingsDraft) {
         const bounds = currentDomainLengthBounds();
         const rawMin = String(settings?.domainSizeMin ?? "").trim();
         const rawMax = String(settings?.domainSizeMax ?? "").trim();
+        let minValue = rawMin === "" ? bounds.min : Number.parseInt(rawMin, 10);
+        let maxValue = rawMax === "" ? bounds.max : Number.parseInt(rawMax, 10);
+        if (!Number.isFinite(minValue)) {
+            minValue = bounds.min;
+        }
+        if (!Number.isFinite(maxValue)) {
+            maxValue = bounds.max;
+        }
+        minValue = Math.max(bounds.min, Math.min(bounds.max, minValue));
+        maxValue = Math.max(bounds.min, Math.min(bounds.max, maxValue));
+        if (minValue > maxValue) {
+            [minValue, maxValue] = [maxValue, minValue];
+        }
+        return {
+            ...bounds,
+            minValue,
+            maxValue,
+            active: bounds.available && (minValue > bounds.min || maxValue < bounds.max),
+        };
+    }
+    function pfamRowCoverageDisplayRange(settings = state.embeddingClusteringSettingsDraft) {
+        const bounds = currentPfamRowCoverageBounds();
+        const rawMin = String(settings?.pfamRowCoverageMin ?? "").trim();
+        const rawMax = String(settings?.pfamRowCoverageMax ?? "").trim();
         let minValue = rawMin === "" ? bounds.min : Number.parseInt(rawMin, 10);
         let maxValue = rawMax === "" ? bounds.max : Number.parseInt(rawMax, 10);
         if (!Number.isFinite(minValue)) {
@@ -168,6 +222,19 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             domainSizeMax: String(range.maxValue),
         };
     }
+    function pfamRowCoverageFilterFromInputs() {
+        const range = pfamRowCoverageDisplayRange({
+            pfamRowCoverageMin: elements.embeddingClusterPfamCoverageMinInput?.value || "",
+            pfamRowCoverageMax: elements.embeddingClusterPfamCoverageMaxInput?.value || "",
+        });
+        if (!range.available || !range.active) {
+            return { pfamRowCoverageMin: "", pfamRowCoverageMax: "" };
+        }
+        return {
+            pfamRowCoverageMin: String(range.minValue),
+            pfamRowCoverageMax: String(range.maxValue),
+        };
+    }
     function appendDomainSizeFilterParams(params, settings) {
         const minSize = String(settings?.domainSizeMin ?? "").trim();
         const maxSize = String(settings?.domainSizeMax ?? "").trim();
@@ -176,6 +243,16 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         }
         if (maxSize !== "") {
             params.set("domain_size_max", maxSize);
+        }
+    }
+    function appendPfamRowCoverageFilterParams(params, settings) {
+        const minCoverage = String(settings?.pfamRowCoverageMin ?? "").trim();
+        const maxCoverage = String(settings?.pfamRowCoverageMax ?? "").trim();
+        if (minCoverage !== "") {
+            params.set("pfam_row_coverage_min", minCoverage);
+        }
+        if (maxCoverage !== "") {
+            params.set("pfam_row_coverage_max", maxCoverage);
         }
     }
     function appendHierarchicalClusteringParams(params, settings) {
@@ -202,6 +279,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             params.set("persistence_score_mode", scoreMode);
         }
         appendDomainSizeFilterParams(params, settings);
+        appendPfamRowCoverageFilterParams(params, settings);
     }
     function currentEmbeddingQuery() {
         const params = new URLSearchParams({
@@ -296,11 +374,20 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             settings.hierarchicalMinClusterSize,
             settings.domainSizeMin,
             settings.domainSizeMax,
+            settings.pfamRowCoverageMin,
+            settings.pfamRowCoverageMax,
         ].join("|");
     }
     function domainSizeFilterIsActive(settings = state.embeddingClusteringSettingsDraft) {
         return (String(settings?.domainSizeMin ?? "").trim() !== "" ||
             String(settings?.domainSizeMax ?? "").trim() !== "");
+    }
+    function pfamRowCoverageFilterIsActive(settings = state.embeddingClusteringSettingsDraft) {
+        return (String(settings?.pfamRowCoverageMin ?? "").trim() !== "" ||
+            String(settings?.pfamRowCoverageMax ?? "").trim() !== "");
+    }
+    function hierarchyRangeFilterIsActive(settings = state.embeddingClusteringSettingsDraft) {
+        return domainSizeFilterIsActive(settings) || pfamRowCoverageFilterIsActive(settings);
     }
     function currentHierarchyStatus() {
         const requestKey = currentHierarchyStatusRequestKey();
@@ -320,7 +407,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         if (state.hierarchyStatusLoadingKey === currentHierarchyStatusRequestKey()) {
             return "Checking hierarchy cache...";
         }
-        if (domainSizeFilterIsActive(state.embeddingClusteringSettings)) {
+        if (hierarchyRangeFilterIsActive(state.embeddingClusteringSettings)) {
             return "Preparing filtered hierarchy...";
         }
         return "Applying hierarchy cutthrough...";
@@ -337,8 +424,8 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         if (status && !status.local_calculation_required) {
             return `Applying the selected hierarchy cutthrough using the cached ${distanceLabel} hierarchy.`;
         }
-        if (domainSizeFilterIsActive(state.embeddingClusteringSettings)) {
-            return `Preparing a filtered ${distanceLabel} hierarchy for the selected Domain A size range.`;
+        if (hierarchyRangeFilterIsActive(state.embeddingClusteringSettings)) {
+            return `Preparing a filtered ${distanceLabel} hierarchy for the selected range filters.`;
         }
         return `Applying the selected hierarchy cutthrough using ${distanceLabel} distances.`;
     }
@@ -400,7 +487,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 Boolean(state.hierarchyStatus?.local_calculation_required)) ||
                 state.hierarchyStatusLoadingKey === currentRequestKey ||
                 (state.hierarchyStatus?.requestKey !== currentRequestKey &&
-                    domainSizeFilterIsActive(state.embeddingClusteringSettingsDraft)));
+                    hierarchyRangeFilterIsActive(state.embeddingClusteringSettingsDraft)));
         let message = "";
         if (showWarning) {
             if (state.hierarchyStatus?.requestKey === currentRequestKey &&
@@ -411,7 +498,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 message = "Checking whether this hierarchy is already cached.";
             }
             else {
-                message = "Domain A size filtering may require building a filtered local hierarchy.";
+                message = "Range filtering may require building a filtered local hierarchy.";
             }
         }
         elements.embeddingClusteringApplyWarning.classList.toggle("hidden", !showWarning);
@@ -488,8 +575,36 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         minInput.setAttribute("aria-valuetext", `${range.minValue} residues`);
         maxInput.setAttribute("aria-valuetext", `${range.maxValue} residues`);
     }
+    function syncPfamRowCoverageRangeUi() {
+        const minInput = elements.embeddingClusterPfamCoverageMinInput;
+        const maxInput = elements.embeddingClusterPfamCoverageMaxInput;
+        const valueOutput = elements.embeddingClusterPfamCoverageValue;
+        if (!minInput || !maxInput || !valueOutput) {
+            return;
+        }
+        const range = pfamRowCoverageDisplayRange();
+        for (const input of [minInput, maxInput]) {
+            input.min = String(range.min);
+            input.max = String(range.max);
+            input.disabled = !range.available || range.min === range.max;
+        }
+        minInput.value = String(range.minValue);
+        maxInput.value = String(range.maxValue);
+        const denominator = Math.max(1, range.max - range.min);
+        const startPercent = ((range.minValue - range.min) / denominator) * 100;
+        const endPercent = ((range.maxValue - range.min) / denominator) * 100;
+        const control = minInput.closest(".embedding-settings-dual-range");
+        control?.style.setProperty("--range-start", `${Math.max(0, Math.min(100, startPercent))}%`);
+        control?.style.setProperty("--range-end", `${Math.max(0, Math.min(100, endPercent))}%`);
+        valueOutput.textContent = range.available
+            ? `${range.minValue}-${range.maxValue}%`
+            : "n/a";
+        minInput.setAttribute("aria-valuetext", `${range.minValue} percent`);
+        maxInput.setAttribute("aria-valuetext", `${range.maxValue} percent`);
+    }
     function readEmbeddingClusteringDraftInputs() {
         const domainSizeFilter = domainSizeFilterFromInputs();
+        const pfamRowCoverageFilter = pfamRowCoverageFilterFromInputs();
         return {
             ...state.embeddingClusteringSettingsDraft,
             distance: elements.embeddingClusterDistanceInput.value.trim().toLowerCase() ||
@@ -506,6 +621,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             persistenceScoreMode: currentPersistenceScoreMode(),
             hierarchicalMinClusterSize: elements.embeddingClusterHierarchicalMinSizeInput.value.trim(),
             ...domainSizeFilter,
+            ...pfamRowCoverageFilter,
         };
     }
     function syncHierarchicalTargetMemoryFromDraft() {
@@ -656,6 +772,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         });
         elements.embeddingClusterHierarchicalMinSizeInput.value = String(state.embeddingClusteringSettingsDraft.hierarchicalMinClusterSize);
         syncDomainSizeRangeUi();
+        syncPfamRowCoverageRangeUi();
         [...elements.embeddingSettingsPanel.querySelectorAll("[data-clustering-method]")].forEach((button) => {
             const isActive = button.dataset.clusteringMethod === state.embeddingClusteringSettingsDraft.method;
             button.classList.toggle("active", isActive);
@@ -763,6 +880,9 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         const domainSizeFilter = method === "hierarchical"
             ? domainSizeFilterFromInputs()
             : { domainSizeMin: "", domainSizeMax: "" };
+        const pfamRowCoverageFilter = method === "hierarchical"
+            ? pfamRowCoverageFilterFromInputs()
+            : { pfamRowCoverageMin: "", pfamRowCoverageMax: "" };
         if (method === "hierarchical") {
             if (hierarchicalTarget === "n_clusters") {
                 if (nClusters === "") {
@@ -829,6 +949,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             persistenceScoreMode: hierarchicalTarget === "persistence" ? persistenceScoreMode : "",
             hierarchicalMinClusterSize,
             ...domainSizeFilter,
+            ...pfamRowCoverageFilter,
         };
         if (options.preserveAppliedHierarchy &&
             state.embeddingClusteringSettings.method === "hierarchical" &&

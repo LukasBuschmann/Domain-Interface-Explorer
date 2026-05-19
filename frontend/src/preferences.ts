@@ -51,6 +51,17 @@ function optionalPositiveInteger(value, fallback = "") {
   return positiveInteger(value, fallback);
 }
 
+function optionalPercentInteger(value, fallback = "") {
+  if (String(value ?? "").trim() === "") {
+    return fallback;
+  }
+  const numberValue = Number.parseInt(value, 10);
+  if (!Number.isFinite(numberValue) || numberValue < 0 || numberValue > 100) {
+    return fallback;
+  }
+  return numberValue;
+}
+
 function optionalNonNegativeNumber(value, fallback = "") {
   if (String(value ?? "").trim() === "") {
     return fallback;
@@ -150,6 +161,14 @@ function normalizeClusteringSettings(rawSettings = {}, fallback = DEFAULT_CLUSTE
     ),
     domainSizeMin: optionalPositiveInteger(source.domainSizeMin, fallback.domainSizeMin || ""),
     domainSizeMax: optionalPositiveInteger(source.domainSizeMax, fallback.domainSizeMax || ""),
+    pfamRowCoverageMin: optionalPercentInteger(
+      source.pfamRowCoverageMin,
+      fallback.pfamRowCoverageMin || "",
+    ),
+    pfamRowCoverageMax: optionalPercentInteger(
+      source.pfamRowCoverageMax,
+      fallback.pfamRowCoverageMax || "",
+    ),
   };
 }
 
@@ -194,8 +213,57 @@ function normalizeDomainSizeRangeMap(rawMap = {}, { keepFull = false } = {}) {
   return normalized;
 }
 
-function clusteringSettingsWithoutDomainSize(settings = {}) {
-  const { domainSizeMin: _domainSizeMin, domainSizeMax: _domainSizeMax, ...rest } = settings || {};
+function normalizePfamCoverageRange(rawRange = {}) {
+  const source = isRecord(rawRange) ? rawRange : {};
+  let pfamRowCoverageMin = optionalPercentInteger(source.pfamRowCoverageMin);
+  let pfamRowCoverageMax = optionalPercentInteger(source.pfamRowCoverageMax);
+  if (
+    pfamRowCoverageMin !== "" &&
+    pfamRowCoverageMax !== "" &&
+    Number(pfamRowCoverageMin) > Number(pfamRowCoverageMax)
+  ) {
+    [pfamRowCoverageMin, pfamRowCoverageMax] = [pfamRowCoverageMax, pfamRowCoverageMin];
+  }
+  return {
+    pfamRowCoverageMin: pfamRowCoverageMin === "" ? "" : String(pfamRowCoverageMin),
+    pfamRowCoverageMax: pfamRowCoverageMax === "" ? "" : String(pfamRowCoverageMax),
+  };
+}
+
+function pfamCoverageRangeIsFull(range) {
+  const minValue = String(range?.pfamRowCoverageMin ?? "").trim();
+  const maxValue = String(range?.pfamRowCoverageMax ?? "").trim();
+  return (
+    (minValue === "" || minValue === "0") &&
+    (maxValue === "" || maxValue === "100")
+  );
+}
+
+function normalizePfamCoverageRangeMap(rawMap = {}, { keepFull = false } = {}) {
+  const source = isRecord(rawMap) ? rawMap : {};
+  const normalized = {};
+  for (const [pfamId, rawRange] of Object.entries(source)) {
+    const key = String(pfamId || "").trim();
+    if (!key) {
+      continue;
+    }
+    const range = normalizePfamCoverageRange(rawRange);
+    if (!keepFull && pfamCoverageRangeIsFull(range)) {
+      continue;
+    }
+    normalized[key] = range;
+  }
+  return normalized;
+}
+
+function clusteringSettingsWithoutRangeFilters(settings = {}) {
+  const {
+    domainSizeMin: _domainSizeMin,
+    domainSizeMax: _domainSizeMax,
+    pfamRowCoverageMin: _pfamRowCoverageMin,
+    pfamRowCoverageMax: _pfamRowCoverageMax,
+    ...rest
+  } = settings || {};
   return rest;
 }
 
@@ -285,6 +353,8 @@ export function applyUiPreferences(state) {
     ),
     domainSizeMin: "",
     domainSizeMax: "",
+    pfamRowCoverageMin: "",
+    pfamRowCoverageMax: "",
   };
   state.embeddingClusteringSettingsDraft = {
     ...normalizeClusteringSettings(
@@ -293,12 +363,21 @@ export function applyUiPreferences(state) {
     ),
     domainSizeMin: "",
     domainSizeMax: "",
+    pfamRowCoverageMin: "",
+    pfamRowCoverageMax: "",
   };
   state.embeddingDomainSizeRangesByPfamId = normalizeDomainSizeRangeMap(
     preferences.embeddingDomainSizeRangesByPfamId,
   );
   state.embeddingDomainSizeRangeDraftsByPfamId = normalizeDomainSizeRangeMap(
     preferences.embeddingDomainSizeRangeDraftsByPfamId,
+    { keepFull: true },
+  );
+  state.embeddingPfamCoverageRangesByPfamId = normalizePfamCoverageRangeMap(
+    preferences.embeddingPfamCoverageRangesByPfamId,
+  );
+  state.embeddingPfamCoverageRangeDraftsByPfamId = normalizePfamCoverageRangeMap(
+    preferences.embeddingPfamCoverageRangeDraftsByPfamId,
     { keepFull: true },
   );
   state.embeddingHierarchicalTargetMemory = normalizeHierarchicalTargetMemory(
@@ -406,10 +485,12 @@ function preferencesPayload(state) {
     selectionSettings: state.selectionSettings,
     embeddingSettings: state.embeddingSettings,
     embeddingSettingsDraft: state.embeddingSettingsDraft,
-    embeddingClusteringSettings: clusteringSettingsWithoutDomainSize(state.embeddingClusteringSettings),
-    embeddingClusteringSettingsDraft: clusteringSettingsWithoutDomainSize(state.embeddingClusteringSettingsDraft),
+    embeddingClusteringSettings: clusteringSettingsWithoutRangeFilters(state.embeddingClusteringSettings),
+    embeddingClusteringSettingsDraft: clusteringSettingsWithoutRangeFilters(state.embeddingClusteringSettingsDraft),
     embeddingDomainSizeRangesByPfamId: state.embeddingDomainSizeRangesByPfamId || {},
     embeddingDomainSizeRangeDraftsByPfamId: state.embeddingDomainSizeRangeDraftsByPfamId || {},
+    embeddingPfamCoverageRangesByPfamId: state.embeddingPfamCoverageRangesByPfamId || {},
+    embeddingPfamCoverageRangeDraftsByPfamId: state.embeddingPfamCoverageRangeDraftsByPfamId || {},
     embeddingHierarchicalTargetMemory: state.embeddingHierarchicalTargetMemory,
     embeddingColorMode: state.embeddingColorMode,
     uiState: {

@@ -39,6 +39,7 @@ from domain_interface_explorer.serverlib.interface_embedding import (
     collect_interface_alignment_row_metadata,
     domain_length_from_row_payload,
     domain_size_filter_from_settings,
+    pfam_row_coverage_filter_from_settings,
     interface_residue_count,
     interface_filter_settings_key,
     load_interface_distance_data,
@@ -62,6 +63,7 @@ from domain_interface_explorer.serverlib.stats_service import (
     load_cached_pfam_option_stats,
     load_or_fetch_pfam_info,
     load_or_compute_clean_column_identity,
+    pfam_row_coverage_percent_from_payload,
     start_background_pfam_metadata_refresh,
 )
 from domain_interface_explorer.serverlib.structure_service import (
@@ -636,8 +638,12 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                     value = interface_residue_count(row_payload, "a")
                 elif histogram_type == "domain_length":
                     value = domain_length_from_row_payload(row_key, row_payload)
+                elif histogram_type == "pfam_row_coverage":
+                    value = pfam_row_coverage_percent_from_payload(row_payload, str(row_key).split("_", 2)[1] if "_" in str(row_key) else "")
                 else:
-                    raise ValueError("histogram type must be 'interface_size' or 'domain_length'")
+                    raise ValueError(
+                        "histogram type must be 'interface_size', 'domain_length', or 'pfam_row_coverage'"
+                    )
                 if value < bin_start or value > bin_end:
                     continue
                 targets.append(
@@ -662,8 +668,10 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             bin_end = query_non_negative_int(query, "end", bin_start)
             if bin_end < bin_start:
                 raise ValueError("histogram end cannot be smaller than start")
-            if histogram_type not in {"interface_size", "domain_length"}:
-                raise ValueError("histogram type must be 'interface_size' or 'domain_length'")
+            if histogram_type not in {"interface_size", "domain_length", "pfam_row_coverage"}:
+                raise ValueError(
+                    "histogram type must be 'interface_size', 'domain_length', or 'pfam_row_coverage'"
+                )
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -1091,6 +1099,11 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 cache_workers=self.cache_workers,
                 domain_size_filter=(
                     domain_size_filter_from_settings(clustering_settings)
+                    if clustering_settings["method"] == "hierarchical"
+                    else None
+                ),
+                pfam_row_coverage_filter=(
+                    pfam_row_coverage_filter_from_settings(clustering_settings)
                     if clustering_settings["method"] == "hierarchical"
                     else None
                 ),

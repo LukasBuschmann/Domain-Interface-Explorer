@@ -30,6 +30,8 @@ export const DEFAULT_CLUSTERING_SETTINGS = {
     hierarchicalMinClusterSize: 10,
     domainSizeMin: "",
     domainSizeMax: "",
+    pfamRowCoverageMin: "",
+    pfamRowCoverageMax: "",
 };
 export const DEFAULT_SELECTION_SETTINGS = {
     minInterfaceSize: 5,

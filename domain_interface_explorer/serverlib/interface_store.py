@@ -21,6 +21,7 @@ from .stats_service import (
     domain_length_from_fragment_key,
     fragment_ranges,
     histogram_entries_from_counts,
+    pfam_row_coverage_percent,
 )
 from .timing import log_event, timed_step
 
@@ -462,14 +463,22 @@ class InterfaceStore:
                 )
         unique_interfaces: set[tuple[str, tuple[int, ...]]] = set()
         interface_size_histogram: dict[int, int] = {}
+        pfam_row_coverage_histogram: dict[int, int] = {}
         for row in connection.execute(
             f"""
-            SELECT partner_domain, interface_msa_columns_a, interface_residues_a
+            SELECT partner_domain, interface_msa_columns_a, interface_residues_a,
+                   fragment_key, aligned_seq
             FROM interface_rows
             WHERE source_id = ? AND {where_sql}
             """,
             (source_id, *where_args),
         ):
+            domain_length = domain_length_from_fragment_key(row[3])
+            coverage_percent = pfam_row_coverage_percent(domain_length, row[4])
+            if coverage_percent > 0:
+                pfam_row_coverage_histogram[coverage_percent] = (
+                    pfam_row_coverage_histogram.get(coverage_percent, 0) + 1
+                )
             columns = sorted(set(unpack_uints(row[1]) or unpack_uints(row[2])))
             interface_size = len(columns)
             if interface_size <= 0:
@@ -484,6 +493,7 @@ class InterfaceStore:
             "unique_interfaces": len(unique_interfaces),
             "interface_size_histogram": histogram_entries_from_counts(interface_size_histogram),
             "domain_length_histogram": histogram_entries_from_counts(domain_length_histogram),
+            "pfam_row_coverage_histogram": histogram_entries_from_counts(pfam_row_coverage_histogram),
         }
 
     def get_interface_page(
@@ -771,8 +781,32 @@ class InterfaceStore:
                                 "value": value,
                             }
                         )
+                elif histogram_type == "pfam_row_coverage":
+                    rows = connection.execute(
+                        f"""
+                        SELECT partner_domain, interface_row_key, fragment_key, aligned_seq
+                        FROM interface_rows
+                        WHERE source_id = ? AND {where_sql}{partner_sql}
+                        ORDER BY row_order
+                        """,
+                        args,
+                    )
+                    for row in rows:
+                        domain_length = domain_length_from_fragment_key(row[2])
+                        value = pfam_row_coverage_percent(domain_length, row[3])
+                        if value < bin_start or value > bin_end:
+                            continue
+                        targets.append(
+                            {
+                                "row_key": str(row[1]),
+                                "partner_domain": str(row[0]),
+                                "value": value,
+                            }
+                        )
                 else:
-                    raise ValueError("histogram type must be 'interface_size' or 'domain_length'")
+                    raise ValueError(
+                        "histogram type must be 'interface_size', 'domain_length', or 'pfam_row_coverage'"
+                    )
             timer.set(targets=len(targets))
         return targets
 

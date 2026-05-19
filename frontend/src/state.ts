@@ -109,6 +109,8 @@ export const state = {
   },
   embeddingDomainSizeRangesByPfamId: {},
   embeddingDomainSizeRangeDraftsByPfamId: {},
+  embeddingPfamCoverageRangesByPfamId: {},
+  embeddingPfamCoverageRangeDraftsByPfamId: {},
   embeddingHierarchicalTargetMemory: {
     nClusters: String(DEFAULT_CLUSTERING_SETTINGS.nClusters),
     distanceThreshold: String(DEFAULT_CLUSTERING_SETTINGS.distanceThreshold),
