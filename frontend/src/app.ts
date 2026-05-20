@@ -3443,7 +3443,7 @@ embeddingPartnerLegend.addEventListener("click", (event) => {
   const modeButton = event.target.closest("[data-legend-mode]");
   if (modeButton) {
     const nextMode = modeButton.dataset.legendMode;
-    if (!["domain", "cluster", "size"].includes(nextMode) || nextMode === state.embeddingColorMode) {
+    if (!["domain", "cluster", "size", "coverage"].includes(nextMode) || nextMode === state.embeddingColorMode) {
       return;
     }
     state.embeddingColorMode = nextMode;

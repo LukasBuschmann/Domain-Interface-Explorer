@@ -55,6 +55,21 @@ def open_interface_json(path: Path) -> IO[str]:
     return path.open("r", encoding="utf-8")
 
 
+def _read_interface_json(path: Path, byte_count: int, step_name: str) -> dict[str, object]:
+    with timed_step(
+        "json",
+        step_name,
+        file=path.name,
+        bytes=byte_count,
+    ) as timer:
+        with open_interface_json(path) as handle:
+            payload = json.load(handle)
+        if not isinstance(payload, dict):
+            raise ValueError(f"expected top-level object in {path}")
+        timer.set(top_level_keys=len(payload))
+        return payload
+
+
 def load_interface_json(path: Path) -> dict[str, object]:
     stat = path.stat()
     cache_key = interface_json_cache_key(path, stat.st_size, stat.st_mtime_ns)
@@ -85,17 +100,7 @@ def load_interface_json(path: Path) -> dict[str, object]:
         ):
             return load_future.result()
     try:
-        with timed_step(
-            "json",
-            "load interface json",
-            file=path.name,
-            bytes=stat.st_size,
-        ) as timer:
-            with open_interface_json(path) as handle:
-                payload = json.load(handle)
-            if not isinstance(payload, dict):
-                raise ValueError(f"expected top-level object in {path}")
-            timer.set(top_level_keys=len(payload))
+        payload = _read_interface_json(path, stat.st_size, "load interface json")
     except BaseException as exc:
         with INTERFACE_JSON_CACHE_LOCK:
             INTERFACE_JSON_IN_FLIGHT.pop(cache_key, None)

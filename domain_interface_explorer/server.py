@@ -59,8 +59,9 @@ from domain_interface_explorer.serverlib.representative import (
     interaction_row_key as representative_interaction_row_key,
 )
 from domain_interface_explorer.serverlib.stats_service import (
+    compute_and_cache_pfam_option_stats,
     interface_summary_from_payload,
-    load_cached_pfam_option_stats,
+    load_available_pfam_option_stats,
     load_or_fetch_pfam_info,
     load_or_compute_clean_column_identity,
     pfam_row_coverage_percent_from_payload,
@@ -364,6 +365,8 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
     interface_store: InterfaceStore | None
     cache_workers: int
     pfam_option_stats: dict[str, dict[str, object]]
+    pfam_option_stats_lock: threading.Lock
+    pfam_option_stats_status: dict[str, object]
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -433,11 +436,19 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         print(f"[structure-preview] {message}{suffix}", flush=True)
 
     def _handle_files(self) -> None:
+        with self.pfam_option_stats_lock:
+            pfam_option_stats = {
+                str(pfam_id): dict(stats)
+                for pfam_id, stats in self.pfam_option_stats.items()
+                if isinstance(stats, dict)
+            }
+            pfam_option_stats_status = dict(self.pfam_option_stats_status)
         self._send_json(
             {
                 "interface_dir": str(self.interface_dir),
                 "interface_files": list_json_files(self.interface_dir),
-                "pfam_option_stats": self.pfam_option_stats,
+                "pfam_option_stats": pfam_option_stats,
+                "pfam_option_stats_status": pfam_option_stats_status,
             }
         )
 
@@ -765,6 +776,13 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 status=HTTPStatus.BAD_GATEWAY,
             )
             return
+        display_name = str(pfam_info.get("display_name", "")).strip()
+        response_pfam_id = str(pfam_info.get("pfam_id", pfam_id)).strip()
+        if display_name and response_pfam_id:
+            with self.pfam_option_stats_lock:
+                stats = self.pfam_option_stats.get(response_pfam_id)
+                if isinstance(stats, dict):
+                    stats["display_name"] = display_name
         self._send_json(pfam_info)
 
     def _handle_embedding(self, query: dict[str, list[str]]) -> None:
@@ -1675,6 +1693,8 @@ def build_handler(
     interface_store: InterfaceStore | None,
     cache_workers: int,
     pfam_option_stats: dict[str, dict[str, object]],
+    pfam_option_stats_lock: threading.Lock,
+    pfam_option_stats_status: dict[str, object],
 ):
     class ConfiguredHandler(ViewerRequestHandler):
         pass
@@ -1685,7 +1705,67 @@ def build_handler(
     ConfiguredHandler.interface_store = interface_store
     ConfiguredHandler.cache_workers = max(1, int(cache_workers))
     ConfiguredHandler.pfam_option_stats = pfam_option_stats
+    ConfiguredHandler.pfam_option_stats_lock = pfam_option_stats_lock
+    ConfiguredHandler.pfam_option_stats_status = pfam_option_stats_status
     return ConfiguredHandler
+
+
+def start_background_pfam_option_stats_refresh(
+    cache_dir: Path,
+    interface_dir: Path,
+    cache_workers: int,
+    pfam_option_stats: dict[str, dict[str, object]],
+    pfam_option_stats_lock: threading.Lock,
+    pfam_option_stats_status: dict[str, object],
+    signature: str,
+) -> threading.Thread:
+    def refresh() -> None:
+        try:
+            refreshed_stats = compute_and_cache_pfam_option_stats(
+                cache_dir,
+                interface_dir,
+                max(1, int(cache_workers)),
+                signature=signature,
+            )
+        except Exception as exc:
+            with pfam_option_stats_lock:
+                pfam_option_stats_status.clear()
+                pfam_option_stats_status.update(
+                    {
+                        "state": "error",
+                        "cached": bool(pfam_option_stats),
+                        "refreshing": False,
+                        "message": str(exc),
+                    }
+                )
+            print(
+                f"WARNING: failed to refresh PFAM selector stats cache: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return
+
+        with pfam_option_stats_lock:
+            pfam_option_stats.clear()
+            pfam_option_stats.update(refreshed_stats)
+            pfam_option_stats_status.clear()
+            pfam_option_stats_status.update(
+                {
+                    "state": "ready",
+                    "cached": True,
+                    "refreshing": False,
+                    "message": "",
+                }
+            )
+        start_background_pfam_metadata_refresh(cache_dir, pfam_option_stats, pfam_option_stats_lock)
+
+    thread = threading.Thread(
+        target=refresh,
+        daemon=True,
+        name="pfam-selector-stats-refresh",
+    )
+    thread.start()
+    return thread
 
 
 def main() -> None:
@@ -1703,11 +1783,26 @@ def main() -> None:
             file=sys.stderr,
             flush=True,
         )
-    pfam_option_stats = load_cached_pfam_option_stats(
-        cache_dir,
-        interface_dir,
-        cache_workers,
+    pfam_option_stats, pfam_option_stats_current, pfam_option_stats_signature = (
+        load_available_pfam_option_stats(
+            cache_dir,
+            interface_dir,
+        )
     )
+    pfam_option_stats_lock = threading.Lock()
+    pfam_option_stats_status: dict[str, object] = {
+        "state": "ready" if pfam_option_stats_current else "refreshing",
+        "cached": bool(pfam_option_stats),
+        "refreshing": not pfam_option_stats_current,
+        "message": "" if pfam_option_stats_current else "Refreshing PFAM selector stats cache",
+    }
+    if not pfam_option_stats_current:
+        cached_label = "stale cached stats" if pfam_option_stats else "no cached stats"
+        print(
+            f"PFAM selector stats cache is stale or missing ({cached_label}); "
+            "serving available files while refreshing in the background.",
+            flush=True,
+        )
     handler = build_handler(
         interface_dir,
         cache_dir,
@@ -1715,6 +1810,8 @@ def main() -> None:
         interface_store,
         cache_workers,
         pfam_option_stats,
+        pfam_option_stats_lock,
+        pfam_option_stats_status,
     )
     server = ThreadingHTTPServer((args.host, args.port), handler)
     print(
@@ -1726,7 +1823,22 @@ def main() -> None:
         f"pymol-api={'available' if pymol_status.available else 'unavailable'})"
     )
     interface_store.start_background_sync()
-    start_background_pfam_metadata_refresh(cache_dir, pfam_option_stats)
+    if not pfam_option_stats_current:
+        start_background_pfam_option_stats_refresh(
+            cache_dir,
+            interface_dir,
+            cache_workers,
+            pfam_option_stats,
+            pfam_option_stats_lock,
+            pfam_option_stats_status,
+            pfam_option_stats_signature,
+        )
+    else:
+        start_background_pfam_metadata_refresh(
+            cache_dir,
+            pfam_option_stats,
+            pfam_option_stats_lock,
+        )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

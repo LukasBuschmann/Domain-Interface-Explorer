@@ -1353,6 +1353,9 @@ export function createMsaViewController({
       state.pfamInfo = cachedInfo;
       state.pfamInfoError = "";
       state.pfamInfoLoading = false;
+      if (updatePfamOptionDisplayName(pfamId, cachedInfo.display_name)) {
+        refreshPfamSelectorLabels();
+      }
       renderInfoPanel();
       return cachedInfo;
     }
@@ -1377,6 +1380,9 @@ export function createMsaViewController({
       };
       state.pfamInfo = payload;
       state.pfamInfoError = "";
+      if (updatePfamOptionDisplayName(pfamId, payload?.display_name)) {
+        refreshPfamSelectorLabels();
+      }
       return payload;
     })();
     pfamInfoRequests.set(pfamId, request);
@@ -1445,11 +1451,7 @@ export function createMsaViewController({
       });
   }
 
-  function applyFilesPayload(files, { preserveSelection = true } = {}) {
-    const previousSelection = preserveSelection ? msaSelect.value : "";
-    state.files = files;
-    state.files.pairs = buildPairs(state.files);
-    state.msaOptions = buildMsaOptionsFromFiles(state.files);
+  function syncMsaSelectOptions(previousSelection = msaSelect.value) {
     setOptions(
       msaSelect,
       [{ value: "", label: "Select MSA" }].concat(
@@ -1466,10 +1468,64 @@ export function createMsaViewController({
     }
   }
 
+  function refreshPfamSelectorLabels() {
+    syncMsaSelectOptions(msaSelect.value);
+    syncMsaPickerSelection();
+    renderMsaPickerOptions(msaPickerSearch.value || "");
+  }
+
+  function updatePfamOptionDisplayName(pfamId, displayName) {
+    const normalizedPfamId = String(pfamId || "").trim();
+    const normalizedDisplayName = String(displayName || "").trim();
+    if (!normalizedPfamId || !normalizedDisplayName) {
+      return false;
+    }
+    let changed = false;
+    state.msaOptions = (state.msaOptions || []).map((option) => {
+      if (String(option?.pfamId || "").trim() !== normalizedPfamId) {
+        return option;
+      }
+      if (String(option.displayName || "").trim() === normalizedDisplayName) {
+        return option;
+      }
+      changed = true;
+      return {
+        ...option,
+        displayName: normalizedDisplayName,
+        stats: {
+          ...(option.stats || {}),
+          display_name: normalizedDisplayName,
+        },
+      };
+    });
+    const stats = state.files?.pfam_option_stats?.[normalizedPfamId];
+    if (stats && String(stats.display_name || "").trim() !== normalizedDisplayName) {
+      stats.display_name = normalizedDisplayName;
+      changed = true;
+    }
+    return changed;
+  }
+
+  function applyFilesPayload(files, { preserveSelection = true } = {}) {
+    const previousSelection = preserveSelection ? msaSelect.value : "";
+    state.files = files;
+    state.files.pairs = buildPairs(state.files);
+    state.msaOptions = buildMsaOptionsFromFiles(state.files);
+    syncMsaSelectOptions(previousSelection);
+  }
+
   function hasMissingPfamDisplayNames() {
     return (state.msaOptions || []).some(
       (option) => !String(option?.displayName || "").trim() && String(option?.pfamId || "").trim()
     );
+  }
+
+  function pfamOptionStatsRefreshing(files = state.files) {
+    return Boolean(files?.pfam_option_stats_status?.refreshing);
+  }
+
+  function shouldPollFilesPayload() {
+    return hasMissingPfamDisplayNames() || pfamOptionStatsRefreshing();
   }
 
   function fetchFilesPayload() {
@@ -1482,12 +1538,19 @@ export function createMsaViewController({
   }
 
   async function pollPfamMetadataIfNeeded() {
-    if (!hasMissingPfamDisplayNames() || pfamMetadataPollAttempts >= PFAM_METADATA_POLL_MAX_ATTEMPTS) {
+    const statsRefreshing = pfamOptionStatsRefreshing();
+    if (
+      !shouldPollFilesPayload() ||
+      (!statsRefreshing && pfamMetadataPollAttempts >= PFAM_METADATA_POLL_MAX_ATTEMPTS)
+    ) {
       return;
     }
     window.clearTimeout(pfamMetadataPollHandle);
     pfamMetadataPollHandle = window.setTimeout(async () => {
-      pfamMetadataPollAttempts += 1;
+      const wasStatsRefreshing = pfamOptionStatsRefreshing();
+      if (!wasStatsRefreshing) {
+        pfamMetadataPollAttempts += 1;
+      }
       try {
         const files = await fetchFilesPayload();
         files.pairs = buildPairs(files);
@@ -1501,7 +1564,7 @@ export function createMsaViewController({
                 String(current.displayName || "").trim() === String(option.displayName || "").trim()
             )
         );
-        if (namesImproved) {
+        if (namesImproved || wasStatsRefreshing || pfamOptionStatsRefreshing(files)) {
           applyFilesPayload(files);
           updatePairedOptions();
           syncMsaPickerSelection();
@@ -1513,7 +1576,7 @@ export function createMsaViewController({
       } catch (_error) {
         // Keep the current labels and try again later.
       }
-      if (hasMissingPfamDisplayNames()) {
+      if (shouldPollFilesPayload()) {
         void pollPfamMetadataIfNeeded();
       }
     }, PFAM_METADATA_POLL_DELAY_MS);
@@ -2959,7 +3022,7 @@ export function createMsaViewController({
     );
     syncEmbeddingSettingsUi();
     clearViewer();
-    if (hasMissingPfamDisplayNames()) {
+    if (shouldPollFilesPayload()) {
       void pollPfamMetadataIfNeeded();
     }
     if (msaFromUrl) {

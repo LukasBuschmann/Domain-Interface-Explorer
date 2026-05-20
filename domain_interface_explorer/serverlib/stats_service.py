@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
 import re
 import json
@@ -26,12 +27,10 @@ from .config import (
     PFAM_METADATA_REFRESH_MAX_AGE_SECONDS,
     SELECTOR_STATS_CACHE_VERSION,
 )
-from .interface_embedding import build_interface_alignment_rows
 from .interface_embedding import fragment_ranges
 from .interface_files import (
     directory_interface_json_paths,
     interface_file_pfam_id,
-    load_interface_json,
 )
 from .timing import log_event, timed_step
 
@@ -47,6 +46,28 @@ CLEAN_COLUMN_IDENTITY_IN_FLIGHT: dict[str, Future[list[int]]] = {}
 CLEAN_COLUMN_IDENTITY_CACHE_VERSION = "3"
 CLEAN_COLUMN_IDENTITY_BATCH_SIZE = 2048
 PFAM_ACCESSION_PATTERN = re.compile(r"^PF\d+$", re.IGNORECASE)
+
+
+def open_selector_stats_interface_json(path: Path):
+    if path.name.lower().endswith(".gz"):
+        return gzip.open(path, "rt", encoding="utf-8")
+    return path.open("r", encoding="utf-8")
+
+
+def load_selector_stats_interface_json(path: Path) -> dict[str, object]:
+    stat = path.stat()
+    with timed_step(
+        "stats",
+        "load selector stats interface json",
+        file=path.name,
+        bytes=stat.st_size,
+    ) as timer:
+        with open_selector_stats_interface_json(path) as handle:
+            payload = json.load(handle)
+        if not isinstance(payload, dict):
+            raise ValueError(f"expected top-level object in {path}")
+        timer.set(top_level_keys=len(payload))
+        return payload
 
 
 def clean_column_identity_cache_key(interface_path: Path) -> str:
@@ -318,6 +339,127 @@ def selector_stats_cache_path(cache_dir: Path, interface_dir: Path) -> Path:
     return cache_dir / "selector_stats" / f"{key}.json"
 
 
+def read_selector_stats_cache(
+    cache_dir: Path,
+    interface_dir: Path,
+) -> tuple[str, dict[str, dict[str, object]]] | None:
+    cache_path = selector_stats_cache_path(cache_dir, interface_dir)
+    if not cache_path.exists():
+        return None
+    try:
+        with cache_path.open("r", encoding="utf-8") as handle:
+            cached_payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    signature = cached_payload.get("signature")
+    pfam_option_stats = cached_payload.get("pfam_option_stats", {})
+    if not isinstance(signature, str) or not isinstance(pfam_option_stats, dict):
+        return None
+    return signature, {
+        str(pfam_id): stats
+        for pfam_id, stats in pfam_option_stats.items()
+        if isinstance(stats, dict)
+    }
+
+
+def write_selector_stats_cache(
+    cache_dir: Path,
+    interface_dir: Path,
+    signature: str,
+    pfam_option_stats: dict[str, dict[str, object]],
+) -> None:
+    cache_path = selector_stats_cache_path(cache_dir, interface_dir)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        dir=cache_path.parent,
+        prefix=f".{cache_path.name}.",
+        delete=False,
+        mode="w",
+        encoding="utf-8",
+    ) as handle:
+        temp_path = Path(handle.name)
+        json.dump({"signature": signature, "pfam_option_stats": pfam_option_stats}, handle)
+    temp_path.replace(cache_path)
+
+
+def selector_stats_partial_cache_path(cache_dir: Path, interface_dir: Path) -> Path:
+    key = hashlib.sha1(f"{interface_dir.resolve()}".encode("utf-8")).hexdigest()
+    return cache_dir / "selector_stats" / f"{key}.partial.json"
+
+
+def selector_stats_base_stats(stats: dict[str, object]) -> dict[str, object]:
+    return {
+        str(key): value
+        for key, value in stats.items()
+        if not str(key).endswith("_category") and key != "display_name"
+    }
+
+
+def read_selector_stats_partial_cache(
+    cache_dir: Path,
+    interface_dir: Path,
+) -> dict[str, tuple[str, dict[str, object]]]:
+    cache_path = selector_stats_partial_cache_path(cache_dir, interface_dir)
+    if not cache_path.exists():
+        return {}
+    try:
+        with cache_path.open("r", encoding="utf-8") as handle:
+            cached_payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if cached_payload.get("cache_version") != SELECTOR_STATS_CACHE_VERSION:
+        return {}
+    raw_entries = cached_payload.get("pfam_entries", {})
+    if not isinstance(raw_entries, dict):
+        return {}
+    entries: dict[str, tuple[str, dict[str, object]]] = {}
+    for pfam_id, raw_entry in raw_entries.items():
+        if not isinstance(raw_entry, dict):
+            continue
+        signature = raw_entry.get("signature")
+        stats = raw_entry.get("stats")
+        if isinstance(signature, str) and isinstance(stats, dict):
+            entries[str(pfam_id)] = (signature, selector_stats_base_stats(stats))
+    return entries
+
+
+def write_selector_stats_partial_cache(
+    cache_dir: Path,
+    interface_dir: Path,
+    pfam_entries: dict[str, tuple[str, dict[str, object]]],
+) -> None:
+    cache_path = selector_stats_partial_cache_path(cache_dir, interface_dir)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "cache_version": SELECTOR_STATS_CACHE_VERSION,
+        "interface_dir": str(interface_dir.resolve()),
+        "pfam_entries": {
+            str(pfam_id): {
+                "signature": signature,
+                "stats": selector_stats_base_stats(stats),
+            }
+            for pfam_id, (signature, stats) in sorted(pfam_entries.items())
+        },
+    }
+    with tempfile.NamedTemporaryFile(
+        dir=cache_path.parent,
+        prefix=f".{cache_path.name}.",
+        delete=False,
+        mode="w",
+        encoding="utf-8",
+    ) as handle:
+        temp_path = Path(handle.name)
+        json.dump(payload, handle)
+    temp_path.replace(cache_path)
+
+
+def add_selector_stats_categories(pfam_option_stats: dict[str, dict[str, object]]) -> None:
+    add_metric_categories(pfam_option_stats, "alignment_length")
+    add_metric_categories(pfam_option_stats, "interface_rows")
+    add_metric_categories(pfam_option_stats, "interaction_partners")
+    add_metric_categories(pfam_option_stats, "avg_interface_residues_per_row")
+
+
 def pfam_metadata_cache_path(cache_dir: Path) -> Path:
     return cache_dir / "pfam_metadata" / "interpro_pfam.json"
 
@@ -526,9 +668,8 @@ def compute_pfam_option_stat(task: tuple[str, list[str]]) -> tuple[str, dict[str
     dataset_interfaces = 0
     for path_string in path_strings:
         path = Path(path_string)
-        payload = load_interface_json(path)
-        _rows, file_alignment_length = build_interface_alignment_rows(payload)
-        alignment_length = max(alignment_length, file_alignment_length)
+        payload = load_selector_stats_interface_json(path)
+        alignment_length = max(alignment_length, raw_interface_alignment_length(payload))
         interaction_partners.update(partner for partner in payload.keys() if isinstance(partner, str))
         for partner_domain, rows in payload.items():
             if not isinstance(rows, dict):
@@ -784,9 +925,22 @@ def read_pfam_metadata_cache(cache_dir: Path) -> dict[str, dict[str, str]]:
     }
 
 
+def cached_pfam_info_display_name(cache_dir: Path, pfam_id: str) -> str:
+    cached_info = read_cached_pfam_info(cache_dir, pfam_id)
+    if not cached_info:
+        return ""
+    return normalize_text(cached_info.get("display_name", ""))
+
+
 def load_cached_pfam_metadata(cache_dir: Path, pfam_ids: list[str]) -> dict[str, dict[str, str]]:
     cached_metadata = read_pfam_metadata_cache(cache_dir)
-    return {pfam_id: cached_metadata.get(pfam_id, {"display_name": ""}) for pfam_id in pfam_ids}
+    metadata_by_pfam: dict[str, dict[str, str]] = {}
+    for pfam_id in pfam_ids:
+        display_name = normalize_text(cached_metadata.get(pfam_id, {}).get("display_name", ""))
+        if not display_name:
+            display_name = cached_pfam_info_display_name(cache_dir, pfam_id)
+        metadata_by_pfam[pfam_id] = {"display_name": display_name}
+    return metadata_by_pfam
 
 
 def write_pfam_metadata_cache(cache_dir: Path, metadata: dict[str, dict[str, str]]) -> None:
@@ -860,6 +1014,7 @@ def fetch_all_pfam_metadata(
 def refresh_pfam_metadata_cache(
     cache_dir: Path,
     pfam_option_stats: dict[str, dict[str, object]],
+    stats_lock: threading.Lock | None = None,
 ) -> None:
     def log_progress(received_count: int, total_count: int | None, page_index: int) -> None:
         total_label = str(total_count) if total_count is not None else "?"
@@ -895,8 +1050,15 @@ def refresh_pfam_metadata_cache(
         return
 
     write_pfam_metadata_cache(cache_dir, metadata)
-    for pfam_id, stats in pfam_option_stats.items():
-        stats["display_name"] = normalize_text(metadata.get(pfam_id, {}).get("display_name", ""))
+    if stats_lock is None:
+        for pfam_id, stats in pfam_option_stats.items():
+            stats["display_name"] = normalize_text(metadata.get(pfam_id, {}).get("display_name", ""))
+    else:
+        with stats_lock:
+            for pfam_id, stats in pfam_option_stats.items():
+                stats["display_name"] = normalize_text(
+                    metadata.get(pfam_id, {}).get("display_name", "")
+                )
     print(
         f"PFAM metadata refresh: cached {len(metadata)} families.",
         file=sys.stderr,
@@ -907,12 +1069,13 @@ def refresh_pfam_metadata_cache(
 def start_background_pfam_metadata_refresh(
     cache_dir: Path,
     pfam_option_stats: dict[str, dict[str, object]],
+    stats_lock: threading.Lock | None = None,
 ) -> threading.Thread | None:
     if not pfam_option_stats or not pfam_metadata_cache_is_stale(cache_dir):
         return None
     thread = threading.Thread(
         target=refresh_pfam_metadata_cache,
-        args=(cache_dir, pfam_option_stats),
+        args=(cache_dir, pfam_option_stats, stats_lock),
         daemon=True,
         name="pfam-metadata-refresh",
     )
@@ -937,23 +1100,81 @@ def merge_pfam_metadata(
 def build_pfam_option_stats(
     interface_dir: Path,
     cache_workers: int = DEFAULT_CACHE_WORKERS,
+    cache_dir: Path | None = None,
 ) -> dict[str, dict[str, object]]:
     grouped_interface_files: dict[str, list[Path]] = {}
     for path in directory_json_paths(interface_dir):
         pfam_id = interface_file_pfam_id(path)
         grouped_interface_files.setdefault(pfam_id, []).append(path)
-    pfam_items = sorted(grouped_interface_files.items())
-    tasks = [
-        (
-            pfam_id,
-            [str(path) for path in paths],
-        )
-        for pfam_id, paths in pfam_items
+
+    pfam_records = [
+        (pfam_id, sorted(paths, key=lambda item: str(item)), source_signature(paths))
+        for pfam_id, paths in sorted(grouped_interface_files.items())
     ]
+    partial_entries = (
+        read_selector_stats_partial_cache(cache_dir, interface_dir)
+        if cache_dir is not None
+        else {}
+    )
+    current_partial_entries: dict[str, tuple[str, dict[str, object]]] = {}
     pfam_option_stats: dict[str, dict[str, object]] = {}
+    tasks: list[tuple[str, list[str]]] = []
+    task_signatures: dict[str, str] = {}
+
+    for pfam_id, paths, pfam_signature in pfam_records:
+        cached_entry = partial_entries.get(pfam_id)
+        if cached_entry is not None and cached_entry[0] == pfam_signature:
+            stats = dict(cached_entry[1])
+            pfam_option_stats[pfam_id] = stats
+            current_partial_entries[pfam_id] = (pfam_signature, selector_stats_base_stats(stats))
+            continue
+        tasks.append((pfam_id, [str(path) for path in paths]))
+        task_signatures[pfam_id] = pfam_signature
+
+    cached_count = len(pfam_option_stats)
+    if cache_dir is not None and cached_count > 0:
+        log_event(
+            "stats",
+            "reuse partial PFAM selector stats",
+            cached=cached_count,
+            missing=len(tasks),
+            total=len(pfam_records),
+        )
+    if not tasks:
+        add_selector_stats_categories(pfam_option_stats)
+        return pfam_option_stats
+
     worker_count = min(len(tasks), max(1, int(cache_workers)))
+    dirty_count = 0
+    last_write = time.monotonic()
+
+    def remember_result(pfam_id: str, stats: dict[str, object]) -> None:
+        nonlocal dirty_count, last_write
+        pfam_option_stats[pfam_id] = stats
+        if cache_dir is None:
+            return
+        signature = task_signatures.get(pfam_id)
+        if signature is None:
+            return
+        current_partial_entries[pfam_id] = (signature, selector_stats_base_stats(stats))
+        dirty_count += 1
+        now = time.monotonic()
+        if dirty_count >= 25 or now - last_write >= 5.0:
+            write_selector_stats_partial_cache(cache_dir, interface_dir, current_partial_entries)
+            dirty_count = 0
+            last_write = now
+
     if worker_count <= 1:
         results_iter = map(compute_pfam_option_stat, tasks)
+        if tqdm is not None:
+            results_iter = tqdm(
+                results_iter,
+                total=len(tasks),
+                desc=f"Building PFAM selector stats ({cached_count} cached)",
+                unit="pfam",
+            )
+        for pfam_id, stats in results_iter:
+            remember_result(pfam_id, stats)
     else:
         with ProcessPoolExecutor(max_workers=worker_count) as executor:
             futures = {
@@ -965,28 +1186,87 @@ def build_pfam_option_stats(
                 completed_futures = tqdm(
                     completed_futures,
                     total=len(tasks),
-                    desc=f"Building PFAM selector stats ({worker_count} workers)",
+                    desc=f"Building PFAM selector stats ({worker_count} workers, {cached_count} cached)",
                     unit="pfam",
                     miniters=1,
                     mininterval=0,
                 )
             for future in completed_futures:
                 pfam_id, stats = future.result()
-                pfam_option_stats[pfam_id] = stats
-        add_metric_categories(pfam_option_stats, "alignment_length")
-        add_metric_categories(pfam_option_stats, "interface_rows")
-        add_metric_categories(pfam_option_stats, "interaction_partners")
-        add_metric_categories(pfam_option_stats, "avg_interface_residues_per_row")
-        return pfam_option_stats
-    if tqdm is not None:
-        results_iter = tqdm(results_iter, total=len(tasks), desc="Building PFAM selector stats", unit="pfam")
-    for pfam_id, stats in results_iter:
-        pfam_option_stats[pfam_id] = stats
-    add_metric_categories(pfam_option_stats, "alignment_length")
-    add_metric_categories(pfam_option_stats, "interface_rows")
-    add_metric_categories(pfam_option_stats, "interaction_partners")
-    add_metric_categories(pfam_option_stats, "avg_interface_residues_per_row")
+                remember_result(pfam_id, stats)
+
+    if cache_dir is not None and dirty_count > 0:
+        write_selector_stats_partial_cache(cache_dir, interface_dir, current_partial_entries)
+    add_selector_stats_categories(pfam_option_stats)
     return pfam_option_stats
+
+
+def merge_cached_pfam_option_stats_with_metadata(
+    cache_dir: Path,
+    pfam_option_stats: dict[str, dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    pfam_metadata = load_cached_pfam_metadata(cache_dir, sorted(pfam_option_stats))
+    return merge_pfam_metadata(pfam_option_stats, pfam_metadata)
+
+
+def compute_and_cache_pfam_option_stats(
+    cache_dir: Path,
+    interface_dir: Path,
+    cache_workers: int = DEFAULT_CACHE_WORKERS,
+    signature: str | None = None,
+) -> dict[str, dict[str, object]]:
+    print(f"Building PFAM selector stats cache ({max(1, int(cache_workers))} workers max)...")
+    if signature is None:
+        signature = selector_stats_signature(interface_dir)
+    pfam_option_stats = build_pfam_option_stats(interface_dir, cache_workers, cache_dir)
+    write_selector_stats_cache(cache_dir, interface_dir, signature, pfam_option_stats)
+    return merge_cached_pfam_option_stats_with_metadata(cache_dir, pfam_option_stats)
+
+
+def load_partial_pfam_option_stats(
+    cache_dir: Path,
+    interface_dir: Path,
+) -> dict[str, dict[str, object]]:
+    partial_entries = read_selector_stats_partial_cache(cache_dir, interface_dir)
+    if not partial_entries:
+        return {}
+    grouped_interface_files: dict[str, list[Path]] = {}
+    for path in directory_json_paths(interface_dir):
+        pfam_id = interface_file_pfam_id(path)
+        grouped_interface_files.setdefault(pfam_id, []).append(path)
+    pfam_option_stats: dict[str, dict[str, object]] = {}
+    for pfam_id, paths in grouped_interface_files.items():
+        cached_entry = partial_entries.get(pfam_id)
+        if cached_entry is None:
+            continue
+        pfam_signature = source_signature(paths)
+        if cached_entry[0] == pfam_signature:
+            pfam_option_stats[pfam_id] = dict(cached_entry[1])
+    if pfam_option_stats:
+        add_selector_stats_categories(pfam_option_stats)
+    return pfam_option_stats
+
+
+def load_available_pfam_option_stats(
+    cache_dir: Path,
+    interface_dir: Path,
+) -> tuple[dict[str, dict[str, object]], bool, str]:
+    signature = selector_stats_signature(interface_dir)
+    cached = read_selector_stats_cache(cache_dir, interface_dir)
+    if cached is None:
+        partial_stats = load_partial_pfam_option_stats(cache_dir, interface_dir)
+        return merge_cached_pfam_option_stats_with_metadata(cache_dir, partial_stats), False, signature
+    cached_signature, pfam_option_stats = cached
+    if cached_signature == signature:
+        return (
+            merge_cached_pfam_option_stats_with_metadata(cache_dir, pfam_option_stats),
+            True,
+            signature,
+        )
+    partial_stats = load_partial_pfam_option_stats(cache_dir, interface_dir)
+    if partial_stats:
+        return merge_cached_pfam_option_stats_with_metadata(cache_dir, partial_stats), False, signature
+    return merge_cached_pfam_option_stats_with_metadata(cache_dir, pfam_option_stats), False, signature
 
 
 def load_cached_pfam_option_stats(
@@ -994,21 +1274,15 @@ def load_cached_pfam_option_stats(
     interface_dir: Path,
     cache_workers: int = DEFAULT_CACHE_WORKERS,
 ) -> dict[str, dict[str, object]]:
-    cache_path = selector_stats_cache_path(cache_dir, interface_dir)
-    signature = selector_stats_signature(interface_dir)
-    if cache_path.exists():
-        with cache_path.open("r", encoding="utf-8") as handle:
-            cached_payload = json.load(handle)
-        if cached_payload.get("signature") == signature:
-            pfam_option_stats = cached_payload.get("pfam_option_stats", {})
-            if not isinstance(pfam_option_stats, dict):
-                pfam_option_stats = {}
-            pfam_metadata = load_cached_pfam_metadata(cache_dir, sorted(pfam_option_stats))
-            return merge_pfam_metadata(pfam_option_stats, pfam_metadata)
-    print(f"Building PFAM selector stats cache ({max(1, int(cache_workers))} workers max)...")
-    pfam_option_stats = build_pfam_option_stats(interface_dir, cache_workers)
-    pfam_metadata = load_cached_pfam_metadata(cache_dir, sorted(pfam_option_stats))
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    with cache_path.open("w", encoding="utf-8") as handle:
-        json.dump({"signature": signature, "pfam_option_stats": pfam_option_stats}, handle)
-    return merge_pfam_metadata(pfam_option_stats, pfam_metadata)
+    pfam_option_stats, cache_is_current, signature = load_available_pfam_option_stats(
+        cache_dir,
+        interface_dir,
+    )
+    if cache_is_current:
+        return pfam_option_stats
+    return compute_and_cache_pfam_option_stats(
+        cache_dir,
+        interface_dir,
+        cache_workers,
+        signature=signature,
+    )

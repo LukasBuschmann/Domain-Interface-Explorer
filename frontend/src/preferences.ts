@@ -386,7 +386,7 @@ export function applyUiPreferences(state) {
 
   state.embeddingColorMode = enumValue(
     preferences.embeddingColorMode,
-    ["cluster", "domain", "size"],
+    ["cluster", "domain", "size", "coverage"],
     state.embeddingColorMode,
   );
   const uiState = isRecord(preferences.uiState) ? preferences.uiState : {};

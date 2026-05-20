@@ -273,7 +273,7 @@ export function applyUiPreferences(state) {
     state.embeddingPfamCoverageRangesByPfamId = normalizePfamCoverageRangeMap(preferences.embeddingPfamCoverageRangesByPfamId);
     state.embeddingPfamCoverageRangeDraftsByPfamId = normalizePfamCoverageRangeMap(preferences.embeddingPfamCoverageRangeDraftsByPfamId, { keepFull: true });
     state.embeddingHierarchicalTargetMemory = normalizeHierarchicalTargetMemory(preferences.embeddingHierarchicalTargetMemory);
-    state.embeddingColorMode = enumValue(preferences.embeddingColorMode, ["cluster", "domain", "size"], state.embeddingColorMode);
+    state.embeddingColorMode = enumValue(preferences.embeddingColorMode, ["cluster", "domain", "size", "coverage"], state.embeddingColorMode);
     const uiState = isRecord(preferences.uiState) ? preferences.uiState : {};
     state.msaPanelView = enumValue(uiState.msaPanelView ?? preferences.msaPanelView, PANEL_VIEWS, state.msaPanelView);
     state.selectionSettingsOpen =

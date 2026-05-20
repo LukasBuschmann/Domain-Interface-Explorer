@@ -55,7 +55,7 @@ export function createEmbeddingViewController({
   }
 
   function embeddingClusteringSettingsKey(settings = state.embeddingClusteringSettings) {
-    return JSON.stringify(settings);
+    return JSON.stringify(normalizedClusteringSettingsForRequest(settings));
   }
 
   function currentHierarchicalTarget(settings = state.embeddingClusteringSettingsDraft) {
@@ -141,11 +141,43 @@ export function createEmbeddingViewController({
     return fragmentLength(parseInteractionRowKey(rowKey).fragmentKey);
   }
 
+  function positiveInteger(value) {
+    const numericValue = Number(value);
+    return Number.isFinite(numericValue) && numericValue > 0
+      ? Math.round(numericValue)
+      : null;
+  }
+
+  function coveragePercentInteger(value) {
+    const numericValue = Number(value);
+    return Number.isFinite(numericValue) && numericValue >= 0 && numericValue <= 100
+      ? Math.round(numericValue)
+      : null;
+  }
+
+  function metricMemberFromPayload(member) {
+    const normalizedMember = {
+      row_key: String(member?.row_key || ""),
+      partner_domain: String(member?.partner_domain || ""),
+    };
+    const domainLength = positiveInteger(member?.domain_length ?? member?.domainLength);
+    if (domainLength !== null) {
+      normalizedMember.domain_length = domainLength;
+    }
+    const pfamRowCoverage = coveragePercentInteger(
+      member?.pfam_row_coverage ?? member?.pfamRowCoverage ?? member?.coverage
+    );
+    if (pfamRowCoverage !== null) {
+      normalizedMember.pfam_row_coverage = pfamRowCoverage;
+    }
+    return normalizedMember;
+  }
+
   function embeddingPointDomainSize(point, members = null) {
     const pointMembers = members || embeddingPointMembers(point);
     const rows = [
       ...pointMembers,
-      { row_key: String(point?.row_key || ""), partner_domain: String(point?.partner_domain || "") },
+      metricMemberFromPayload(point),
     ];
     const seenRows = new Set();
     const sizes = rows
@@ -164,6 +196,33 @@ export function createEmbeddingViewController({
       return domainLengthFromRowKey(point?.row_key);
     }
     return sizes[Math.floor((sizes.length - 1) / 2)];
+  }
+
+  function embeddingPointPfamRowCoverage(point, members = null) {
+    const pointMembers = members || embeddingPointMembers(point);
+    const rows = [
+      ...pointMembers,
+      metricMemberFromPayload(point),
+    ];
+    const seenRows = new Set();
+    const coverageValues = rows
+      .filter((member) => {
+        const rowKey = String(member?.row_key || "");
+        const partnerDomain = String(member?.partner_domain || "");
+        const key = interactionRowKey(rowKey, partnerDomain);
+        if (!rowKey || !partnerDomain || seenRows.has(key)) {
+          return false;
+        }
+        seenRows.add(key);
+        return true;
+      })
+      .map((member) => coveragePercentInteger(member?.pfam_row_coverage ?? member?.pfamRowCoverage ?? member?.coverage))
+      .filter((coverage) => coverage !== null)
+      .sort((left, right) => left - right);
+    if (coverageValues.length === 0) {
+      return null;
+    }
+    return coverageValues[Math.floor((coverageValues.length - 1) / 2)];
   }
 
   function currentDomainLengthBounds() {
@@ -278,9 +337,41 @@ export function createEmbeddingViewController({
     };
   }
 
+  function normalizedClusteringSettingsForRequest(settings = state.embeddingClusteringSettings) {
+    const normalizedSettings = { ...settings };
+    if (String(normalizedSettings.method || "") !== "hierarchical") {
+      normalizedSettings.domainSizeMin = "";
+      normalizedSettings.domainSizeMax = "";
+      normalizedSettings.pfamRowCoverageMin = "";
+      normalizedSettings.pfamRowCoverageMax = "";
+      return normalizedSettings;
+    }
+
+    const domainRange = domainSizeDisplayRange(settings);
+    if (domainRange.available && domainRange.active) {
+      normalizedSettings.domainSizeMin = String(domainRange.minValue);
+      normalizedSettings.domainSizeMax = String(domainRange.maxValue);
+    } else {
+      normalizedSettings.domainSizeMin = "";
+      normalizedSettings.domainSizeMax = "";
+    }
+
+    const coverageRange = pfamRowCoverageDisplayRange(settings);
+    if (coverageRange.available && coverageRange.active) {
+      normalizedSettings.pfamRowCoverageMin = String(coverageRange.minValue);
+      normalizedSettings.pfamRowCoverageMax = String(coverageRange.maxValue);
+    } else {
+      normalizedSettings.pfamRowCoverageMin = "";
+      normalizedSettings.pfamRowCoverageMax = "";
+    }
+
+    return normalizedSettings;
+  }
+
   function appendDomainSizeFilterParams(params, settings) {
-    const minSize = String(settings?.domainSizeMin ?? "").trim();
-    const maxSize = String(settings?.domainSizeMax ?? "").trim();
+    const normalizedSettings = normalizedClusteringSettingsForRequest(settings);
+    const minSize = String(normalizedSettings?.domainSizeMin ?? "").trim();
+    const maxSize = String(normalizedSettings?.domainSizeMax ?? "").trim();
     if (minSize !== "") {
       params.set("domain_size_min", minSize);
     }
@@ -290,8 +381,9 @@ export function createEmbeddingViewController({
   }
 
   function appendPfamRowCoverageFilterParams(params, settings) {
-    const minCoverage = String(settings?.pfamRowCoverageMin ?? "").trim();
-    const maxCoverage = String(settings?.pfamRowCoverageMax ?? "").trim();
+    const normalizedSettings = normalizedClusteringSettingsForRequest(settings);
+    const minCoverage = String(normalizedSettings?.pfamRowCoverageMin ?? "").trim();
+    const maxCoverage = String(normalizedSettings?.pfamRowCoverageMax ?? "").trim();
     if (minCoverage !== "") {
       params.set("pfam_row_coverage_min", minCoverage);
     }
@@ -449,17 +541,11 @@ export function createEmbeddingViewController({
   }
 
   function domainSizeFilterIsActive(settings = state.embeddingClusteringSettingsDraft) {
-    return (
-      String(settings?.domainSizeMin ?? "").trim() !== "" ||
-      String(settings?.domainSizeMax ?? "").trim() !== ""
-    );
+    return Boolean(domainSizeDisplayRange(settings).active);
   }
 
   function pfamRowCoverageFilterIsActive(settings = state.embeddingClusteringSettingsDraft) {
-    return (
-      String(settings?.pfamRowCoverageMin ?? "").trim() !== "" ||
-      String(settings?.pfamRowCoverageMax ?? "").trim() !== ""
-    );
+    return Boolean(pfamRowCoverageDisplayRange(settings).active);
   }
 
   function hierarchyRangeFilterIsActive(settings = state.embeddingClusteringSettingsDraft) {
@@ -1411,12 +1497,85 @@ export function createEmbeddingViewController({
     ) || null;
   }
 
-  function embeddingPointColor(point, colorMode, sizeBrackets) {
+  function coverageBracketLabel(bracket) {
+    if (!bracket || bracket.key === "unknown") {
+      return "Unknown coverage";
+    }
+    return bracket.start === bracket.end
+      ? `${bracket.start}% coverage`
+      : `${bracket.start}-${bracket.end}% coverage`;
+  }
+
+  function embeddingCoverageBrackets(points = annotatedEmbeddingPoints()) {
+    const coverageValues = points
+      .map((point) => Number(point.pfamRowCoverage))
+      .filter((coverage) => Number.isFinite(coverage) && coverage >= 0 && coverage <= 100)
+      .sort((left, right) => left - right);
+    if (coverageValues.length === 0) {
+      return [
+        {
+          key: "unknown",
+          start: null,
+          end: null,
+          color: "#8a847a",
+          count: points.length,
+        },
+      ];
+    }
+    const minCoverage = coverageValues[0];
+    const maxCoverage = coverageValues[coverageValues.length - 1];
+    const uniqueCount = new Set(coverageValues).size;
+    const bracketCount = minCoverage === maxCoverage
+      ? 1
+      : Math.min(SIZE_RAINBOW_PALETTE.length, Math.max(2, uniqueCount));
+    const width = Math.max(1, Math.ceil((maxCoverage - minCoverage + 1) / bracketCount));
+    const brackets = [];
+    for (let index = 0; index < bracketCount; index += 1) {
+      const start = minCoverage + index * width;
+      const end = index === bracketCount - 1
+        ? maxCoverage
+        : Math.min(maxCoverage, start + width - 1);
+      if (start > maxCoverage) {
+        break;
+      }
+      brackets.push({
+        key: `coverage:${start}:${end}`,
+        start,
+        end,
+        color: sizeBracketColor(index, bracketCount),
+        count: 0,
+      });
+    }
+    for (const point of points) {
+      const bracket = coverageBracketForPoint(point, brackets);
+      if (bracket) {
+        bracket.count += Number(point.memberCount || 1);
+      }
+    }
+    return brackets;
+  }
+
+  function coverageBracketForPoint(point, brackets) {
+    const coverage = Number(point?.pfamRowCoverage);
+    if (!Number.isFinite(coverage) || coverage < 0 || coverage > 100) {
+      return brackets.find((bracket) => bracket.key === "unknown") || null;
+    }
+    return brackets.find((bracket) =>
+      bracket.key !== "unknown" &&
+      coverage >= Number(bracket.start) &&
+      coverage <= Number(bracket.end)
+    ) || null;
+  }
+
+  function embeddingPointColor(point, colorMode, sizeBrackets, coverageBrackets) {
     if (colorMode === "cluster") {
       return embeddingClusterColor(point.clusterLabel);
     }
     if (colorMode === "size") {
       return sizeBracketForPoint(point, sizeBrackets)?.color || "#8a847a";
+    }
+    if (colorMode === "coverage") {
+      return coverageBracketForPoint(point, coverageBrackets)?.color || "#8a847a";
     }
     return partnerColor(point.partner_domain);
   }
@@ -1481,7 +1640,8 @@ export function createEmbeddingViewController({
       new Set((state.embeddingClustering?.points || []).map((point) => String(point.cluster_label)))
     ).sort((left, right) => Number(left) - Number(right));
     const sizeBrackets = colorMode === "size" ? embeddingSizeBrackets() : [];
-    if (partners.length === 0 && colorMode !== "size") {
+    const coverageBrackets = colorMode === "coverage" ? embeddingCoverageBrackets() : [];
+    if (partners.length === 0 && colorMode !== "size" && colorMode !== "coverage") {
       elements.embeddingPartnerLegend.innerHTML = "";
       return;
     }
@@ -1491,6 +1651,7 @@ export function createEmbeddingViewController({
           <button type="button" class="embedding-legend-mode-button ${colorMode === "domain" ? "active" : ""}" data-legend-mode="domain" aria-pressed="${colorMode === "domain"}">Domains</button>
           <button type="button" class="embedding-legend-mode-button ${colorMode === "cluster" ? "active" : ""}" data-legend-mode="cluster" aria-pressed="${colorMode === "cluster"}">Clusters</button>
           <button type="button" class="embedding-legend-mode-button ${colorMode === "size" ? "active" : ""}" data-legend-mode="size" aria-pressed="${colorMode === "size"}">Size</button>
+          <button type="button" class="embedding-legend-mode-button ${colorMode === "coverage" ? "active" : ""}" data-legend-mode="coverage" aria-pressed="${colorMode === "coverage"}">Coverage</button>
         </div>
       </div>
     `;
@@ -1517,6 +1678,20 @@ export function createEmbeddingViewController({
           <div class="embedding-partner-chip embedding-size-chip active" title="${sizeBracketLabel(bracket)}">
             <span class="representative-partner-filter-swatch" style="background: ${bracket.color};"></span>
             <span class="embedding-partner-chip-label">${sizeBracketLabel(bracket)}</span>
+            <span class="embedding-partner-chip-value">${bracket.count}</span>
+          </div>
+        `
+                )
+                .join("")
+        : colorMode === "coverage"
+          ? (state.embedding?.points || []).length === 0
+            ? '<p class="embedding-legend-empty">Embedding not loaded yet.</p>'
+            : coverageBrackets
+                .map(
+                  (bracket) => `
+          <div class="embedding-partner-chip embedding-size-chip active" title="${coverageBracketLabel(bracket)}">
+            <span class="representative-partner-filter-swatch" style="background: ${bracket.color};"></span>
+            <span class="embedding-partner-chip-label">${coverageBracketLabel(bracket)}</span>
             <span class="embedding-partner-chip-value">${bracket.count}</span>
           </div>
         `
@@ -3210,16 +3385,13 @@ export function createEmbeddingViewController({
     const members = Array.isArray(point?.members) ? point.members : [];
     if (members.length > 0) {
       return members
-        .map((member) => ({
-          row_key: String(member?.row_key || ""),
-          partner_domain: String(member?.partner_domain || ""),
-        }))
+        .map((member) => metricMemberFromPayload(member))
         .filter((member) => member.row_key && member.partner_domain);
     }
     const rowKey = String(point?.row_key || "");
     const partnerDomain = String(point?.partner_domain || "");
     return rowKey && partnerDomain
-      ? [{ row_key: rowKey, partner_domain: partnerDomain }]
+      ? [metricMemberFromPayload(point)]
       : [];
   }
 
@@ -3265,6 +3437,7 @@ export function createEmbeddingViewController({
         ? memberKeys
         : [representativeKey].concat(memberKeys);
       const domainSize = embeddingPointDomainSize(point, members);
+      const pfamRowCoverage = embeddingPointPfamRowCoverage(point, members);
       return {
         ...point,
         members,
@@ -3272,6 +3445,7 @@ export function createEmbeddingViewController({
         memberKeys: normalizedMemberKeys,
         interactionRowKey: representativeKey,
         domainSize,
+        pfamRowCoverage,
         clusterLabel: clusterLabelForEmbeddingPoint(normalizedMemberKeys, clusterByRowKey),
       };
     });
@@ -3483,6 +3657,7 @@ export function createEmbeddingViewController({
     }
     const annotatedPoints = annotatedEmbeddingPoints();
     const sizeBrackets = colorMode === "size" ? embeddingSizeBrackets(annotatedPoints) : [];
+    const coverageBrackets = colorMode === "coverage" ? embeddingCoverageBrackets(annotatedPoints) : [];
     const visibleClusters = visibleEmbeddingClusters();
     const visiblePartners = visibleEmbeddingPartners();
     const filteredPoints =
@@ -3505,7 +3680,9 @@ export function createEmbeddingViewController({
           ? "Select at least one cluster in the legend."
           : colorMode === "domain"
             ? "Select at least one partner in the legend."
-            : "No size-bracketed embedding points are visible.",
+            : colorMode === "coverage"
+              ? "No coverage-bracketed embedding points are visible."
+              : "No size-bracketed embedding points are visible.",
         centerX,
         centerY
       );
@@ -3514,7 +3691,9 @@ export function createEmbeddingViewController({
           ? "Clustering filter hides all clusters. Click legend items to show them again."
           : colorMode === "domain"
             ? "Embedding filter hides all partners. Click legend items to show them again."
-            : "Domain A size brackets are unavailable for this embedding."
+            : colorMode === "coverage"
+              ? "Domain A coverage brackets are unavailable for this embedding."
+              : "Domain A size brackets are unavailable for this embedding."
       );
       return;
     }
@@ -3541,7 +3720,7 @@ export function createEmbeddingViewController({
     syncEmbeddingMemberControls(projectedPoints);
     ctx.textAlign = "center";
     for (const point of projectedPoints) {
-      const color = embeddingPointColor(point, colorMode, sizeBrackets);
+      const color = embeddingPointColor(point, colorMode, sizeBrackets, coverageBrackets);
       const isSelected = point.memberKeys.includes(state.selectedRowKey);
       const isRepresentative = point.memberKeys.includes(state.representativeRowKey);
       const isHovered = point.memberKeys.includes(state.embeddingHoverRowKey);
@@ -3564,13 +3743,19 @@ export function createEmbeddingViewController({
       const sizeText = Number.isFinite(Number(hoveredPoint.domainSize)) && Number(hoveredPoint.domainSize) > 0
         ? ` | Domain A size: ${hoveredPoint.domainSize} residues`
         : "";
-      const bracketText = colorMode === "size"
-        ? ` | ${sizeBracketLabel(sizeBracketForPoint(hoveredPoint, sizeBrackets))}`
+      const coverageText = Number.isFinite(Number(hoveredPoint.pfamRowCoverage)) && Number(hoveredPoint.pfamRowCoverage) >= 0
+        ? ` | Domain A coverage: ${hoveredPoint.pfamRowCoverage}%`
         : "";
+      const bracketText =
+        colorMode === "size"
+          ? ` | ${sizeBracketLabel(sizeBracketForPoint(hoveredPoint, sizeBrackets))}`
+          : colorMode === "coverage"
+            ? ` | ${coverageBracketLabel(coverageBracketForPoint(hoveredPoint, coverageBrackets))}`
+            : "";
       setEmbeddingInfo(
         `${hoveredPoint.row_key} | ${hoveredPoint.partner_domain} | ${embeddingClusterLabel(
           hoveredPoint.clusterLabel
-        )}${sizeText}${bracketText} | interface columns: ${hoveredPoint.interface_size}${compressionText}`
+        )}${sizeText}${coverageText}${bracketText} | interface columns: ${hoveredPoint.interface_size}${compressionText}`
       );
     } else {
       const distanceLabel = embeddingDistanceLabel(
@@ -3590,13 +3775,17 @@ export function createEmbeddingViewController({
         colorMode === "size" && sizeBrackets.length > 0
           ? ` Domain A size coloring uses ${sizeBrackets.length} rainbow brackets.`
           : "";
+      const coverageSummary =
+        colorMode === "coverage" && coverageBrackets.length > 0
+          ? ` Domain A coverage coloring uses ${coverageBrackets.length} rainbow brackets.`
+          : "";
       const methodLabel = pointMethodLabel(state.embedding?.method || state.embeddingSettings.method);
       const representedCount = filteredPoints.reduce(
         (total, point) => total + Number(point.memberCount || 1),
         0
       );
       setEmbeddingInfo(
-        `3D ${methodLabel} points on ${distanceLabel} input. ${filteredPoints.length} visible points representing ${representedCount} interface rows. Drag to rotate.${clusteringSummary}${sizeSummary}`
+        `3D ${methodLabel} points on ${distanceLabel} input. ${filteredPoints.length} visible points representing ${representedCount} interface rows. Drag to rotate.${clusteringSummary}${sizeSummary}${coverageSummary}`
       );
     }
   }

@@ -192,17 +192,22 @@ class InterfaceStore:
 
     def sync_interface_dir(self) -> None:
         paths = directory_interface_json_paths(self.interface_dir)
-        missing = 0
+        ready = 0
+        pending = 0
+        failed = 0
         with timed_step("store", "sync interface store", files=len(paths)) as timer:
             for path in paths:
-                if self.source_is_ready(path):
-                    continue
-                missing += 1
                 try:
-                    self.ensure_source_ready(path)
+                    status = self.register_source_lazy(path)
                 except Exception as exc:  # pragma: no cover
-                    log_event("store", "failed to import interface source", file=path.name, error=exc)
-            timer.set(imported=missing)
+                    failed += 1
+                    log_event("store", "failed to register interface source", file=path.name, error=exc)
+                    continue
+                if status == "ready":
+                    ready += 1
+                else:
+                    pending += 1
+            timer.set(ready=ready, pending=pending, imported=0, failed=failed)
 
     def source_signature(self, path: Path) -> tuple[str, int, int]:
         stat = path.stat()
@@ -238,6 +243,64 @@ class InterfaceStore:
                 (resolved, size_bytes, mtime_ns, INTERFACE_STORE_SCHEMA_VERSION),
             ).fetchone()
         return int(row[0]) if row else None
+
+    def register_source_lazy(self, path: Path) -> str:
+        resolved, size_bytes, mtime_ns = self.source_signature(path)
+        pfam_id = interface_file_pfam_id(path)
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """
+                SELECT source_id, size_bytes, mtime_ns, import_status, schema_version
+                FROM sources
+                WHERE path = ?
+                """,
+                (resolved,),
+            ).fetchone()
+            if existing is not None:
+                source_id = int(existing[0])
+                current_ready = (
+                    int(existing[1]) == size_bytes
+                    and int(existing[2]) == mtime_ns
+                    and str(existing[3]) == "ready"
+                    and int(existing[4]) == INTERFACE_STORE_SCHEMA_VERSION
+                )
+                if current_ready:
+                    connection.commit()
+                    return "ready"
+                connection.execute("DELETE FROM clean_column_identity WHERE source_id = ?", (source_id,))
+                connection.execute("DELETE FROM interface_rows WHERE source_id = ?", (source_id,))
+                connection.execute(
+                    """
+                    UPDATE sources
+                    SET filename = ?, pfam_id = ?, size_bytes = ?, mtime_ns = ?,
+                        import_status = 'pending', imported_at = NULL,
+                        raw_row_count = 0, alignment_length = 0,
+                        schema_version = ?, error = NULL
+                    WHERE source_id = ?
+                    """,
+                    (
+                        path.name,
+                        pfam_id,
+                        size_bytes,
+                        mtime_ns,
+                        INTERFACE_STORE_SCHEMA_VERSION,
+                        source_id,
+                    ),
+                )
+                connection.commit()
+                return "pending"
+            connection.execute(
+                """
+                INSERT INTO sources (
+                    path, filename, pfam_id, size_bytes, mtime_ns, import_status,
+                    schema_version
+                ) VALUES (?, ?, ?, ?, ?, 'pending', ?)
+                """,
+                (resolved, path.name, pfam_id, size_bytes, mtime_ns, INTERFACE_STORE_SCHEMA_VERSION),
+            )
+            connection.commit()
+            return "pending"
 
     def ensure_source_ready(self, path: Path) -> int:
         ready_source_id = self.source_id_if_ready(path)

@@ -972,6 +972,134 @@ def hierarchy_entry_filter_is_active(
     )
 
 
+def entry_int_value(entry: dict[str, object], key: str, default: int = 0) -> int:
+    try:
+        value = entry.get(key, default)
+        return int(default if value is None else value)
+    except (TypeError, ValueError):
+        return default
+
+
+def entry_integer_values(entries: list[dict[str, object]], key: str) -> list[int]:
+    values: list[int] = []
+    for entry in entries:
+        try:
+            values.append(int(entry.get(key, 0)))
+        except (TypeError, ValueError):
+            values.append(0)
+    return values
+
+
+def range_filter_covers_values(
+    range_filter: tuple[int | None, int | None] | None,
+    values: list[int],
+) -> bool:
+    if not values:
+        return False
+    min_filter, max_filter = range_filter or (None, None)
+    return (
+        (min_filter is None or int(min_filter) <= min(values))
+        and (max_filter is None or int(max_filter) >= max(values))
+    )
+
+
+def normalize_hierarchy_entry_filters(
+    entries: list[dict[str, object]],
+    domain_size_filter: tuple[int | None, int | None] | None = None,
+    pfam_row_coverage_filter: tuple[int | None, int | None] | None = None,
+) -> tuple[tuple[int | None, int | None], tuple[int | None, int | None]]:
+    normalized_domain_size_filter = domain_size_filter or (None, None)
+    normalized_pfam_row_coverage_filter = pfam_row_coverage_filter or (None, None)
+
+    if domain_size_filter_is_active(normalized_domain_size_filter):
+        domain_lengths = entry_integer_values(entries, "domain_length")
+        if range_filter_covers_values(normalized_domain_size_filter, domain_lengths):
+            normalized_domain_size_filter = (None, None)
+
+    if pfam_row_coverage_filter_is_active(normalized_pfam_row_coverage_filter):
+        coverage_values = entry_integer_values(entries, "pfam_row_coverage")
+        if range_filter_covers_values(normalized_pfam_row_coverage_filter, coverage_values):
+            normalized_pfam_row_coverage_filter = (None, None)
+
+    return normalized_domain_size_filter, normalized_pfam_row_coverage_filter
+
+
+def normalize_hierarchy_filters_for_payload(
+    interface_payload: dict[str, dict[str, dict]],
+    domain_size_filter: tuple[int | None, int | None] | None = None,
+    pfam_row_coverage_filter: tuple[int | None, int | None] | None = None,
+) -> tuple[tuple[int | None, int | None], tuple[int | None, int | None]]:
+    if not hierarchy_entry_filter_is_active(domain_size_filter, pfam_row_coverage_filter):
+        return domain_size_filter or (None, None), pfam_row_coverage_filter or (None, None)
+    entries = load_interface_entries(interface_payload)
+    normalized_filters = normalize_hierarchy_entry_filters(
+        entries,
+        domain_size_filter,
+        pfam_row_coverage_filter,
+    )
+    if normalized_filters != (
+        domain_size_filter or (None, None),
+        pfam_row_coverage_filter or (None, None),
+    ):
+        log_event(
+            "hierarchy",
+            "normalize full-range hierarchy filters",
+            domain_size_filter=domain_size_filter_key(domain_size_filter) or "full",
+            pfam_row_coverage_filter=pfam_row_coverage_filter_key(pfam_row_coverage_filter) or "full",
+            normalized_domain_size_filter=domain_size_filter_key(normalized_filters[0]) or "full",
+            normalized_pfam_row_coverage_filter=pfam_row_coverage_filter_key(normalized_filters[1])
+            or "full",
+        )
+    return normalized_filters
+
+
+def normalize_hierarchical_clustering_settings_for_payload(
+    clustering_settings: dict[str, object],
+    interface_payload: dict[str, dict[str, dict]],
+) -> dict[str, object]:
+    if clustering_settings.get("method") != "hierarchical":
+        return clustering_settings
+    domain_size_filter = domain_size_filter_from_settings(clustering_settings)
+    pfam_row_coverage_filter = pfam_row_coverage_filter_from_settings(clustering_settings)
+    normalized_domain_size_filter, normalized_pfam_row_coverage_filter = (
+        normalize_hierarchy_filters_for_payload(
+            interface_payload,
+            domain_size_filter,
+            pfam_row_coverage_filter,
+        )
+    )
+    if (
+        normalized_domain_size_filter == (domain_size_filter or (None, None))
+        and normalized_pfam_row_coverage_filter == (pfam_row_coverage_filter or (None, None))
+    ):
+        return clustering_settings
+
+    normalized_settings = dict(clustering_settings)
+    for key in (
+        "domain_size_min",
+        "domain_size_max",
+        "pfam_row_coverage_min",
+        "pfam_row_coverage_max",
+    ):
+        normalized_settings.pop(key, None)
+
+    min_size, max_size = normalized_domain_size_filter
+    if domain_size_filter_is_active(normalized_domain_size_filter):
+        if min_size is not None:
+            normalized_settings["domain_size_min"] = int(min_size)
+        if max_size is not None:
+            normalized_settings["domain_size_max"] = int(max_size)
+
+    min_coverage, max_coverage = normalized_pfam_row_coverage_filter
+    if pfam_row_coverage_filter_is_active(normalized_pfam_row_coverage_filter):
+        if min_coverage is not None:
+            normalized_settings["pfam_row_coverage_min"] = int(min_coverage)
+        if max_coverage is not None:
+            normalized_settings["pfam_row_coverage_max"] = int(max_coverage)
+
+    return normalized_settings
+
+
 def entry_matches_domain_size_filter(
     entry: dict[str, object],
     domain_size_filter: tuple[int | None, int | None] | None,
@@ -1151,6 +1279,8 @@ def compress_interface_entries(entries: list[dict[str, object]]) -> dict[str, ob
             {
                 "row_key": str(entries[index]["row_key"]),
                 "partner_domain": str(entries[index]["partner_domain"]),
+                "domain_length": entry_int_value(entries[index], "domain_length", 0),
+                "pfam_row_coverage": entry_int_value(entries[index], "pfam_row_coverage", -1),
             }
             for index in sorted_member_indices
         ]
@@ -1162,6 +1292,8 @@ def compress_interface_entries(entries: list[dict[str, object]]) -> dict[str, ob
                 "partner_domain": partner_domain,
                 "row_key": str(representative["row_key"]),
                 "columns": columns,
+                "domain_length": entry_int_value(representative, "domain_length", 0),
+                "pfam_row_coverage": entry_int_value(representative, "pfam_row_coverage", -1),
                 "member_indices": sorted_member_indices,
                 "member_count": len(sorted_member_indices),
                 "members": members,
@@ -1956,6 +2088,11 @@ def compute_interface_distance_data(interface_payload: dict[str, object]) -> dic
     pfam_row_coverage_filter = interface_payload.get("pfam_row_coverage_filter")
     cache_workers = int(interface_payload.get("cache_workers") or DEFAULT_CACHE_WORKERS)
     distance_scope = str(interface_payload.get("distance_scope") or "expanded")
+    domain_size_filter, pfam_row_coverage_filter = normalize_hierarchy_filters_for_payload(
+        raw_interface_payload,
+        domain_size_filter,
+        pfam_row_coverage_filter,
+    )
     if isinstance(interface_path, Path):
         entries, compression = load_or_build_compressed_interface_data(
             interface_path,
@@ -2152,6 +2289,11 @@ def load_interface_distance_data(
     domain_size_filter: tuple[int | None, int | None] | None = None,
     pfam_row_coverage_filter: tuple[int | None, int | None] | None = None,
 ) -> dict[str, object]:
+    domain_size_filter, pfam_row_coverage_filter = normalize_hierarchy_filters_for_payload(
+        interface_payload,
+        domain_size_filter,
+        pfam_row_coverage_filter,
+    )
     cache_key = distance_data_cache_key(
         interface_path,
         distance_metric,
@@ -2307,6 +2449,8 @@ def embedding_points_payload(
                     "row_key": str(entry["row_key"]),
                     "partner_domain": str(entry["partner_domain"]),
                     "interface_size": len(entry["columns"]),
+                    "domain_length": entry_int_value(entry, "domain_length", 0),
+                    "pfam_row_coverage": entry_int_value(entry, "pfam_row_coverage", -1),
                     "member_count": int(entry["member_count"]),
                     "members": entry["members"],
                     "x": float(coords[0]),
@@ -3872,6 +4016,10 @@ def load_hierarchical_context(
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[int], dict[str, object]]:
     if clustering_settings["method"] != "hierarchical":
         raise ValueError("dendrogram view requires hierarchical clustering")
+    clustering_settings = normalize_hierarchical_clustering_settings_for_payload(
+        clustering_settings,
+        interface_payload,
+    )
     domain_size_filter = domain_size_filter_from_settings(clustering_settings)
     pfam_row_coverage_filter = pfam_row_coverage_filter_from_settings(clustering_settings)
     entries, compression = build_compressed_interface_data(
@@ -4465,6 +4613,10 @@ def hierarchy_status_payload(
             "method": str(clustering_settings["method"]),
             "local_calculation_required": False,
         }
+    clustering_settings = normalize_hierarchical_clustering_settings_for_payload(
+        clustering_settings,
+        interface_payload,
+    )
     distance_metric = str(clustering_settings["distance"])
     linkage_method = str(clustering_settings["linkage"])
     domain_size_filter = domain_size_filter_from_settings(clustering_settings)
@@ -4615,6 +4767,11 @@ def load_or_compute_clustering_payload(
     cache_workers: int = DEFAULT_CACHE_WORKERS,
     hierarchy_dir: Path | None = None,
 ) -> dict[str, object]:
+    if clustering_settings["method"] == "hierarchical":
+        clustering_settings = normalize_hierarchical_clustering_settings_for_payload(
+            clustering_settings,
+            interface_payload,
+        )
     log_event(
         "clustering",
         "load or compute clustering",
