@@ -1,8 +1,8 @@
 import { fetchJson, fetchText } from "./api.js";
-import { interfaceFilePfamId } from "./interfaceModel.js";
+import { interactionRowKey, interfaceFilePfamId, parseInteractionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams } from "./selectionSettings.js";
 import { createDomainMolstarViewer } from "./molstarView.js";
-export function createStructureViewController({ state, elements, THREE_TO_ONE, interfaceSelect, setLoading, hideLoading, buildStructureResidueLookup, columnResidueStyles, structureMarkerResidueStyles = () => [], msaColumnMaxIndex, topResiduesForColumn, columnStateDistribution, syncColumnLegends, getSelectedRow, getStructurePreloadRows, clearEmbeddingMemberSelection, }) {
+export function createStructureViewController({ state, elements, THREE_TO_ONE, interfaceSelect, setLoading, hideLoading, buildStructureResidueLookup, columnResidueStyles, structureMarkerResidueStyles = () => [], msaColumnMaxIndex, topResiduesForColumn, columnStateDistribution, syncColumnLegends, getSelectedRow, getStructurePreloadRows, clearEmbeddingMemberSelection, partnerColor = () => "#817a71", }) {
     const STRUCTURE_PREVIEW_CACHE_LIMIT = 40;
     const STRUCTURE_MODEL_TEXT_CACHE_LIMIT = 24;
     const STRUCTURE_PRELOAD_CONCURRENCY = 1;
@@ -74,6 +74,13 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
     function structureRowKey(row) {
         return String(row?.interface_row_key || row?.row_key || "");
     }
+    function structureInteractionRowKey(row) {
+        const fullRowKey = String(row?.row_key || "");
+        if (fullRowKey.includes("@@")) {
+            return fullRowKey;
+        }
+        return interactionRowKey(structureRowKey(row), structurePartnerForRow(row));
+    }
     function structurePartnerForRow(row) {
         return row?.partner_domain || "__all__";
     }
@@ -135,6 +142,140 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             payload?.alignment_reference_row_key || "",
             payload?.alignment_method || "",
         ].join("|");
+    }
+    function structureModelIdentityKey(payload) {
+        return [
+            payload?.model_url || "",
+            payload?.alignment_reference_row_key || "",
+            payload?.alignment_method || "",
+        ].join("|");
+    }
+    function syntheticStructureRowFromInteractionKey(rowKey) {
+        const parsed = parseInteractionRowKey(rowKey);
+        const interfaceRowKey = parsed.interfaceRowKey || String(rowKey || "");
+        const partnerDomain = parsed.partnerDomain || "";
+        if (!interfaceRowKey || !partnerDomain || !parsed.proteinId || !parsed.fragmentKey) {
+            return null;
+        }
+        return {
+            interface_row_key: interfaceRowKey,
+            partner_domain: partnerDomain,
+            row_key: interactionRowKey(interfaceRowKey, partnerDomain),
+            display_row_key: `${parsed.proteinId} | ${partnerDomain}`,
+            protein_id: parsed.proteinId,
+            fragment_key: parsed.fragmentKey,
+            alignment_fragment_key: parsed.fragmentKey,
+            partner_fragment_key: parsed.partnerFragmentKey || "",
+            interacting_fragment_key: parsed.partnerFragmentKey || "",
+            aligned_sequence: "",
+            residueIds: [],
+            has_alignment: false,
+            synthetic: true,
+        };
+    }
+    function structurePartnerOptionLabel(row) {
+        const fullRowKey = structureInteractionRowKey(row);
+        const parsed = parseInteractionRowKey(fullRowKey);
+        const partnerDomain = String(row?.partner_domain || parsed.partnerDomain || "");
+        const partnerFragmentKey = String(row?.interacting_fragment_key || row?.partner_fragment_key || parsed.partnerFragmentKey || "");
+        return [partnerDomain, partnerFragmentKey].filter(Boolean).join(" | ") || fullRowKey;
+    }
+    function structurePartnerDomain(row) {
+        const parsed = parseInteractionRowKey(structureInteractionRowKey(row));
+        const domain = String(row?.partner_domain || parsed.partnerDomain || "");
+        return domain && domain !== "__all__" ? domain : "";
+    }
+    function applyStructurePartnerControlColor(row) {
+        const control = elements.structurePartnerPicker;
+        const select = elements.structurePartnerSelect;
+        if (!control || !select) {
+            return;
+        }
+        const domain = structurePartnerDomain(row);
+        const color = domain ? partnerColor(domain) : "";
+        if (color) {
+            control.style.setProperty("--structure-partner-color", color);
+            select.style.color = color;
+        }
+        else {
+            control.style.removeProperty("--structure-partner-color");
+            select.style.removeProperty("color");
+        }
+    }
+    function structurePartnerCandidateRows(row) {
+        const activeParsed = parseInteractionRowKey(structureInteractionRowKey(row));
+        if (!activeParsed.proteinId || !activeParsed.fragmentKey) {
+            return row ? [row] : [];
+        }
+        const byKey = new Map();
+        const addCandidate = (candidate) => {
+            if (!candidate) {
+                return;
+            }
+            const fullRowKey = structureInteractionRowKey(candidate);
+            const parsed = parseInteractionRowKey(fullRowKey);
+            if (!fullRowKey ||
+                !parsed.partnerDomain ||
+                parsed.proteinId !== activeParsed.proteinId ||
+                parsed.fragmentKey !== activeParsed.fragmentKey) {
+                return;
+            }
+            if (!byKey.has(fullRowKey)) {
+                byKey.set(fullRowKey, candidate);
+            }
+        };
+        addCandidate(row);
+        addCandidate(state.selectedRowSnapshot);
+        addCandidate(state.structureData?.row);
+        for (const candidate of state.msa?.rows || []) {
+            addCandidate(candidate);
+        }
+        const overlayByRow = state.interface?.overlayByRow;
+        if (overlayByRow && typeof overlayByRow.entries === "function") {
+            for (const [interfaceRowKey, rowState] of overlayByRow.entries()) {
+                const parsed = parseInteractionRowKey(interfaceRowKey);
+                if (parsed.proteinId !== activeParsed.proteinId || parsed.fragmentKey !== activeParsed.fragmentKey) {
+                    continue;
+                }
+                for (const partnerDomain of rowState?.byPartner?.keys?.() || []) {
+                    addCandidate(syntheticStructureRowFromInteractionKey(interactionRowKey(interfaceRowKey, partnerDomain)));
+                }
+            }
+        }
+        return [...byKey.values()].sort((left, right) => structurePartnerOptionLabel(left).localeCompare(structurePartnerOptionLabel(right)));
+    }
+    function renderStructurePartnerControl(row) {
+        const control = elements.structurePartnerPicker;
+        const select = elements.structurePartnerSelect;
+        if (!control || !select) {
+            return;
+        }
+        const partnerRows = structurePartnerCandidateRows(row);
+        state.structurePartnerRows = partnerRows;
+        if (partnerRows.length <= 1) {
+            control.classList.add("hidden");
+            control.setAttribute("aria-hidden", "true");
+            control.style.removeProperty("--structure-partner-color");
+            select.style.removeProperty("color");
+            select.replaceChildren();
+            return;
+        }
+        select.replaceChildren();
+        for (const partnerRow of partnerRows) {
+            const option = document.createElement("option");
+            option.value = structureInteractionRowKey(partnerRow);
+            option.textContent = structurePartnerOptionLabel(partnerRow);
+            const domain = structurePartnerDomain(partnerRow);
+            if (domain) {
+                option.style.color = partnerColor(domain);
+            }
+            select.appendChild(option);
+        }
+        const activeRowKey = structureInteractionRowKey(row);
+        select.value = activeRowKey;
+        applyStructurePartnerControlColor(row);
+        control.classList.remove("hidden");
+        control.setAttribute("aria-hidden", "false");
     }
     function copyStructureView(view) {
         if (!view) {
@@ -246,6 +387,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         }
     }
     function renderStructureLoadingState(row, label, detail = "") {
+        renderStructurePartnerControl(null);
         renderStructureHeader(row, {
             uniprot_id: row?.protein_id || "",
             partner: structurePartnerForRow(row),
@@ -342,6 +484,9 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         state.structureResidueLookup = null;
         state.structureData = null;
         state.structureRenderedModelKey = null;
+        state.structureRenderedModelIdentityKey = null;
+        state.structurePartnerRows = [];
+        renderStructurePartnerControl(null);
         elements.structureHoverCard.classList.add("hidden");
         setStructureHoverDetails(null);
         setStructureHoverHistogram(null);
@@ -528,7 +673,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         setStructureHoverHistogram(null);
         setStructureHoverDistribution(null);
     }
-    async function renderInteractiveStructure() {
+    async function renderInteractiveStructure(options = {}) {
         const structure = state.structureData;
         if (!structure) {
             return;
@@ -536,16 +681,21 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         const { row, payload, modelText } = structure;
         const viewer = getStructureViewer();
         const currentModelKey = structure.modelKey || structureModelKey(row, payload);
-        const shouldPreserveView = Boolean(state.structureRenderedModelKey) &&
+        const currentModelIdentityKey = structure.modelIdentityKey || structureModelIdentityKey(payload);
+        const shouldReuseStructure = Boolean(options.reuseModel) &&
+            Boolean(state.structureRenderedModelIdentityKey) &&
+            currentModelIdentityKey === state.structureRenderedModelIdentityKey &&
+            typeof viewer.updateStructureRepresentations === "function";
+        const shouldPreserveView = Boolean(state.structureRenderedModelIdentityKey) &&
             typeof viewer.getView === "function" &&
             typeof viewer.setView === "function" &&
-            currentModelKey === state.structureRenderedModelKey;
+            currentModelIdentityKey === state.structureRenderedModelIdentityKey;
         const initialView = copyStructureView(structure.initialView);
         const previousView = initialView || (shouldPreserveView ? copyStructureView(viewer.getView()) : null);
         state.structureResidueLookup = buildStructureResidueLookup(row);
         const residueStyles = columnResidueStyles(state.structureResidueLookup);
         const markerResidueStyles = structureMarkerResidueStyles(state.structureResidueLookup);
-        await viewer.loadStructure({
+        const representationOptions = {
             modelText,
             payload,
             format: payload.model_format || "pdb",
@@ -559,7 +709,18 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             displaySettings: state.structureDisplaySettings,
             onHover: handleStructureHover,
             onHoverEnd: clearStructureHover,
-        });
+        };
+        if (shouldReuseStructure) {
+            try {
+                await viewer.updateStructureRepresentations(representationOptions);
+            }
+            catch (_error) {
+                await viewer.loadStructure(representationOptions);
+            }
+        }
+        else {
+            await viewer.loadStructure(representationOptions);
+        }
         viewer.resize();
         const domainSelection = { resi: mainFragmentResidues(payload) };
         if (previousView) {
@@ -590,9 +751,11 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         }
         state.structureRenderedRowKey = row.row_key;
         state.structureRenderedModelKey = currentModelKey;
+        state.structureRenderedModelIdentityKey = currentModelIdentityKey;
         if (state.structureData === structure) {
             state.structureData.initialView = null;
             state.structureData.modelKey = currentModelKey;
+            state.structureData.modelIdentityKey = currentModelIdentityKey;
         }
         if (!state.structureAnchorRowKey) {
             state.structureAnchorRowKey = payload.alignment_reference_row_key || structureRowKey(row);
@@ -614,6 +777,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         elements.structureStatus.textContent =
             `Interactive structure ready for ${structureRowLabel(row)}. Partners: ${payload.matched_partners.join(", ") || "none"}${lensNote}${markerNote}${alignmentNote}`;
         renderStructureHeader(row, payload);
+        renderStructurePartnerControl(row);
         const partnerRanges = payload.partner_fragment_ranges?.join(", ") || "none";
         elements.structureModalSubtitle.textContent =
             `fragment ${payload.fragment_key} | ` +
@@ -643,6 +807,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             modelText,
             initialView: options.initialView || null,
             modelKey: options.modelKey || structureModelKey(row, payload),
+            modelIdentityKey: options.modelIdentityKey || structureModelIdentityKey(payload),
         };
         openStructureModal();
         setStructureLoadingUi(true, "Rendering structure", modelFileLabel(payload, row));
@@ -698,12 +863,70 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             payload,
             modelText,
             modelKey: structureModelKey(row, payload),
+            modelIdentityKey: structureModelIdentityKey(payload),
         };
         await renderInteractiveStructure();
         setStructureLoadingUi(false);
         startStructurePreloading(row);
         setLoading(100, "Structure ready", structureRowLabel(row));
         window.setTimeout(hideLoading, 250);
+    }
+    async function selectStructurePartner(rowKey) {
+        const currentStructure = state.structureData;
+        if (!currentStructure || !rowKey || !interfaceSelect.value) {
+            return;
+        }
+        const currentRowKey = structureInteractionRowKey(currentStructure.row);
+        if (rowKey === currentRowKey) {
+            return;
+        }
+        const partnerRows = structurePartnerCandidateRows(currentStructure.row);
+        const targetRow = partnerRows.find((row) => structureInteractionRowKey(row) === rowKey) ||
+            syntheticStructureRowFromInteractionKey(rowKey);
+        if (!targetRow) {
+            throw new Error("Selected structure partner is no longer available.");
+        }
+        if (elements.structurePartnerSelect) {
+            elements.structurePartnerSelect.value = rowKey;
+        }
+        applyStructurePartnerControlColor(targetRow);
+        const requestId = state.structureRequestId + 1;
+        state.structureRequestId = requestId;
+        const previewUrl = structurePreviewUrlForRow(targetRow);
+        const viewer = getStructureViewer();
+        const previousView = typeof viewer.getView === "function" ? copyStructureView(viewer.getView()) : null;
+        elements.structureModalStatus.textContent = "Updating interface colors";
+        elements.structureStatus.textContent = `Updating interface colors for ${structurePartnerOptionLabel(targetRow)}.`;
+        setStructureLoadingUi(true, "Updating interface", structurePartnerOptionLabel(targetRow));
+        const payload = await loadStructurePreviewPayload(previewUrl);
+        if (requestId !== state.structureRequestId || !structureModalIsOpen()) {
+            return;
+        }
+        const currentIdentityKey = state.structureRenderedModelIdentityKey || structureModelIdentityKey(currentStructure.payload);
+        const nextIdentityKey = structureModelIdentityKey(payload);
+        const reuseModel = Boolean(currentIdentityKey && nextIdentityKey && currentIdentityKey === nextIdentityKey);
+        let modelText = currentStructure.modelText;
+        if (!reuseModel || typeof modelText !== "string") {
+            modelText = await loadStructureModelText(payload.model_url);
+            if (requestId !== state.structureRequestId || !structureModalIsOpen()) {
+                return;
+            }
+        }
+        cacheLoadedStructure(previewUrl, payload, modelText);
+        state.selectedRowKey = targetRow.row_key;
+        state.selectedRowSnapshot = targetRow;
+        state.structureData = {
+            row: targetRow,
+            payload,
+            modelText,
+            initialView: previousView,
+            modelKey: structureModelKey(targetRow, payload),
+            modelIdentityKey: nextIdentityKey,
+        };
+        await renderInteractiveStructure({ reuseModel });
+        if (requestId === state.structureRequestId) {
+            setStructureLoadingUi(false);
+        }
     }
     return {
         closeStructureModal,
@@ -715,5 +938,6 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         renderLoadedStructure,
         renderInteractiveStructure,
         resetStructurePanel,
+        selectStructurePartner,
     };
 }

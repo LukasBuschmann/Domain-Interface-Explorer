@@ -1921,7 +1921,7 @@ select,
 
 .embedding-size-chip {
   grid-template-columns: 12px minmax(0, 1fr) minmax(24px, max-content);
-  cursor: default;
+  cursor: pointer;
 }
 
 .embedding-partner-chip-value {
@@ -3155,6 +3155,57 @@ select,
   border: 1px solid var(--line);
   border-radius: 14px;
   overflow: hidden;
+}
+
+.structure-partner-picker {
+  --structure-partner-color: var(--muted);
+  position: absolute;
+  z-index: 31;
+  top: 14px;
+  right: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(360px, calc(100% - 92px));
+  padding: 7px 9px;
+  border: 1px solid rgba(215, 204, 179, 0.92);
+  border-radius: 8px;
+  background: rgba(255, 252, 245, 0.96);
+  box-shadow: 0 8px 18px rgba(31, 23, 16, 0.12);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.structure-partner-picker::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--structure-partner-color);
+  box-shadow: 0 0 0 2px rgba(255, 252, 245, 0.92);
+}
+
+.structure-partner-picker.hidden {
+  display: none;
+}
+
+.structure-partner-picker label {
+  flex: 0 0 auto;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.structure-partner-picker select {
+  min-width: 150px;
+  max-width: 260px;
+  height: 28px;
+  border: 1px solid rgba(215, 204, 179, 0.92);
+  border-radius: 6px;
+  background: #fffaf0;
+  color: var(--structure-partner-color);
+  font: inherit;
+  font-weight: 700;
 }
 
 .structure-viewer canvas {

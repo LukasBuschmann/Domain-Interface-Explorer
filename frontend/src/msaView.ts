@@ -46,6 +46,7 @@ export function createMsaViewController({
   resetDendrogramClusterSelection,
   resetEmbeddingPartnerSelection,
   resetEmbeddingClusterSelection,
+  resetEmbeddingMetricSelections,
   resetRepresentativePartnerSelection,
   resetRepresentativeClusterSelection,
   renderRepresentativePartnerFilter,
@@ -124,11 +125,12 @@ export function createMsaViewController({
   let histogramClickTimer = 0;
   let currentMsaStreamFilename = "";
   let filesRequestPromise = null;
+  let pfamSelectorMetadataRequestPromise = null;
   const pfamInfoRequests = new Map();
   const INITIAL_MSA_ROW_LIMIT = 240;
   const MSA_ROW_CHUNK_SIZE = 1200;
-  const PFAM_METADATA_POLL_DELAY_MS = 30000;
-  const PFAM_METADATA_POLL_MAX_ATTEMPTS = 12;
+  const PFAM_METADATA_POLL_DELAY_MS = 2000;
+  const PFAM_METADATA_POLL_MAX_ATTEMPTS = 180;
   const pfamNumberFormatter = new Intl.NumberFormat();
   const pfamSelectorStatSpecs = [
     {
@@ -932,6 +934,7 @@ export function createMsaViewController({
           includeData: true,
           dataOffset: 0,
           includeCleanColumnIdentity: false,
+          includeSummary: false,
         })
       );
       if (interfaceSelect.value !== filename) {
@@ -955,6 +958,7 @@ export function createMsaViewController({
         includeData: true,
         dataOffset: 0,
         includeCleanColumnIdentity: false,
+        includeSummary: false,
       })
     );
     if (requestId !== state.msaRowsRequestId || interfaceSelect.value !== filename || !state.interface) {
@@ -1474,36 +1478,50 @@ export function createMsaViewController({
     renderMsaPickerOptions(msaPickerSearch.value || "");
   }
 
-  function updatePfamOptionDisplayName(pfamId, displayName) {
-    const normalizedPfamId = String(pfamId || "").trim();
-    const normalizedDisplayName = String(displayName || "").trim();
-    if (!normalizedPfamId || !normalizedDisplayName) {
+  function updatePfamOptionDisplayNames(metadataByPfam) {
+    if (!metadataByPfam || typeof metadataByPfam !== "object") {
+      return false;
+    }
+    const normalizedMetadata = new Map(
+      Object.entries(metadataByPfam)
+        .map(([pfamId, displayName]) => [
+          String(pfamId || "").trim(),
+          String(displayName || "").trim(),
+        ])
+        .filter(([pfamId, displayName]) => pfamId && displayName)
+    );
+    if (normalizedMetadata.size === 0) {
       return false;
     }
     let changed = false;
     state.msaOptions = (state.msaOptions || []).map((option) => {
-      if (String(option?.pfamId || "").trim() !== normalizedPfamId) {
-        return option;
-      }
-      if (String(option.displayName || "").trim() === normalizedDisplayName) {
+      const pfamId = String(option?.pfamId || "").trim();
+      const displayName = normalizedMetadata.get(pfamId) || "";
+      if (!displayName || String(option.displayName || "").trim() === displayName) {
         return option;
       }
       changed = true;
       return {
         ...option,
-        displayName: normalizedDisplayName,
+        displayName,
         stats: {
           ...(option.stats || {}),
-          display_name: normalizedDisplayName,
+          display_name: displayName,
         },
       };
     });
-    const stats = state.files?.pfam_option_stats?.[normalizedPfamId];
-    if (stats && String(stats.display_name || "").trim() !== normalizedDisplayName) {
-      stats.display_name = normalizedDisplayName;
-      changed = true;
+    for (const [pfamId, displayName] of normalizedMetadata.entries()) {
+      const stats = state.files?.pfam_option_stats?.[pfamId];
+      if (stats && String(stats.display_name || "").trim() !== displayName) {
+        stats.display_name = displayName;
+        changed = true;
+      }
     }
     return changed;
+  }
+
+  function updatePfamOptionDisplayName(pfamId, displayName) {
+    return updatePfamOptionDisplayNames({ [pfamId]: displayName });
   }
 
   function applyFilesPayload(files, { preserveSelection = true } = {}) {
@@ -1524,7 +1542,7 @@ export function createMsaViewController({
     return Boolean(files?.pfam_option_stats_status?.refreshing);
   }
 
-  function shouldPollFilesPayload() {
+  function shouldPollPfamSelectorMetadata() {
     return hasMissingPfamDisplayNames() || pfamOptionStatsRefreshing();
   }
 
@@ -1537,10 +1555,54 @@ export function createMsaViewController({
     return filesRequestPromise;
   }
 
+  function fetchPfamSelectorMetadataPayload() {
+    if (!pfamSelectorMetadataRequestPromise) {
+      pfamSelectorMetadataRequestPromise = fetchJson("/api/pfam-selector-metadata").finally(() => {
+        pfamSelectorMetadataRequestPromise = null;
+      });
+    }
+    return pfamSelectorMetadataRequestPromise;
+  }
+
+  async function refreshFilesPayloadFromPoll() {
+    const files = await fetchFilesPayload();
+    files.pairs = buildPairs(files);
+    const nextOptions = buildMsaOptionsFromFiles(files);
+    const namesImproved = nextOptions.some(
+      (option) =>
+        String(option.displayName || "").trim() &&
+        !(state.msaOptions || []).some(
+          (current) =>
+            current.value === option.value &&
+            String(current.displayName || "").trim() === String(option.displayName || "").trim()
+        )
+    );
+    const statsStateChanged = pfamOptionStatsRefreshing() !== pfamOptionStatsRefreshing(files);
+    if (namesImproved || statsStateChanged || pfamOptionStatsRefreshing(files)) {
+      applyFilesPayload(files);
+      updatePairedOptions();
+      syncMsaPickerSelection();
+      renderMsaPickerOptions(msaPickerSearch.value || "");
+    } else {
+      state.files = files;
+      state.files.pairs = files.pairs;
+    }
+  }
+
+  function updatePfamOptionStatsStatus(status) {
+    if (!status || typeof status !== "object") {
+      return false;
+    }
+    const wasRefreshing = pfamOptionStatsRefreshing();
+    state.files = state.files || {};
+    state.files.pfam_option_stats_status = { ...status };
+    return wasRefreshing !== pfamOptionStatsRefreshing();
+  }
+
   async function pollPfamMetadataIfNeeded() {
     const statsRefreshing = pfamOptionStatsRefreshing();
     if (
-      !shouldPollFilesPayload() ||
+      !shouldPollPfamSelectorMetadata() ||
       (!statsRefreshing && pfamMetadataPollAttempts >= PFAM_METADATA_POLL_MAX_ATTEMPTS)
     ) {
       return;
@@ -1552,31 +1614,28 @@ export function createMsaViewController({
         pfamMetadataPollAttempts += 1;
       }
       try {
-        const files = await fetchFilesPayload();
-        files.pairs = buildPairs(files);
-        const nextOptions = buildMsaOptionsFromFiles(files);
-        const namesImproved = nextOptions.some(
-          (option) =>
-            String(option.displayName || "").trim() &&
-            !(state.msaOptions || []).some(
-              (current) =>
-                current.value === option.value &&
-                String(current.displayName || "").trim() === String(option.displayName || "").trim()
-            )
-        );
-        if (namesImproved || wasStatsRefreshing || pfamOptionStatsRefreshing(files)) {
-          applyFilesPayload(files);
-          updatePairedOptions();
-          syncMsaPickerSelection();
-          renderMsaPickerOptions(msaPickerSearch.value || "");
+        let nextStatsStatus = null;
+        if (hasMissingPfamDisplayNames() || wasStatsRefreshing) {
+          const metadataPayload = await fetchPfamSelectorMetadataPayload();
+          if (updatePfamOptionDisplayNames(metadataPayload?.pfam_metadata)) {
+            refreshPfamSelectorLabels();
+          }
+          nextStatsStatus = metadataPayload?.pfam_option_stats_status || null;
+        }
+        const statsRefreshFinished =
+          wasStatsRefreshing &&
+          nextStatsStatus &&
+          typeof nextStatsStatus === "object" &&
+          !Boolean(nextStatsStatus.refreshing);
+        if (statsRefreshFinished) {
+          await refreshFilesPayloadFromPoll();
         } else {
-          state.files = files;
-          state.files.pairs = files.pairs;
+          updatePfamOptionStatsStatus(nextStatsStatus);
         }
       } catch (_error) {
         // Keep the current labels and try again later.
       }
-      if (shouldPollFilesPayload()) {
+      if (shouldPollPfamSelectorMetadata()) {
         void pollPfamMetadataIfNeeded();
       }
     }, PFAM_METADATA_POLL_DELAY_MS);
@@ -2274,6 +2333,9 @@ export function createMsaViewController({
         options.includeCleanColumnIdentity ? "1" : "0"
       );
     }
+    if (options.includeSummary !== undefined) {
+      params.set("include_summary", options.includeSummary ? "1" : "0");
+    }
     if (options.dataOffset !== undefined) {
       params.set("data_offset", String(options.dataOffset));
     }
@@ -2281,6 +2343,40 @@ export function createMsaViewController({
       params.set("data_limit", String(options.dataLimit));
     }
     return `/api/interface?${params.toString()}`;
+  }
+
+  function interfaceSummaryUrl(filename) {
+    const params = new URLSearchParams({ file: filename });
+    appendSelectionSettingsToParams(params, state.selectionSettings);
+    return `/api/interface-summary?${params.toString()}`;
+  }
+
+  async function loadInterfaceSummary(filename, requestId) {
+    try {
+      const payload = await fetchJson(interfaceSummaryUrl(filename));
+      if (requestId !== state.interfaceSummaryRequestId) {
+        return;
+      }
+      if (!state.interface || state.interface.file !== filename || payload.file !== filename) {
+        return;
+      }
+      state.interface = {
+        ...state.interface,
+        interface_summary: payload.interface_summary || state.interface.interface_summary || null,
+        interface_partner_domains: payload.interface_partner_domains || state.interface.interface_partner_domains,
+        interface_partner_counts: payload.interface_partner_counts || state.interface.interface_partner_counts,
+      };
+      if (payload.interface_partner_counts && state.interface.partnerInterfaceCounts instanceof Map) {
+        for (const [partner, count] of Object.entries(payload.interface_partner_counts)) {
+          state.interface.partnerInterfaceCounts.set(String(partner), Number(count || 0));
+        }
+      }
+      renderInfoPanel();
+    } catch (error) {
+      if (requestId === state.interfaceSummaryRequestId) {
+        console.warn("[interface-summary] failed", error);
+      }
+    }
   }
 
   function partnerCountsFromPayload(payload, fallbackCounts = new Map()) {
@@ -2468,6 +2564,7 @@ export function createMsaViewController({
           dataOffset: nextOffset,
           dataLimit: MSA_ROW_CHUNK_SIZE,
           includeCleanColumnIdentity: false,
+          includeSummary: false,
         })
       );
       if (!state.msa || requestId !== state.msaRowsRequestId) {
@@ -2506,6 +2603,7 @@ export function createMsaViewController({
     state.representativeClusterLabel = null;
     state.representativeClusterSummaries = null;
     state.representativeSelectionRequestId += 1;
+    state.interfaceSummaryRequestId += 1;
     state.msaRowsRequestId += 1;
     state.msaRowsLoading = false;
     state.msaRowsLoaded = 0;
@@ -2517,6 +2615,10 @@ export function createMsaViewController({
     state.embeddingClustering = null;
     state.columnsChart = null;
     state.columnsChartKey = null;
+    state.columnsChartLoading = false;
+    state.columnsChartLoadingKey = null;
+    state.columnsChartErrorKey = null;
+    state.columnsChartPromise = null;
     state.columnsView = { start: 0, end: null };
     state.columnsClusterOrder = [];
     state.columnsDrag = null;
@@ -2560,6 +2662,7 @@ export function createMsaViewController({
         dataOffset: 0,
         dataLimit: INITIAL_MSA_ROW_LIMIT,
         includeCleanColumnIdentity: true,
+        includeSummary: false,
       })
     );
     if (requestId !== state.msaRowsRequestId) {
@@ -2602,8 +2705,11 @@ export function createMsaViewController({
       overlayComplete: Boolean(payload.data_complete) || rows.length >= totalRows,
       partnerColors: buildPartnerColorMap(partnerDomains),
     };
+    const summaryRequestId = ++state.interfaceSummaryRequestId;
+    void loadInterfaceSummary(filename, summaryRequestId);
     resetEmbeddingPartnerSelection();
     resetEmbeddingClusterSelection();
+    resetEmbeddingMetricSelections();
     resetColumnsClusterSelection();
     resetDendrogramPartnerSelection();
     resetDendrogramClusterSelection();
@@ -2757,6 +2863,7 @@ export function createMsaViewController({
     state.selectedRowKey = null;
     state.selectedRowSnapshot = null;
     state.msaRowsRequestId += 1;
+    state.interfaceSummaryRequestId += 1;
     state.msaRowsLoading = false;
     state.msaRowsLoaded = 0;
     state.msaRowsTotal = 0;
@@ -2764,6 +2871,10 @@ export function createMsaViewController({
     state.embedding = null;
     state.columnsChart = null;
     state.columnsChartKey = null;
+    state.columnsChartLoading = false;
+    state.columnsChartLoadingKey = null;
+    state.columnsChartErrorKey = null;
+    state.columnsChartPromise = null;
     state.columnsView = { start: 0, end: null };
     state.columnsClusterOrder = [];
     state.columnsDrag = null;
@@ -2793,6 +2904,8 @@ export function createMsaViewController({
     state.embeddingClusteringPromise = null;
     state.embeddingVisiblePartners = new Set();
     state.embeddingVisibleClusters = new Set();
+    state.embeddingVisibleSizeBrackets = new Set();
+    state.embeddingVisibleCoverageBrackets = new Set();
     state.dendrogramVisiblePartners = new Set();
     state.dendrogramVisibleClusters = new Set();
     state.dendrogramClusterSelectionKey = null;
@@ -3022,7 +3135,7 @@ export function createMsaViewController({
     );
     syncEmbeddingSettingsUi();
     clearViewer();
-    if (shouldPollFilesPayload()) {
+    if (shouldPollPfamSelectorMetadata()) {
       void pollPfamMetadataIfNeeded();
     }
     if (msaFromUrl) {

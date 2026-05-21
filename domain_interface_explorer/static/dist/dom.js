@@ -142,6 +142,8 @@ export const elements = {
     structureModalSubtitle: document.getElementById("structure-modal-subtitle"),
     structureModalStatus: document.getElementById("structure-modal-status"),
     structureViewerRoot: document.getElementById("structure-viewer"),
+    structurePartnerPicker: document.getElementById("structure-partner-picker"),
+    structurePartnerSelect: document.getElementById("structure-partner-select"),
     structureRecenterDomainButton: document.getElementById("structure-recenter-domain"),
     structureLoadingBadge: document.getElementById("structure-loading-badge"),
     structureLoadingBadgeLabel: document.getElementById("structure-loading-badge-label"),

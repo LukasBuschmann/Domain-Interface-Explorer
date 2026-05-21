@@ -430,6 +430,8 @@ class DomainMolstarViewer {
     this.plugin = null;
     this.structure = null;
     this.structureRef = null;
+    this.representationRefs = [];
+    this.currentModelText = "";
     this.hoverSubscription = null;
     this.pointer = null;
     this.loadGeneration = 0;
@@ -538,6 +540,8 @@ class DomainMolstarViewer {
     const normalizedModelText = normalizeStructureModelText(modelText, format);
     validateStructureModelText(normalizedModelText);
     this.detachHover();
+    this.representationRefs = [];
+    this.currentModelText = normalizedModelText;
     await this.plugin.clear();
     if (generation !== this.loadGeneration) {
       return;
@@ -576,6 +580,87 @@ class DomainMolstarViewer {
     if (cameraView) {
       this.setView(cameraView, { poseOnly: true });
     }
+    this.render();
+  }
+
+  representationRefFor(selector) {
+    return typeof selector === "string"
+      ? selector
+      : selector?.ref || selector?.cell?.transform?.ref || selector?.transform?.ref || "";
+  }
+
+  trackRepresentationRef(selector) {
+    const ref = this.representationRefFor(selector);
+    if (ref) {
+      this.representationRefs.push(ref);
+    }
+  }
+
+  async clearRepresentations() {
+    if (!this.plugin || !this.plugin.state?.data) {
+      this.representationRefs = [];
+      return;
+    }
+    const refs = [...this.representationRefs].reverse();
+    this.representationRefs = [];
+    for (const ref of refs) {
+      try {
+        await PluginCommands.State.RemoveObject(this.plugin, {
+          state: this.plugin.state.data,
+          ref,
+          removeParentGhosts: true,
+        });
+      } catch (_error) {
+        // Representation nodes may already be gone after a cancelled or failed update.
+      }
+    }
+  }
+
+  async updateStructureRepresentations({
+    payload,
+    mode = "structure",
+    columnView = false,
+    contactsVisible = false,
+    residueLookup = new Map(),
+    residueStyles = [],
+    markerResidueStyles = [],
+    clusterLensData = null,
+    representativeLens = "",
+    onHover = null,
+    onHoverEnd = null,
+    displaySettings = {},
+  }) {
+    const generation = this.loadGeneration + 1;
+    this.loadGeneration = generation;
+    const settings = displaySettingsWithPreset(displaySettings);
+    await this.ensureViewer(settings);
+    if (generation !== this.loadGeneration) {
+      return;
+    }
+    if (!this.structureRef || !this.structure || !this.currentModelText) {
+      throw new Error("Structure model is not loaded yet.");
+    }
+    this.applyDisplaySettings(settings);
+    this.detachHover();
+    await this.clearRepresentations();
+    if (generation !== this.loadGeneration) {
+      return;
+    }
+    await this.addRepresentations({
+      payload,
+      mode,
+      columnView,
+      contactsVisible,
+      residueLookup,
+      residueStyles,
+      markerResidueStyles,
+      clusterLensData,
+      representativeLens,
+      settings,
+      modelText: this.currentModelText,
+    });
+    this.attachHover(onHover, onHoverEnd);
+    this.resize();
     this.render();
   }
 
@@ -636,6 +721,7 @@ class DomainMolstarViewer {
       if (!component) {
         return;
       }
+      this.trackRepresentationRef(component);
       await this.plugin.builders.structure.representation.addRepresentation(component, {
         type: "cartoon",
         typeParams: typeParamsFor(settings, { alpha: options.alpha ?? 1 }),
@@ -778,6 +864,7 @@ class DomainMolstarViewer {
       if (!component) {
         return;
       }
+      this.trackRepresentationRef(component);
       await this.plugin.builders.structure.representation.addRepresentation(component, {
         type: "cartoon",
         typeParams: typeParamsFor(settings, { alpha: options.alpha ?? 1 }),
@@ -808,6 +895,7 @@ class DomainMolstarViewer {
       if (!component) {
         return;
       }
+      this.trackRepresentationRef(component);
       await this.plugin.builders.structure.representation.addRepresentation(component, {
         type: "spacefill",
         typeParams: typeParamsFor(settings, {
@@ -831,6 +919,7 @@ class DomainMolstarViewer {
         return;
       }
       const data = await this.plugin.builders.data.rawData({ data: pdb, label: "Residue contacts" });
+      this.trackRepresentationRef(data);
       const trajectory = await this.plugin.builders.structure.parseTrajectory(data, "pdb");
       const model = await this.plugin.builders.structure.createModel(trajectory);
       const structure = await this.plugin.builders.structure.createStructure(model, {
@@ -1002,6 +1091,8 @@ class DomainMolstarViewer {
     }
     this.structure = null;
     this.structureRef = null;
+    this.representationRefs = [];
+    this.currentModelText = "";
   }
 
   destroy() {
@@ -1009,6 +1100,8 @@ class DomainMolstarViewer {
     this.detachHover();
     this.structure = null;
     this.structureRef = null;
+    this.representationRefs = [];
+    this.currentModelText = "";
     this.viewer?.dispose?.();
     if (!this.viewer?.dispose && this.plugin) {
       this.plugin.dispose?.();

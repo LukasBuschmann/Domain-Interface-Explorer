@@ -405,6 +405,12 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         }
         return `/api/clustering?${params.toString()}`;
     }
+    function currentColumnsChartQuery() {
+        return currentEmbeddingClusteringQuery().replace("/api/clustering?", "/api/columns-chart?");
+    }
+    function currentColumnsChartRequestKey() {
+        return `${currentEmbeddingClusteringRequestKey()}|columns-chart`;
+    }
     function currentClusterCompareQuery(clusterLabel) {
         const params = new URLSearchParams({
             file: interfaceSelect.value,
@@ -1079,6 +1085,42 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
     function resetEmbeddingClusterSelection() {
         state.embeddingVisibleClusters = new Set(allEmbeddingClusterLabels());
     }
+    function allEmbeddingSizeBracketKeys() {
+        return embeddingSizeBrackets().map((bracket) => bracket.key);
+    }
+    function resetEmbeddingSizeSelection() {
+        state.embeddingVisibleSizeBrackets = new Set(allEmbeddingSizeBracketKeys());
+    }
+    function allEmbeddingCoverageBracketKeys() {
+        return embeddingCoverageBrackets().map((bracket) => bracket.key);
+    }
+    function resetEmbeddingCoverageSelection() {
+        state.embeddingVisibleCoverageBrackets = new Set(allEmbeddingCoverageBracketKeys());
+    }
+    function visibleEmbeddingSizeBracketKeys(sizeBrackets = embeddingSizeBrackets()) {
+        const bracketKeys = sizeBrackets.map((bracket) => bracket.key);
+        if (bracketKeys.length === 0) {
+            return [];
+        }
+        if (!(state.embeddingVisibleSizeBrackets instanceof Set)) {
+            state.embeddingVisibleSizeBrackets = new Set(bracketKeys);
+        }
+        return bracketKeys.filter((bracketKey) => state.embeddingVisibleSizeBrackets.has(bracketKey));
+    }
+    function visibleEmbeddingCoverageBracketKeys(coverageBrackets = embeddingCoverageBrackets()) {
+        const bracketKeys = coverageBrackets.map((bracket) => bracket.key);
+        if (bracketKeys.length === 0) {
+            return [];
+        }
+        if (!(state.embeddingVisibleCoverageBrackets instanceof Set)) {
+            state.embeddingVisibleCoverageBrackets = new Set(bracketKeys);
+        }
+        return bracketKeys.filter((bracketKey) => state.embeddingVisibleCoverageBrackets.has(bracketKey));
+    }
+    function resetEmbeddingMetricSelections() {
+        resetEmbeddingSizeSelection();
+        resetEmbeddingCoverageSelection();
+    }
     function allColumnsClusterLabels() {
         if (!state.columnsChart?.clusters?.length) {
             return [];
@@ -1392,6 +1434,8 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         const clusterKeys = Array.from(new Set((state.embeddingClustering?.points || []).map((point) => String(point.cluster_label)))).sort((left, right) => Number(left) - Number(right));
         const sizeBrackets = colorMode === "size" ? embeddingSizeBrackets() : [];
         const coverageBrackets = colorMode === "coverage" ? embeddingCoverageBrackets() : [];
+        const visibleSizeBracketKeys = new Set(colorMode === "size" ? visibleEmbeddingSizeBracketKeys(sizeBrackets) : []);
+        const visibleCoverageBracketKeys = new Set(colorMode === "coverage" ? visibleEmbeddingCoverageBracketKeys(coverageBrackets) : []);
         if (partners.length === 0 && colorMode !== "size" && colorMode !== "coverage") {
             elements.embeddingPartnerLegend.innerHTML = "";
             return;
@@ -1422,11 +1466,11 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                     ? '<p class="embedding-legend-empty">Embedding not loaded yet.</p>'
                     : sizeBrackets
                         .map((bracket) => `
-          <div class="embedding-partner-chip embedding-size-chip active" title="${sizeBracketLabel(bracket)}">
+          <button class="embedding-partner-chip embedding-size-chip ${visibleSizeBracketKeys.has(bracket.key) ? "active" : "inactive"}" type="button" data-size-bracket-key="${bracket.key}" aria-pressed="${visibleSizeBracketKeys.has(bracket.key)}" title="${sizeBracketLabel(bracket)}">
             <span class="representative-partner-filter-swatch" style="background: ${bracket.color};"></span>
             <span class="embedding-partner-chip-label">${sizeBracketLabel(bracket)}</span>
             <span class="embedding-partner-chip-value">${bracket.count}</span>
-          </div>
+          </button>
         `)
                         .join("")
                 : colorMode === "coverage"
@@ -1434,11 +1478,11 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                         ? '<p class="embedding-legend-empty">Embedding not loaded yet.</p>'
                         : coverageBrackets
                             .map((bracket) => `
-          <div class="embedding-partner-chip embedding-size-chip active" title="${coverageBracketLabel(bracket)}">
+          <button class="embedding-partner-chip embedding-size-chip ${visibleCoverageBracketKeys.has(bracket.key) ? "active" : "inactive"}" type="button" data-coverage-bracket-key="${bracket.key}" aria-pressed="${visibleCoverageBracketKeys.has(bracket.key)}" title="${coverageBracketLabel(bracket)}">
             <span class="representative-partner-filter-swatch" style="background: ${bracket.color};"></span>
             <span class="embedding-partner-chip-label">${coverageBracketLabel(bracket)}</span>
             <span class="embedding-partner-chip-value">${bracket.count}</span>
-          </div>
+          </button>
         `)
                             .join("")
                     : partners
@@ -1554,6 +1598,67 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             source: "clusters",
         };
     }
+    function ensureColumnsChartLoaded() {
+        if (columnsSourceMode() !== "clusters" ||
+            !interfaceSelect.value ||
+            !state.embeddingClustering ||
+            state.embeddingClustering.error ||
+            state.embeddingClustering.columns_chart) {
+            return null;
+        }
+        const requestKey = currentColumnsChartRequestKey();
+        if (state.columnsChartErrorKey === requestKey) {
+            return null;
+        }
+        if (state.columnsChartLoading &&
+            state.columnsChartLoadingKey === requestKey &&
+            state.columnsChartPromise) {
+            return state.columnsChartPromise;
+        }
+        state.columnsChartLoading = true;
+        state.columnsChartLoadingKey = requestKey;
+        state.columnsChartErrorKey = null;
+        const requestId = state.embeddingClusteringRequestId;
+        const promise = (async () => {
+            try {
+                const payload = await fetchJson(currentColumnsChartQuery());
+                if (requestId !== state.embeddingClusteringRequestId ||
+                    state.columnsChartLoadingKey !== requestKey ||
+                    !state.embeddingClustering ||
+                    state.embeddingClustering.file !== interfaceSelect.value) {
+                    return;
+                }
+                state.embeddingClustering = {
+                    ...state.embeddingClustering,
+                    columns_chart: payload.columns_chart || null,
+                };
+                state.columnsChartKey = null;
+            }
+            catch (error) {
+                if (state.columnsChartLoadingKey === requestKey) {
+                    state.columnsChartErrorKey = requestKey;
+                    if (state.embeddingClustering) {
+                        state.embeddingClustering = {
+                            ...state.embeddingClustering,
+                            columns_chart_error: error.message,
+                        };
+                    }
+                }
+            }
+            finally {
+                if (state.columnsChartLoadingKey === requestKey) {
+                    state.columnsChartLoading = false;
+                    state.columnsChartLoadingKey = null;
+                    state.columnsChartPromise = null;
+                    renderColumnsClusterLegend();
+                    renderColumnsChart();
+                }
+            }
+        })();
+        state.columnsChartPromise = promise;
+        renderColumnsChart();
+        return promise;
+    }
     function columnsDomainOverlayRequestKey() {
         return [
             interfaceSelect.value || "",
@@ -1566,6 +1671,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         params.set("include_rows", "0");
         params.set("include_data", "1");
         params.set("include_clean_column_identity", "0");
+        params.set("include_summary", "0");
         params.set("data_offset", "0");
         return `/api/interface?${params.toString()}`;
     }
@@ -2543,14 +2649,21 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         if (domainSource && state.interface && !state.interface.overlayComplete) {
             void ensureColumnsDomainOverlayLoaded();
         }
+        if (clusterSource && state.embeddingClustering && !state.embeddingClustering.columns_chart) {
+            void ensureColumnsChartLoaded();
+        }
         rebuildColumnsChartIfNeeded();
         renderColumnsClusterLegend();
-        const showClusterLoading = clusterSource && state.embeddingClusteringLoading && !(state.columnsChart?.clusters || []).length;
+        const showClusterLoading = clusterSource &&
+            (state.embeddingClusteringLoading || state.columnsChartLoading) &&
+            !(state.columnsChart?.clusters || []).length;
         const showDomainLoading = domainSource && state.columnsDomainOverlayLoading && !state.interface?.overlayComplete;
         elements.columnsLoading.classList.toggle("hidden", !(showClusterLoading || showDomainLoading));
         elements.columnsLoadingLabel.textContent = showDomainLoading
             ? "Loading interacting domains..."
-            : "Loading clustering data...";
+            : state.columnsChartLoading
+                ? "Loading column histogram..."
+                : "Loading clustering data...";
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, width, height);
         ctx.fillStyle = "#fffdf8";
@@ -2577,6 +2690,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         if (clusterSource &&
             state.embeddingClustering &&
             !state.embeddingClusteringLoading &&
+            !state.columnsChartLoading &&
             !state.embeddingClustering.columns_chart) {
             ctx.fillStyle = "#6f6658";
             ctx.font = '13px "IBM Plex Sans", sans-serif';
@@ -2591,9 +2705,11 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             ctx.textAlign = "center";
             ctx.fillText(clusterSource && state.embeddingClusteringLoading
                 ? "Preparing clustering..."
-                : clusterSource
-                    ? "Load clustering to inspect cluster-column interactions."
-                    : "No interacting domains available.", centerX, centerY);
+                : clusterSource && state.columnsChartLoading
+                    ? "Preparing column histogram..."
+                    : clusterSource
+                        ? "Load clustering to inspect cluster-column interactions."
+                        : "No interacting domains available.", centerX, centerY);
             setColumnsInfo(clusterSource
                 ? "Shows for each MSA column the fraction of each cluster that interacts at that position."
                 : "Shows for each MSA column the fraction of each interacting domain that contacts that position.");
@@ -3119,15 +3235,39 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             return;
         }
         const annotatedPoints = annotatedEmbeddingPoints();
-        const sizeBrackets = colorMode === "size" ? embeddingSizeBrackets(annotatedPoints) : [];
-        const coverageBrackets = colorMode === "coverage" ? embeddingCoverageBrackets(annotatedPoints) : [];
+        const sizeBrackets = embeddingSizeBrackets(annotatedPoints);
+        const coverageBrackets = embeddingCoverageBrackets(annotatedPoints);
+        const clusterKeys = allEmbeddingClusterLabels();
+        const partnerKeys = state.interface?.partnerDomains || [];
         const visibleClusters = visibleEmbeddingClusters();
         const visiblePartners = visibleEmbeddingPartners();
-        const filteredPoints = colorMode === "cluster"
-            ? annotatedPoints.filter((point) => visibleClusters.includes(String(point.clusterLabel)))
-            : colorMode === "domain"
-                ? annotatedPoints.filter((point) => visiblePartners.includes(point.partner_domain))
-                : annotatedPoints;
+        const visibleSizeBracketKeys = new Set(visibleEmbeddingSizeBracketKeys(sizeBrackets));
+        const visibleCoverageBracketKeys = new Set(visibleEmbeddingCoverageBracketKeys(coverageBrackets));
+        const partnerFilterActive = partnerKeys.length > 0 && visiblePartners.length < partnerKeys.length;
+        const clusterFilterActive = clusterKeys.length > 0 && !state.embeddingClustering?.error && visibleClusters.length < clusterKeys.length;
+        const sizeFilterActive = sizeBrackets.length > 0 && visibleSizeBracketKeys.size < sizeBrackets.length;
+        const coverageFilterActive = coverageBrackets.length > 0 && visibleCoverageBracketKeys.size < coverageBrackets.length;
+        const filteredPoints = annotatedPoints.filter((point) => {
+            if (partnerFilterActive && !state.embeddingVisiblePartners.has(point.partner_domain)) {
+                return false;
+            }
+            if (clusterFilterActive && !state.embeddingVisibleClusters.has(String(point.clusterLabel))) {
+                return false;
+            }
+            if (sizeFilterActive) {
+                const bracketKey = sizeBracketForPoint(point, sizeBrackets)?.key;
+                if (!bracketKey || !visibleSizeBracketKeys.has(bracketKey)) {
+                    return false;
+                }
+            }
+            if (coverageFilterActive) {
+                const bracketKey = coverageBracketForPoint(point, coverageBrackets)?.key;
+                if (!bracketKey || !visibleCoverageBracketKeys.has(bracketKey)) {
+                    return false;
+                }
+            }
+            return true;
+        });
         if (filteredPoints.length === 0) {
             state.embeddingProjectedPoints = [];
             syncEmbeddingMemberControls([]);
@@ -3137,20 +3277,19 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             ctx.fillStyle = "#6f6658";
             ctx.font = '13px "IBM Plex Sans", sans-serif';
             ctx.textAlign = "center";
-            ctx.fillText(colorMode === "cluster"
-                ? "Select at least one cluster in the legend."
-                : colorMode === "domain"
-                    ? "Select at least one partner in the legend."
-                    : colorMode === "coverage"
-                        ? "No coverage-bracketed embedding points are visible."
-                        : "No size-bracketed embedding points are visible.", centerX, centerY);
-            setEmbeddingInfo(colorMode === "cluster"
-                ? "Clustering filter hides all clusters. Click legend items to show them again."
-                : colorMode === "domain"
-                    ? "Embedding filter hides all partners. Click legend items to show them again."
-                    : colorMode === "coverage"
-                        ? "Domain A coverage brackets are unavailable for this embedding."
-                        : "Domain A size brackets are unavailable for this embedding.");
+            const emptyFilterMessage = partnerFilterActive && visiblePartners.length === 0
+                ? "Select at least one partner in the Domains legend."
+                : clusterFilterActive && visibleClusters.length === 0
+                    ? "Select at least one cluster in the Clusters legend."
+                    : sizeFilterActive && visibleSizeBracketKeys.size === 0
+                        ? "Select at least one size bracket in the Size legend."
+                        : coverageFilterActive && visibleCoverageBracketKeys.size === 0
+                            ? "Select at least one coverage bracket in the Coverage legend."
+                            : "No embedding points match the active legend filters.";
+            ctx.fillText(emptyFilterMessage, centerX, centerY);
+            setEmbeddingInfo(emptyFilterMessage === "No embedding points match the active legend filters."
+                ? "The active domain, cluster, size, and coverage filters hide all points. Adjust legend filters to show points again."
+                : emptyFilterMessage);
             return;
         }
         const projectedPoints = filteredPoints
@@ -3228,7 +3367,10 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             state.embeddingLoading = false;
             state.embeddingLoadingKey = null;
             state.embeddingPromise = null;
+            state.embeddingVisibleSizeBrackets = new Set();
+            state.embeddingVisibleCoverageBrackets = new Set();
             syncEmbeddingLoadingUi();
+            renderEmbeddingLegend();
             renderEmbeddingPlot();
             return;
         }
@@ -3279,6 +3421,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                     ...payload,
                     settingsKey,
                 };
+                resetEmbeddingMetricSelections();
                 syncEmbeddingSettingsUi();
             }
             catch (error) {
@@ -3297,6 +3440,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                     state.embeddingLoadingKey = null;
                     state.embeddingPromise = null;
                     syncEmbeddingLoadingUi();
+                    renderEmbeddingLegend();
                     renderEmbeddingPlot();
                 }
             }
@@ -3388,6 +3532,10 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             state.embeddingClusteringPromise = null;
             state.columnsChart = null;
             state.columnsChartKey = null;
+            state.columnsChartLoading = false;
+            state.columnsChartLoadingKey = null;
+            state.columnsChartErrorKey = null;
+            state.columnsChartPromise = null;
             state.columnsView = { start: 0, end: null };
             state.columnsInterfaceView = { start: 0, end: null };
             state.columnsVisibleClusters = new Set();
@@ -3465,6 +3613,10 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 }
                 state.columnsChart = null;
                 state.columnsChartKey = null;
+                state.columnsChartLoading = false;
+                state.columnsChartLoadingKey = null;
+                state.columnsChartErrorKey = null;
+                state.columnsChartPromise = null;
                 state.columnsView = { start: 0, end: null };
                 state.columnsInterfaceView = { start: 0, end: null };
                 state.columnsDrag = null;
@@ -3488,6 +3640,10 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 };
                 state.columnsChart = null;
                 state.columnsChartKey = null;
+                state.columnsChartLoading = false;
+                state.columnsChartLoadingKey = null;
+                state.columnsChartErrorKey = null;
+                state.columnsChartPromise = null;
                 state.columnsView = { start: 0, end: null };
                 state.columnsInterfaceView = { start: 0, end: null };
                 state.columnsVisibleClusters = new Set();
@@ -3540,6 +3696,8 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
     return {
         allColumnsClusterLabels,
         allEmbeddingClusterLabels,
+        allEmbeddingCoverageBracketKeys,
+        allEmbeddingSizeBracketKeys,
         currentClusterCompareQuery,
         currentEmbeddingClusteringQuery,
         currentEmbeddingClusteringRequestKey,
@@ -3573,6 +3731,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         requestEmbeddingRender,
         resetColumnsClusterSelection,
         resetEmbeddingClusterSelection,
+        resetEmbeddingMetricSelections,
         resetEmbeddingPartnerSelection,
         resetRepresentativeClusterSelection,
         resizeColumnsCanvas,
