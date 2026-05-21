@@ -2,7 +2,7 @@ import { fetchJson, fetchText } from "./api.js";
 import { interactionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams } from "./selectionSettings.js";
 import { createDomainMolstarViewer } from "./molstarView.js";
-export function createClusterCompareController({ state, elements, interfaceSelect, currentClusterCompareQuery, getRowByKey, embeddingClusterLabel, embeddingDistanceLabel, nextBrowserPaint, openStructureForEntry, openClusterResidueMembers, representativeClusterCompareSummaries = () => [], representativeClusterCompareUrl = () => "", representativeClusterOverviewUrl = () => "", normalizeRepresentativeRow = (row) => row, representativeClusterSummaryFromPayload = (_payload, _clusterLabel, fallbackSummary) => fallbackSummary, representativeClusterCompareTileStyles = () => ({
+export function createClusterCompareController({ state, elements, interfaceSelect, currentClusterCompareQuery, getRowByKey, embeddingClusterLabel, embeddingDistanceLabel, nextBrowserPaint, openStructureForEntry, openClusterResidueMembers, representativeClusterCompareSummaries = () => [], representativeClusterCompareUrl = () => "", representativeClusterOverviewUrl = () => "", normalizeRepresentativeRow = (row) => row, representativeClusterSummaryFromPayload = (_payload, _clusterLabel, fallbackSummary) => fallbackSummary, structureDisplaySettingsForView = () => state.structureDisplaySettings, representativeClusterCompareTileStyles = () => ({
     residueStyles: [],
     clusterLensData: null,
 }), }) {
@@ -174,6 +174,9 @@ export function createClusterCompareController({ state, elements, interfaceSelec
     }
     function normalizedRepresentativeMethod(method = state.representativeClusterCompareMethod) {
         return String(method || "") === "residue" ? "residue" : "balanced";
+    }
+    function clusterCompareDisplayViewKey() {
+        return state.clusterCompareMode === "representative-clusters" ? "clusterOverview" : "clusterCompare";
     }
     function setClusterCompareRepresentativeMethodMenuOpen(open) {
         if (!elements.clusterCompareRepresentativeMethodMenu || !elements.clusterCompareRepresentativeMethodButton) {
@@ -764,7 +767,7 @@ export function createClusterCompareController({ state, elements, interfaceSelec
             residueStyles: tile.residueStyles || [],
             clusterLensData: tile.clusterLensData || null,
             representativeLens: representativeClusterTile ? "cluster" : "",
-            displaySettings: state.structureDisplaySettings,
+            displaySettings: structureDisplaySettingsForView(clusterCompareDisplayViewKey()),
             onHover: (hover) => {
                 tile.hoverResidue = hover;
             },
@@ -793,7 +796,7 @@ export function createClusterCompareController({ state, elements, interfaceSelec
             if (!viewer || typeof viewer.ensureViewer !== "function") {
                 return;
             }
-            await viewer.ensureViewer(state.structureDisplaySettings);
+            await viewer.ensureViewer(structureDisplaySettingsForView(clusterCompareDisplayViewKey()));
             viewer.resize();
             viewer.render();
         }));
@@ -874,6 +877,14 @@ export function createClusterCompareController({ state, elements, interfaceSelec
             tile.viewer.resize();
             tile.viewer.render();
         }
+    }
+    function refreshClusterCompareViewers() {
+        return Promise.allSettled(state.clusterCompareTiles.map((tile, tileIndex) => {
+            if (!tile?.viewer || !tile.payload || !tile.modelText || tile.error) {
+                return Promise.resolve();
+            }
+            return renderClusterCompareTile(tileIndex);
+        }));
     }
     async function fetchClusterCompareStructure(entry, alignToRowKey = "") {
         const params = new URLSearchParams({
@@ -1468,5 +1479,6 @@ export function createClusterCompareController({ state, elements, interfaceSelec
         openClusterCompareForLabel,
         openRepresentativeClusterCompare,
         resizeClusterCompareViewers,
+        refreshClusterCompareViewers,
     };
 }

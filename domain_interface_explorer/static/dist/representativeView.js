@@ -2,7 +2,7 @@ import { fetchJson, fetchText } from "./api.js";
 import { interfaceFilePfamId } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams } from "./selectionSettings.js";
 import { createDomainMolstarViewer } from "./molstarView.js";
-export function createRepresentativeViewController({ state, elements, THREE_TO_ONE, interfaceSelect, syncColumnLegends, msaColumnMaxIndex, ensureEmbeddingClusteringLoaded, representativeClusterLensData, representativeResidueStyles, renderRepresentativeClusterLegend, partnerInteractionDistribution, buildStructureResidueLookup, representativeLens, getRepresentativeRow, clusteringMethodLabel, allRepresentativeClusterLabels, visibleRepresentativeClusters, partnerColor, }) {
+export function createRepresentativeViewController({ state, elements, THREE_TO_ONE, interfaceSelect, syncColumnLegends, msaColumnMaxIndex, ensureEmbeddingClusteringLoaded, representativeClusterLensData, representativeResidueStyles, renderRepresentativeClusterLegend, partnerInteractionDistribution, buildStructureResidueLookup, representativeLens, getRepresentativeRow, clusteringMethodLabel, allRepresentativeClusterLabels, visibleRepresentativeClusters, partnerColor, structureDisplaySettingsForView = (_viewKey = "") => state.structureDisplaySettings, }) {
     function uniprotEntryUrl(accession) {
         return `https://www.uniprot.org/uniprotkb/${encodeURIComponent(String(accession || "").trim())}`;
     }
@@ -365,7 +365,7 @@ export function createRepresentativeViewController({ state, elements, THREE_TO_O
             residueStyles,
             clusterLensData,
             representativeLens: representativeLens(),
-            displaySettings: state.structureDisplaySettings,
+            displaySettings: structureDisplaySettingsForView("representative"),
             cameraView: previousView,
             onHover: (hover) => handleRepresentativeHover(hover, representative.row, clusterLensData),
             onHoverEnd: clearRepresentativeHover,

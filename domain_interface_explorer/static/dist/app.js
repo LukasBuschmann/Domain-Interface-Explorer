@@ -1,4 +1,4 @@
-import { CELL_WIDTH, CLUSTER_COLOR_PALETTE, DEFAULT_CLUSTERING_SETTINGS, DEFAULT_EMBEDDING_SETTINGS, DEFAULT_STRUCTURE_DISPLAY_SETTINGS, HEADER_HEIGHT, LABEL_WIDTH, PARTNER_COLOR_PALETTE, ROW_HEIGHT, TEXT_FONT, THREE_TO_ONE, } from "./constants.js";
+import { CELL_WIDTH, CLUSTER_COLOR_PALETTE, DEFAULT_CLUSTERING_SETTINGS, DEFAULT_EMBEDDING_SETTINGS, DEFAULT_STRUCTURE_DISPLAY_SETTINGS, DEFAULT_STRUCTURE_DISPLAY_VIEW_PRESETS, HEADER_HEIGHT, LABEL_WIDTH, PARTNER_COLOR_PALETTE, ROW_HEIGHT, TEXT_FONT, THREE_TO_ONE, } from "./constants.js";
 import { elements } from "./dom.js";
 import { createClusterCompareController } from "./clusterCompare.js";
 import { fetchJson, fetchText } from "./api.js";
@@ -14,7 +14,7 @@ import { activeConservationVector as getActiveConservationVector, buildStructure
 import { buildOverlayMaps, buildPairs, interactionRowKey, interfaceFilePfamId, parseInteractionRowKey, } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams, parseSelectionSettingsDraft } from "./selectionSettings.js";
 applyUiPreferences(state);
-const { appStatus, closeClusterCompareModalButton, closeStructureModalButton, clusterCompareGrid, clusterCompareModal, columnCount, columnsRoot, clusteringSettingsToggle, detailsList, embeddingCanvas, embeddingRoot, embeddingClusterDistanceInput, embeddingClusterDistanceThresholdInput, embeddingClusterDomainSizeMaxInput, embeddingClusterDomainSizeMinInput, embeddingClusterEpsilonInput, embeddingClusterHierarchicalMinSizeInput, embeddingClusterLifetimeThresholdInput, embeddingClusterLinkageInput, embeddingClusterMinSamplesInput, embeddingClusterMinSizeInput, embeddingClusterNClustersInput, embeddingClusterPfamCoverageMaxInput, embeddingClusterPfamCoverageMinInput, embeddingClusterStabilityWeightInput, embeddingClusteringApply, embeddingEarlyExaggerationInput, embeddingDistanceInput, embeddingInfo, embeddingLearningRateInput, embeddingLoading, embeddingLoadingLabel, embeddingMemberNext, embeddingMemberPrev, embeddingMaxIterInput, embeddingPartnerLegend, embeddingPerplexityInput, embeddingSettingsPanel, embeddingSettingsToggle, embeddingTsneApply, gridCanvas, gridScroll, gridSpacer, headerCanvas, interfaceSelect, labelsCanvas, loadingDetail, loadingLabel, loadingPanel, loadStructureButton, msaLegend, msaPanelTabs, msaPickerButton, msaPickerFilters, msaPickerMenu, msaPickerOptions, msaPickerSearch, msaPickerSelection, msaSelect, selectionSettingsApply, selectionSettingsPanel, selectionSettingsToggle, selectionMinInterfaceSizeInput, partnerSelect, progressBar, representativeClusterLegend, representativeColumnLegend, representativeColumnLegendEnd, representativeColumnLegendMid, representativeColumnLegendStart, representativeCopy, representativeHoverAccentLabel, representativeHoverCard, representativeHoverDetails, representativeHoverDistributionChart, representativeHoverDistributionLayout, representativeHoverDistributionLegend, representativeHoverDistributionPieLegend, representativeHoverDistributionTitle, representativeHoverTitle, representativeClusterGridButton, representativeLensGroup, representativeMethodButton, representativeMethodLabel, representativeMethodMenu, representativePartnerFilterList, representativeScopeControl, representativeScopeButton, representativeScopeLabel, representativeScopeMenu, representativeScopeSwatch, representativeViewerRoot, rowCount, rowSearchInput, selectedRowCopy, structureColumnLegend, structureColumnLegendEnd, structureColumnLegendMid, structureColumnLegendStart, structureColumnViewToggle, structureHoverCard, structureHoverDetails, structureHoverDistributionChart, structureHoverDistributionLegend, structureHoverHistogram, structureModal, structureMemberNext, structureMemberPrev, structureContactViewToggle, structureDisplaySettingsClose, structureDisplaySettingsPanel, structureRecenterDomainButton, structureModalStatus, structureModalSubtitle, structureModalTitle, structurePartnerSelect, structureStatus, structureViewerRoot, clusterCompareRerollButton, viewerRoot, } = elements;
+const { appStatus, closeClusterCompareModalButton, closeStructureModalButton, clusterCompareGrid, clusterCompareModal, columnCount, columnsRoot, clusteringSettingsToggle, detailsList, embeddingCanvas, embeddingRoot, embeddingClusterDistanceInput, embeddingClusterDistanceThresholdInput, embeddingClusterDomainSizeMaxInput, embeddingClusterDomainSizeMinInput, embeddingClusterEpsilonInput, embeddingClusterHierarchicalMinSizeInput, embeddingClusterLifetimeThresholdInput, embeddingClusterLinkageInput, embeddingClusterMinSamplesInput, embeddingClusterMinSizeInput, embeddingClusterNClustersInput, embeddingClusterPfamCoverageMaxInput, embeddingClusterPfamCoverageMinInput, embeddingClusterStabilityWeightInput, embeddingClusteringApply, embeddingEarlyExaggerationInput, embeddingDistanceInput, embeddingInfo, embeddingLearningRateInput, embeddingLoading, embeddingLoadingLabel, embeddingMemberNext, embeddingMemberPrev, embeddingMaxIterInput, embeddingPartnerLegend, embeddingPerplexityInput, embeddingSettingsPanel, embeddingSettingsToggle, embeddingTsneApply, gridCanvas, gridScroll, gridSpacer, headerCanvas, interfaceSelect, labelsCanvas, loadingDetail, loadingLabel, loadingPanel, loadStructureButton, msaLegend, msaPanelTabs, msaPickerButton, msaPickerFilters, msaPickerMenu, msaPickerOptions, msaPickerSearch, msaPickerSelection, msaSelect, selectionSettingsApply, selectionSettingsPanel, selectionSettingsToggle, selectionMinInterfaceSizeInput, partnerSelect, progressBar, representativeClusterLegend, representativeColumnLegend, representativeColumnLegendEnd, representativeColumnLegendMid, representativeColumnLegendStart, representativeCopy, representativeHoverAccentLabel, representativeHoverCard, representativeHoverDetails, representativeHoverDistributionChart, representativeHoverDistributionLayout, representativeHoverDistributionLegend, representativeHoverDistributionPieLegend, representativeHoverDistributionTitle, representativeHoverTitle, representativeClusterGridButton, representativeLensGroup, representativeMethodButton, representativeMethodLabel, representativeMethodMenu, representativePartnerFilterList, representativeScopeControl, representativeScopeButton, representativeScopeLabel, representativeScopeMenu, representativeScopeSwatch, representativeViewerRoot, rowCount, rowSearchInput, selectedRowCopy, structureColumnLegend, structureColumnLegendEnd, structureColumnLegendMid, structureColumnLegendStart, structureColumnViewToggle, structureHoverCard, structureHoverDetails, structureHoverDistributionChart, structureHoverDistributionLegend, structureHoverHistogram, structureModal, structureMemberNext, structureMemberPrev, structureContactViewToggle, structureDisplaySettingsClose, structureDisplaySettingsPanel, structureRegionSettingsRoot, structureRecenterDomainButton, structureModalStatus, structureModalSubtitle, structureModalTitle, structurePartnerSelect, structureStatus, structureViewerRoot, clusterCompareRerollButton, viewerRoot, } = elements;
 function activeConservationVector() {
     return getActiveConservationVector(state.msa);
 }
@@ -458,6 +458,21 @@ function syncColumnLegend(element, startElement, midElement, endElement, visible
     midElement.textContent = String(Math.round(maxIndex / 2));
     endElement.textContent = String(maxIndex);
 }
+function structureContactLinesVisible(settings = state.structureDisplaySettings || {}) {
+    return Boolean(settings.contactLinesVisible ?? DEFAULT_STRUCTURE_DISPLAY_SETTINGS.contactLinesVisible);
+}
+function syncStructureContactsVisibleFromDisplaySettings() {
+    state.structureContactsVisible = structureContactLinesVisible();
+}
+function setStructureContactLinesVisible(visible) {
+    const nextVisible = Boolean(visible);
+    state.structureContactsVisible = nextVisible;
+    state.structureDisplaySettings = {
+        ...state.structureDisplaySettings,
+        preset: "custom",
+        contactLinesVisible: nextVisible,
+    };
+}
 function syncColumnLegends() {
     syncColumnLegend(structureColumnLegend, structureColumnLegendStart, structureColumnLegendMid, structureColumnLegendEnd, state.structureColumnView);
     syncColumnLegend(representativeColumnLegend, representativeColumnLegendStart, representativeColumnLegendMid, representativeColumnLegendEnd, representativeLens() === "column");
@@ -465,7 +480,7 @@ function syncColumnLegends() {
         structureColumnViewToggle.checked = state.structureColumnView;
     }
     if (structureContactViewToggle) {
-        structureContactViewToggle.checked = state.structureContactsVisible;
+        structureContactViewToggle.checked = structureContactLinesVisible();
     }
 }
 function setRepresentativeHoverDetails(payload, accentLabel = "Dominant") {
@@ -1754,6 +1769,8 @@ const structureViewController = createStructureViewController({
     getStructurePreloadRows,
     clearEmbeddingMemberSelection,
     partnerColor,
+    onResidueClick: handleStructureResidueClick,
+    structureDisplaySettingsForView,
 });
 const { closeStructureModal, getStructureViewer, handleStructureLoadFailure, loadInteractiveStructure, openStructureModal, recenterStructureDomain, renderLoadedStructure, renderInteractiveStructure, resetStructurePanel, selectStructurePartner, } = structureViewController;
 const representativeViewController = createRepresentativeViewController({
@@ -1775,6 +1792,7 @@ const representativeViewController = createRepresentativeViewController({
     allRepresentativeClusterLabels,
     visibleRepresentativeClusters,
     partnerColor,
+    structureDisplaySettingsForView,
 });
 const { clearRepresentativeClusterHover, getRepresentativeViewer, loadRepresentativeStructure, positionRepresentativeHoverCard, renderRepresentativePartnerFilter, resetRepresentativePanel, syncRepresentativeLensControls, syncRepresentativePartnerFilterVisibility, } = representativeViewController;
 renderRepresentativeStructure = representativeViewController.renderRepresentativeStructure;
@@ -1795,8 +1813,9 @@ const clusterCompareController = createClusterCompareController({
     normalizeRepresentativeRow,
     representativeClusterSummaryFromPayload,
     representativeClusterCompareTileStyles,
+    structureDisplaySettingsForView,
 });
-const { closeClusterCompareModal, openClusterCompareForLabel, openRepresentativeClusterCompare, resizeClusterCompareViewers, } = clusterCompareController;
+const { closeClusterCompareModal, openClusterCompareForLabel, openRepresentativeClusterCompare, resizeClusterCompareViewers, refreshClusterCompareViewers, } = clusterCompareController;
 const STRUCTURE_DISPLAY_PRESETS = {
     soft: {
         ...DEFAULT_STRUCTURE_DISPLAY_SETTINGS,
@@ -1809,6 +1828,7 @@ const STRUCTURE_DISPLAY_PRESETS = {
         lightIntensity: 0.96,
         ambientIntensity: 0.36,
         contextAlpha: 0.2,
+        restProteinAlpha: 0.2,
         quality: "higher",
         antialiasSampleLevel: 4,
     },
@@ -1819,6 +1839,7 @@ const STRUCTURE_DISPLAY_PRESETS = {
         ambientOcclusion: true,
         shadows: false,
         contextAlpha: 0.3,
+        restProteinAlpha: 0.3,
         roughness: 0.88,
         antialiasSampleLevel: 3,
     },
@@ -1834,30 +1855,505 @@ const STRUCTURE_DISPLAY_PRESETS = {
         quality: "medium",
         antialiasSampleLevel: 1,
         contextAlpha: 0.18,
+        restProteinAlpha: 0.18,
     },
 };
+const STRUCTURE_DEFAULT_PRESET = "illustrative";
+const STRUCTURE_USER_PRESET_PREFIX = "user:";
+const STRUCTURE_VIEW_PRESET_CURRENT = "current";
+const STRUCTURE_VIEW_PRESET_OPTIONS = ["soft", "crisp", "illustrative", "performance"];
+const STRUCTURE_VIEW_PRESET_KEYS = Object.keys(DEFAULT_STRUCTURE_DISPLAY_VIEW_PRESETS);
+function structureDisplayPresetValue(id) {
+    return `${STRUCTURE_USER_PRESET_PREFIX}${id}`;
+}
+function structureDisplayCustomPresetFromValue(value) {
+    const presetValue = String(value || "");
+    if (!presetValue.startsWith(STRUCTURE_USER_PRESET_PREFIX)) {
+        return null;
+    }
+    const id = presetValue.slice(STRUCTURE_USER_PRESET_PREFIX.length);
+    return (state.structureDisplayCustomPresets || []).find((preset) => preset.id === id) || null;
+}
+function normalizeStructureViewPresetValue(value, fallback = STRUCTURE_VIEW_PRESET_CURRENT) {
+    const presetValue = String(value || "");
+    if (presetValue === STRUCTURE_VIEW_PRESET_CURRENT) {
+        return presetValue;
+    }
+    if (STRUCTURE_VIEW_PRESET_OPTIONS.includes(presetValue)) {
+        return presetValue;
+    }
+    if (structureDisplayCustomPresetFromValue(presetValue)) {
+        return presetValue;
+    }
+    return fallback;
+}
+function structureViewPresetValue(viewKey) {
+    const fallback = DEFAULT_STRUCTURE_DISPLAY_VIEW_PRESETS[viewKey] || STRUCTURE_VIEW_PRESET_CURRENT;
+    return normalizeStructureViewPresetValue(state.structureDisplayViewPresets?.[viewKey], fallback);
+}
+function structureDisplaySettingsForView(viewKey) {
+    const viewPreset = structureViewPresetValue(viewKey);
+    if (viewPreset === STRUCTURE_VIEW_PRESET_CURRENT) {
+        return state.structureDisplaySettings || structureDisplaySettingsForPreset();
+    }
+    return structureDisplaySettingsForPreset(viewPreset);
+}
+function clusterCompareDisplayViewKey() {
+    return state.clusterCompareMode === "representative-clusters" ? "clusterOverview" : "clusterCompare";
+}
+function structureDisplaySettingsSnapshot(settings = state.structureDisplaySettings || {}) {
+    const snapshot = { ...DEFAULT_STRUCTURE_DISPLAY_SETTINGS };
+    for (const key of Object.keys(DEFAULT_STRUCTURE_DISPLAY_SETTINGS)) {
+        if (Object.prototype.hasOwnProperty.call(settings, key)) {
+            snapshot[key] = settings[key];
+        }
+    }
+    snapshot.preset = "custom";
+    return snapshot;
+}
+function structureDisplaySettingsForPreset(preset = STRUCTURE_DEFAULT_PRESET) {
+    const presetValue = String(preset || STRUCTURE_DEFAULT_PRESET);
+    if (presetValue === "custom") {
+        return {
+            ...DEFAULT_STRUCTURE_DISPLAY_SETTINGS,
+            ...state.structureDisplaySettings,
+            preset: "custom",
+        };
+    }
+    const customPreset = structureDisplayCustomPresetFromValue(presetValue);
+    if (customPreset) {
+        return {
+            ...DEFAULT_STRUCTURE_DISPLAY_SETTINGS,
+            ...customPreset.settings,
+            preset: structureDisplayPresetValue(customPreset.id),
+        };
+    }
+    const normalizedPreset = STRUCTURE_DISPLAY_PRESETS[presetValue] ? presetValue : STRUCTURE_DEFAULT_PRESET;
+    return {
+        ...DEFAULT_STRUCTURE_DISPLAY_SETTINGS,
+        ...STRUCTURE_DISPLAY_PRESETS[normalizedPreset],
+        preset: normalizedPreset,
+    };
+}
+function structureDisplayPresetId(value) {
+    const slug = String(value || "preset")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 40);
+    return slug || "preset";
+}
+function uniqueStructureDisplayPresetId(name, existingId = "") {
+    const usedIds = new Set((state.structureDisplayCustomPresets || [])
+        .map((preset) => preset.id)
+        .filter((id) => id && id !== existingId));
+    const baseId = structureDisplayPresetId(existingId || name);
+    if (!usedIds.has(baseId)) {
+        return baseId;
+    }
+    let suffix = 2;
+    while (usedIds.has(`${baseId}-${suffix}`)) {
+        suffix += 1;
+    }
+    return `${baseId}-${suffix}`;
+}
+function appendStructureDisplayCustomPresetOptions(select, insertBefore = null) {
+    if (!select) {
+        return;
+    }
+    for (const option of [...select.querySelectorAll("[data-user-structure-preset]")]) {
+        option.remove();
+    }
+    for (const preset of state.structureDisplayCustomPresets || []) {
+        const option = document.createElement("option");
+        option.value = structureDisplayPresetValue(preset.id);
+        option.textContent = preset.name;
+        option.dataset.userStructurePreset = "true";
+        select.insertBefore(option, insertBefore || null);
+    }
+}
+function renderStructureDisplayPresetOptions() {
+    const presetSelect = structureDisplaySettingsPanel?.querySelector("[data-structure-display-setting=\"preset\"]");
+    if (presetSelect) {
+        const customOption = presetSelect.querySelector("option[value=\"custom\"]");
+        appendStructureDisplayCustomPresetOptions(presetSelect, customOption);
+    }
+    for (const viewPresetSelect of structureDisplaySettingsPanel?.querySelectorAll("[data-structure-view-preset]") || []) {
+        appendStructureDisplayCustomPresetOptions(viewPresetSelect);
+    }
+}
+function saveStructureDisplayPresetFromUi() {
+    const input = structureDisplaySettingsPanel?.querySelector("[data-structure-display-preset-name]");
+    const name = String(input?.value || "").trim().replace(/\s+/g, " ").slice(0, 48);
+    if (!name) {
+        if (structureModalStatus) {
+            structureModalStatus.textContent = "Enter a preset name before saving.";
+        }
+        input?.focus?.();
+        return;
+    }
+    const presets = state.structureDisplayCustomPresets || [];
+    const existing = presets.find((preset) => preset.name.toLowerCase() === name.toLowerCase()) || null;
+    const id = uniqueStructureDisplayPresetId(name, existing?.id || "");
+    const savedPreset = {
+        id,
+        name,
+        settings: structureDisplaySettingsSnapshot(),
+    };
+    state.structureDisplayCustomPresets = [
+        ...presets.filter((preset) => preset.id !== existing?.id),
+        savedPreset,
+    ].slice(-24);
+    state.structureDisplaySettings = {
+        ...DEFAULT_STRUCTURE_DISPLAY_SETTINGS,
+        ...savedPreset.settings,
+        preset: structureDisplayPresetValue(id),
+    };
+    if (input) {
+        input.value = name;
+    }
+    syncStructureDisplaySettingsUi();
+    applyStructureDisplaySettingsToViewers();
+    scheduleUiPreferencesSave();
+    if (structureModalStatus) {
+        structureModalStatus.textContent = `Saved rendering preset "${name}".`;
+    }
+}
+function resetStructureDisplaySettings() {
+    state.structureDisplaySettings = structureDisplaySettingsForPreset();
+    state.structureDisplayViewPresets = { ...DEFAULT_STRUCTURE_DISPLAY_VIEW_PRESETS };
+    syncStructureContactsVisibleFromDisplaySettings();
+    structureDisplayRepresentationDirty = true;
+    setStructureDofFocusPicking(false);
+    syncStructureDisplaySettingsUi();
+    syncColumnLegends();
+    applyStructureDisplaySettingsToViewers();
+    scheduleStructureDisplayRepresentationRefresh();
+    scheduleUiPreferencesSave();
+    if (structureModalStatus) {
+        structureModalStatus.textContent = "Display settings reset to the fast illustrative default.";
+    }
+}
+const STRUCTURE_REGION_STYLE_OPTIONS = [
+    ["cartoon", "Cartoon"],
+    ["surface", "Surface"],
+    ["stick", "Stick"],
+    ["spacefill", "Spacefill"],
+    ["line", "Line"],
+    ["hidden", "Hidden"],
+];
+const STRUCTURE_REGION_CONTROLS = [
+    {
+        label: "Rest protein",
+        styleKey: "restProteinStyle",
+        colorKey: "restProteinColor",
+        alphaKey: "restProteinAlpha",
+        cssVar: "--structure-core",
+    },
+    {
+        label: "Main domain",
+        styleKey: "mainDomainStyle",
+        colorKey: "mainDomainColor",
+        alphaKey: "mainDomainAlpha",
+        cssVar: "--structure-main-domain",
+    },
+    {
+        label: "Main surface",
+        styleKey: "mainSurfaceStyle",
+        colorKey: "mainSurfaceColor",
+        alphaKey: "mainSurfaceAlpha",
+        cssVar: "--structure-main-surface",
+    },
+    {
+        label: "Main interface",
+        styleKey: "mainInterfaceStyle",
+        colorKey: "mainInterfaceColor",
+        alphaKey: "mainInterfaceAlpha",
+        cssVar: "--structure-main-interface",
+    },
+    {
+        label: "Interacting domain",
+        styleKey: "partnerDomainStyle",
+        colorKey: "partnerDomainColor",
+        alphaKey: "partnerDomainAlpha",
+        cssVar: "--structure-partner-domain",
+    },
+    {
+        label: "Interacting surface",
+        styleKey: "partnerSurfaceStyle",
+        colorKey: "partnerSurfaceColor",
+        alphaKey: "partnerSurfaceAlpha",
+        cssVar: "--structure-partner-surface",
+    },
+    {
+        label: "Interacting interface",
+        styleKey: "partnerInterfaceStyle",
+        colorKey: "partnerInterfaceColor",
+        alphaKey: "partnerInterfaceAlpha",
+        cssVar: "--structure-partner-interface",
+    },
+];
+const STRUCTURE_REGION_SETTING_KEYS = new Set(STRUCTURE_REGION_CONTROLS.flatMap((region) => [region.styleKey, region.colorKey, region.alphaKey]));
 const STRUCTURE_REPRESENTATION_SETTINGS = new Set([
+    ...STRUCTURE_REGION_SETTING_KEYS,
     "contextAlpha",
+    "combineSameStyleRegions",
+    "contactLinesVisible",
+    "contactColor",
     "contactOpacity",
     "contactRadius",
     "roughness",
     "metalness",
     "bumpiness",
     "quality",
+    "cartoonSizeFactor",
+    "cartoonAspectRatio",
+    "cartoonArrowFactor",
+    "cartoonTubularHelices",
+    "cartoonRoundCaps",
+    "cartoonHelixProfile",
+    "cartoonNucleicProfile",
+    "cartoonLinearSegments",
+    "cartoonRadialSegments",
+    "cartoonDetail",
+    "surfaceResolution",
+    "surfaceProbeRadius",
+    "surfaceProbePositions",
+    "surfaceColorSmoothing",
+    "surfaceColorSmoothingResolutionFactor",
+    "surfaceColorSmoothingSampleStride",
 ]);
 let structureDisplayRefreshFrame = 0;
+let structureDisplayRepresentationDirty = false;
+let structureDisplayRefreshTargets = new Set();
 function structureDisplayControls() {
+    renderStructureRegionControls();
     return structureDisplaySettingsPanel
         ? [...structureDisplaySettingsPanel.querySelectorAll("[data-structure-display-setting]")]
         : [];
 }
+function renderStructureRegionControls() {
+    if (!structureRegionSettingsRoot || structureRegionSettingsRoot.dataset.rendered === "true") {
+        return;
+    }
+    const styleOptions = STRUCTURE_REGION_STYLE_OPTIONS.map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+    structureRegionSettingsRoot.innerHTML = STRUCTURE_REGION_CONTROLS.map((region) => `
+    <div class="structure-region-row" data-structure-region-row="${region.colorKey}">
+      <span class="structure-region-label" title="${region.label}">${region.label}</span>
+      <select class="structure-display-input" data-structure-display-setting="${region.styleKey}" data-representation-setting="true" aria-label="${region.label} style">
+        ${styleOptions}
+      </select>
+      <input class="structure-display-input" type="color" data-structure-display-setting="${region.colorKey}" data-representation-setting="true" aria-label="${region.label} color">
+      <input class="structure-display-input" type="range" min="0.02" max="1" step="0.01" data-structure-display-setting="${region.alphaKey}" data-representation-setting="true" aria-label="${region.label} alpha">
+      <output class="structure-region-rgba" data-structure-region-rgba="${region.colorKey}"></output>
+    </div>
+  `).join("");
+    structureRegionSettingsRoot.dataset.rendered = "true";
+}
+function cssColorToRgb(value, fallback = "#ffffff") {
+    const color = String(value || fallback).trim();
+    const hexMatch = color.match(/^#?([0-9a-f]{3}|[0-9a-f]{6})$/i);
+    if (hexMatch) {
+        const hex = hexMatch[1].length === 3
+            ? hexMatch[1].split("").map((part) => `${part}${part}`).join("")
+            : hexMatch[1];
+        return [
+            Number.parseInt(hex.slice(0, 2), 16),
+            Number.parseInt(hex.slice(2, 4), 16),
+            Number.parseInt(hex.slice(4, 6), 16),
+        ];
+    }
+    const rgbMatch = color.match(/^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*,\s*(0|1|0?\.\d+))?\s*\)$/i);
+    if (rgbMatch) {
+        return rgbMatch.slice(1, 4).map((channel) => Math.max(0, Math.min(255, Number.parseInt(channel, 10))));
+    }
+    return cssColorToRgb(fallback, "#ffffff");
+}
+function cssColorAlpha(value, fallback = 1) {
+    const match = String(value || "").trim().match(/^rgba\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*(0|1|0?\.\d+)\s*\)$/i);
+    if (!match) {
+        return fallback;
+    }
+    const alpha = Number(match[1]);
+    return Number.isFinite(alpha) ? Math.max(0, Math.min(1, alpha)) : fallback;
+}
+function rgbToHex(rgb) {
+    return `#${rgb.map((channel) => Math.max(0, Math.min(255, channel)).toString(16).padStart(2, "0")).join("")}`;
+}
+function colorInputValue(value, fallback = "#ffffff") {
+    return rgbToHex(cssColorToRgb(value, fallback));
+}
+function alphaSettingValue(settings, alphaKey, colorKey) {
+    const fallback = Number(DEFAULT_STRUCTURE_DISPLAY_SETTINGS[alphaKey] ?? 1);
+    const value = Number(settings?.[alphaKey]);
+    if (Number.isFinite(value)) {
+        return Math.max(0.02, Math.min(1, value));
+    }
+    return cssColorAlpha(settings?.[colorKey], fallback);
+}
+function rgbaString(color, alpha) {
+    const [red, green, blue] = cssColorToRgb(color);
+    const roundedAlpha = Math.round(Math.max(0, Math.min(1, Number(alpha) || 0)) * 100) / 100;
+    return `rgba(${red}, ${green}, ${blue}, ${roundedAlpha})`;
+}
+function syncStructureRegionReadouts() {
+    const settings = state.structureDisplaySettings || {};
+    for (const region of STRUCTURE_REGION_CONTROLS) {
+        const output = structureDisplaySettingsPanel?.querySelector(`[data-structure-region-rgba="${region.colorKey}"]`);
+        if (!output) {
+            continue;
+        }
+        const color = settings[region.colorKey] || DEFAULT_STRUCTURE_DISPLAY_SETTINGS[region.colorKey];
+        const alpha = alphaSettingValue(settings, region.alphaKey, region.colorKey);
+        output.value = rgbaString(color, alpha);
+        output.textContent = output.value;
+    }
+}
+function syncStructureDisplayColorVariables() {
+    const settings = state.structureDisplaySettings || {};
+    for (const region of STRUCTURE_REGION_CONTROLS) {
+        const color = settings[region.colorKey] || DEFAULT_STRUCTURE_DISPLAY_SETTINGS[region.colorKey];
+        const alpha = alphaSettingValue(settings, region.alphaKey, region.colorKey);
+        document.documentElement.style.setProperty(region.cssVar, rgbaString(color, alpha));
+    }
+    const mainDomainColor = settings.mainDomainColor || DEFAULT_STRUCTURE_DISPLAY_SETTINGS.mainDomainColor;
+    document.documentElement.style.setProperty("--structure-main-dots", rgbaString(mainDomainColor, 0.6));
+    const partnerSurfaceColor = settings.partnerSurfaceColor || DEFAULT_STRUCTURE_DISPLAY_SETTINGS.partnerSurfaceColor;
+    document.documentElement.style.setProperty("--structure-partner-dots", rgbaString(partnerSurfaceColor, 0.6));
+    const contactColor = settings.contactColor || DEFAULT_STRUCTURE_DISPLAY_SETTINGS.contactColor;
+    const contactAlpha = Number(settings.contactOpacity ?? DEFAULT_STRUCTURE_DISPLAY_SETTINGS.contactOpacity);
+    document.documentElement.style.setProperty("--structure-contact-line", rgbaString(contactColor, contactAlpha));
+}
+function syncStructureViewPresetControls() {
+    const presets = {
+        ...DEFAULT_STRUCTURE_DISPLAY_VIEW_PRESETS,
+        ...(state.structureDisplayViewPresets || {}),
+    };
+    for (const control of structureDisplaySettingsPanel?.querySelectorAll("[data-structure-view-preset]") || []) {
+        const viewKey = control.dataset.structureViewPreset;
+        const fallback = DEFAULT_STRUCTURE_DISPLAY_VIEW_PRESETS[viewKey] || STRUCTURE_VIEW_PRESET_CURRENT;
+        control.value = normalizeStructureViewPresetValue(presets[viewKey], fallback);
+    }
+}
+function updateStructureViewPresetSetting(control) {
+    const viewKey = control?.dataset?.structureViewPreset;
+    if (!STRUCTURE_VIEW_PRESET_KEYS.includes(viewKey)) {
+        return;
+    }
+    const fallback = DEFAULT_STRUCTURE_DISPLAY_VIEW_PRESETS[viewKey] || STRUCTURE_VIEW_PRESET_CURRENT;
+    const nextValue = normalizeStructureViewPresetValue(control.value, fallback);
+    const currentValue = structureViewPresetValue(viewKey);
+    state.structureDisplayViewPresets = {
+        ...DEFAULT_STRUCTURE_DISPLAY_VIEW_PRESETS,
+        ...(state.structureDisplayViewPresets || {}),
+        [viewKey]: nextValue,
+    };
+    if (currentValue !== nextValue) {
+        applyStructureDisplaySettingsToViewers();
+        scheduleStructureDisplayRepresentationRefresh([viewKey]);
+        scheduleUiPreferencesSave();
+    }
+    syncStructureDisplaySettingsUi();
+}
+function setStructureDisplaySettingsSection(section = "regions") {
+    if (!structureDisplaySettingsPanel) {
+        return;
+    }
+    const target = ["regions", "scene", "effects"].includes(section) ? section : "regions";
+    for (const button of structureDisplaySettingsPanel.querySelectorAll("[data-structure-display-section]")) {
+        const isActive = button.dataset.structureDisplaySection === target;
+        button.classList.toggle("active", isActive);
+        button.setAttribute("aria-selected", isActive ? "true" : "false");
+    }
+    for (const panel of structureDisplaySettingsPanel.querySelectorAll("[data-structure-display-panel]")) {
+        panel.classList.toggle("hidden", panel.dataset.structureDisplayPanel !== target);
+    }
+}
 function setStructureDisplaySettingsOpen(open) {
-    state.structureDisplaySettingsOpen = Boolean(open);
+    const nextOpen = Boolean(open);
+    const wasOpen = state.structureDisplaySettingsOpen;
+    state.structureDisplaySettingsOpen = nextOpen;
     structureDisplaySettingsPanel?.classList.toggle("hidden", !state.structureDisplaySettingsOpen);
     structureDisplaySettingsPanel?.setAttribute("aria-hidden", state.structureDisplaySettingsOpen ? "false" : "true");
+    if (nextOpen && !wasOpen) {
+        setStructureDisplaySettingsSection("regions");
+        if (structureDisplaySettingsPanel) {
+            structureDisplaySettingsPanel.scrollTop = 0;
+        }
+    }
+}
+function syncStructureEffectPanels() {
+    const settings = state.structureDisplaySettings || {};
+    for (const panel of structureDisplaySettingsPanel?.querySelectorAll("[data-structure-effect-panel]") || []) {
+        const key = panel.dataset.structureEffectPanel;
+        panel.classList.toggle("hidden", !Boolean(settings[key]));
+    }
+}
+function syncStructureDofFocusPickerUi() {
+    const button = structureDisplaySettingsPanel?.querySelector("[data-structure-dof-focus-pick]");
+    const label = structureDisplaySettingsPanel?.querySelector("[data-structure-dof-focus-label]");
+    const picking = Boolean(state.structureDofFocusPicking);
+    const focusLabel = String(state.structureDisplaySettings?.dofManualFocusLabel || "").trim();
+    if (button) {
+        button.classList.toggle("active", picking);
+        button.textContent = picking ? "Click a residue" : "Select focus residue";
+    }
+    if (label) {
+        label.value = picking ? "Picking..." : focusLabel || "No manual focus";
+        label.textContent = label.value;
+    }
+}
+function setStructureDofFocusPicking(active) {
+    state.structureDofFocusPicking = Boolean(active);
+    syncStructureDofFocusPickerUi();
+    if (state.structureDofFocusPicking && structureModalStatus) {
+        structureModalStatus.textContent = "Click a residue in the 3D view to set the DOF focus.";
+    }
+}
+function structureDofFocusLabel(pick) {
+    const residueId = Number(pick?.residueId);
+    const residueName = String(pick?.residueName || "").toUpperCase();
+    const residueText = Number.isFinite(residueId) ? String(residueId) : "?";
+    return residueName ? `${residueName} ${residueText}` : `Residue ${residueText}`;
+}
+function handleStructureResidueClick(pick) {
+    if (!state.structureDofFocusPicking) {
+        return false;
+    }
+    if (!pick?.position) {
+        if (structureModalStatus) {
+            structureModalStatus.textContent = "Could not resolve a 3D coordinate for that residue.";
+        }
+        return true;
+    }
+    const label = structureDofFocusLabel(pick);
+    state.structureViewer?.setCameraTarget?.(pick.position);
+    state.structureDisplaySettings = {
+        ...state.structureDisplaySettings,
+        preset: "custom",
+        depthOfField: true,
+        dofFocusTarget: "camera-target",
+        dofFocusMode: "sphere",
+        dofFocusOffset: 0,
+        dofManualFocusLabel: label,
+    };
+    setStructureDofFocusPicking(false);
+    syncStructureDisplaySettingsUi();
+    applyStructureDisplaySettingsToViewers();
+    scheduleUiPreferencesSave();
+    if (structureModalStatus) {
+        structureModalStatus.textContent = `DOF focus set to ${label}.`;
+    }
+    return true;
+}
+function closeStructureModalFromApp() {
+    setStructureDofFocusPicking(false);
+    closeStructureModal();
 }
 function syncStructureDisplaySettingsUi() {
     const settings = state.structureDisplaySettings || {};
+    renderStructureDisplayPresetOptions();
     for (const control of structureDisplayControls()) {
         const key = control.dataset.structureDisplaySetting;
         if (!key) {
@@ -1866,11 +2362,22 @@ function syncStructureDisplaySettingsUi() {
         if (control.type === "checkbox") {
             control.checked = Boolean(settings[key]);
         }
+        else if (control.type === "color") {
+            control.value = colorInputValue(settings[key], DEFAULT_STRUCTURE_DISPLAY_SETTINGS[key] || "#ffffff");
+        }
         else if (settings[key] !== undefined) {
             control.value = String(settings[key]);
         }
     }
+    syncStructureRegionReadouts();
+    syncStructureViewPresetControls();
+    syncStructureEffectPanels();
+    syncStructureDofFocusPickerUi();
+    syncStructureDisplayColorVariables();
     setStructureDisplaySettingsOpen(state.structureDisplaySettingsOpen);
+    if (!structureDisplaySettingsPanel?.querySelector("[data-structure-display-section].active")) {
+        setStructureDisplaySettingsSection("regions");
+    }
 }
 function controlValue(control) {
     if (control.type === "checkbox") {
@@ -1883,56 +2390,105 @@ function controlValue(control) {
     return control.value;
 }
 function applyStructureDisplaySettingsToViewers() {
-    const settings = state.structureDisplaySettings;
-    state.structureViewer?.applyDisplaySettings?.(settings);
-    state.representativeViewer?.applyDisplaySettings?.(settings);
+    syncStructureDisplayColorVariables();
+    state.structureViewer?.applyDisplaySettings?.(structureDisplaySettingsForView("structure"));
+    state.representativeViewer?.applyDisplaySettings?.(structureDisplaySettingsForView("representative"));
+    const clusterCompareSettings = structureDisplaySettingsForView(clusterCompareDisplayViewKey());
     for (const tile of state.clusterCompareTiles || []) {
-        tile.viewer?.applyDisplaySettings?.(settings);
+        tile.viewer?.applyDisplaySettings?.(clusterCompareSettings);
     }
     resizeClusterCompareViewers();
 }
-function scheduleStructureDisplayRepresentationRefresh() {
-    if (structureDisplayRefreshFrame) {
-        window.cancelAnimationFrame(structureDisplayRefreshFrame);
+function currentStructureDisplayPresetViewKeys() {
+    return STRUCTURE_VIEW_PRESET_KEYS.filter((viewKey) => structureViewPresetValue(viewKey) === STRUCTURE_VIEW_PRESET_CURRENT);
+}
+function normalizeStructureDisplayRefreshTargets(targets) {
+    if (targets === undefined) {
+        return currentStructureDisplayPresetViewKeys();
     }
-    structureDisplayRefreshFrame = window.requestAnimationFrame(() => {
+    const source = Array.isArray(targets) ? targets : [targets];
+    return source.filter((target) => STRUCTURE_VIEW_PRESET_KEYS.includes(target));
+}
+function scheduleStructureDisplayRepresentationRefresh(targets) {
+    const normalizedTargets = normalizeStructureDisplayRefreshTargets(targets);
+    if (normalizedTargets.length === 0) {
+        return;
+    }
+    for (const target of normalizedTargets) {
+        structureDisplayRefreshTargets.add(target);
+    }
+    if (structureDisplayRefreshFrame) {
+        window.clearTimeout(structureDisplayRefreshFrame);
+    }
+    structureDisplayRefreshFrame = window.setTimeout(() => {
+        const refreshTargets = new Set(structureDisplayRefreshTargets.size > 0
+            ? structureDisplayRefreshTargets
+            : STRUCTURE_VIEW_PRESET_KEYS);
         structureDisplayRefreshFrame = 0;
-        if (state.structureData && structureModal && !structureModal.classList.contains("hidden")) {
+        structureDisplayRepresentationDirty = false;
+        structureDisplayRefreshTargets = new Set();
+        if (refreshTargets.has("structure") &&
+            state.structureData &&
+            structureModal &&
+            !structureModal.classList.contains("hidden")) {
             void renderInteractiveStructure();
         }
-        if (state.representativeStructure) {
+        if (refreshTargets.has("representative") && state.representativeStructure) {
             void renderRepresentativeStructure();
         }
-    });
+        if (refreshTargets.has(clusterCompareDisplayViewKey())) {
+            void refreshClusterCompareViewers?.();
+        }
+    }, 180);
 }
-function updateStructureDisplaySetting(control) {
+function updateStructureDisplaySetting(control, options = {}) {
     const key = control?.dataset?.structureDisplaySetting;
     if (!key) {
         return;
     }
     if (key === "preset") {
-        const preset = control.value;
-        state.structureDisplaySettings = {
-            ...DEFAULT_STRUCTURE_DISPLAY_SETTINGS,
-            ...(STRUCTURE_DISPLAY_PRESETS[preset] || {}),
-            preset,
-        };
+        state.structureDisplaySettings = structureDisplaySettingsForPreset(control.value);
+        syncStructureContactsVisibleFromDisplaySettings();
         syncStructureDisplaySettingsUi();
+        syncColumnLegends();
         applyStructureDisplaySettingsToViewers();
         scheduleStructureDisplayRepresentationRefresh();
         scheduleUiPreferencesSave();
         return;
     }
-    state.structureDisplaySettings = {
-        ...state.structureDisplaySettings,
-        preset: "custom",
-        [key]: controlValue(control),
-    };
+    const nextValue = controlValue(control);
+    const previousValue = state.structureDisplaySettings?.[key];
+    const isRepresentationSetting = control.dataset.representationSetting === "true" ||
+        STRUCTURE_REPRESENTATION_SETTINGS.has(key);
+    const changed = previousValue !== nextValue;
+    if (changed) {
+        state.structureDisplaySettings = {
+            ...state.structureDisplaySettings,
+            preset: "custom",
+            [key]: nextValue,
+        };
+        if (key === "contactLinesVisible") {
+            state.structureContactsVisible = Boolean(nextValue);
+        }
+    }
     syncStructureDisplaySettingsUi();
-    applyStructureDisplaySettingsToViewers();
+    if (key === "contactLinesVisible") {
+        syncColumnLegends();
+    }
     scheduleUiPreferencesSave();
-    if (control.dataset.representationSetting === "true" ||
-        STRUCTURE_REPRESENTATION_SETTINGS.has(key)) {
+    if (!isRepresentationSetting) {
+        if (changed) {
+            applyStructureDisplaySettingsToViewers();
+        }
+        return;
+    }
+    syncStructureDisplayColorVariables();
+    const shouldCommitRepresentation = Boolean(options.commitRepresentation);
+    if (changed && !shouldCommitRepresentation) {
+        structureDisplayRepresentationDirty = true;
+        return;
+    }
+    if (changed || structureDisplayRepresentationDirty || shouldCommitRepresentation) {
         scheduleStructureDisplayRepresentationRefresh();
     }
 }
@@ -3053,26 +3609,68 @@ structureColumnViewToggle.addEventListener("change", () => {
     }
 });
 structureContactViewToggle?.addEventListener("change", () => {
-    state.structureContactsVisible = structureContactViewToggle.checked;
-    persistUiPreferences();
+    setStructureContactLinesVisible(structureContactViewToggle.checked);
+    scheduleUiPreferencesSave();
+    syncStructureDisplaySettingsUi();
     syncColumnLegends();
     if (state.structureData) {
         void renderInteractiveStructure();
     }
+});
+structureDisplaySettingsPanel?.addEventListener("click", (event) => {
+    const savePresetButton = event.target.closest("[data-structure-display-save-preset]");
+    if (savePresetButton && structureDisplaySettingsPanel.contains(savePresetButton)) {
+        event.preventDefault();
+        saveStructureDisplayPresetFromUi();
+        return;
+    }
+    const resetButton = event.target.closest("[data-structure-display-reset]");
+    if (resetButton && structureDisplaySettingsPanel.contains(resetButton)) {
+        event.preventDefault();
+        resetStructureDisplaySettings();
+        return;
+    }
+    const focusButton = event.target.closest("[data-structure-dof-focus-pick]");
+    if (focusButton && structureDisplaySettingsPanel.contains(focusButton)) {
+        event.preventDefault();
+        const nextPicking = !state.structureDofFocusPicking;
+        if (nextPicking) {
+            state.structureDisplaySettings = {
+                ...state.structureDisplaySettings,
+                preset: "custom",
+                depthOfField: true,
+            };
+            syncStructureDisplaySettingsUi();
+            applyStructureDisplaySettingsToViewers();
+            scheduleUiPreferencesSave();
+        }
+        setStructureDofFocusPicking(nextPicking);
+        return;
+    }
+    const button = event.target.closest("[data-structure-display-section]");
+    if (!button || !structureDisplaySettingsPanel.contains(button)) {
+        return;
+    }
+    setStructureDisplaySettingsSection(button.dataset.structureDisplaySection);
 });
 structureDisplaySettingsPanel?.addEventListener("input", (event) => {
     const control = event.target.closest("[data-structure-display-setting]");
     if (!control || !structureDisplaySettingsPanel.contains(control)) {
         return;
     }
-    updateStructureDisplaySetting(control);
+    updateStructureDisplaySetting(control, { commitRepresentation: false });
 });
 structureDisplaySettingsPanel?.addEventListener("change", (event) => {
+    const viewPresetControl = event.target.closest("[data-structure-view-preset]");
+    if (viewPresetControl && structureDisplaySettingsPanel.contains(viewPresetControl)) {
+        updateStructureViewPresetSetting(viewPresetControl);
+        return;
+    }
     const control = event.target.closest("[data-structure-display-setting]");
     if (!control || !structureDisplaySettingsPanel.contains(control)) {
         return;
     }
-    updateStructureDisplaySetting(control);
+    updateStructureDisplaySetting(control, { commitRepresentation: true });
 });
 structureDisplaySettingsClose?.addEventListener("click", () => {
     setStructureDisplaySettingsOpen(false);
@@ -3276,7 +3874,7 @@ labelsCanvas.addEventListener("click", async (event) => {
         handleStructureLoadFailure(error);
     }
 });
-closeStructureModalButton.addEventListener("click", closeStructureModal);
+closeStructureModalButton.addEventListener("click", closeStructureModalFromApp);
 closeClusterCompareModalButton?.addEventListener("click", closeClusterCompareModal);
 clusterCompareRerollButton?.addEventListener("click", async () => {
     if (state.clusterCompareClusterLabel === null || state.clusterCompareClusterLabel === undefined) {
@@ -3291,7 +3889,7 @@ clusterCompareRerollButton?.addEventListener("click", async () => {
 });
 structureModal.addEventListener("click", (event) => {
     if (event.target.classList.contains("structure-modal-backdrop")) {
-        closeStructureModal();
+        closeStructureModalFromApp();
     }
 });
 clusterCompareModal?.addEventListener("click", (event) => {
@@ -3364,7 +3962,7 @@ window.addEventListener("keydown", (event) => {
         return;
     }
     if (event.key === "Escape" && !structureModal.classList.contains("hidden")) {
-        closeStructureModal();
+        closeStructureModalFromApp();
         return;
     }
     if (event.key === "Escape" && clusterCompareModal && !clusterCompareModal.classList.contains("hidden")) {

@@ -2,6 +2,7 @@
 import {
   Color,
   MS,
+  ParamDefinition,
   PluginConfig,
   PluginCommands,
   StructureElement,
@@ -17,6 +18,7 @@ const PARTNER_DOMAIN_COLOR = "#b8c9dc";
 const PARTNER_SURFACE_COLOR = "#5b9fe3";
 const PARTNER_INTERFACE_COLOR = "#0b3f78";
 const RESIDUE_CONTACT_COLOR = "#4f4f4f";
+const REGION_COLOR_THEME_NAME = "domain-interface-region";
 
 function clamp(value, min, max) {
   const numeric = Number(value);
@@ -24,6 +26,84 @@ function clamp(value, min, max) {
     return min;
   }
   return Math.max(min, Math.min(max, numeric));
+}
+
+function enumSetting(value, allowedValues, fallback) {
+  return allowedValues.includes(value) ? value : fallback;
+}
+
+function integerClamp(value, min, max) {
+  return Math.round(clamp(value, min, max));
+}
+
+function coordinateVector(value) {
+  if (!value) {
+    return null;
+  }
+  const source = typeof value.length === "number"
+    ? value
+    : [value.x, value.y, value.z];
+  const x = Number(source[0]);
+  const y = Number(source[1]);
+  const z = Number(source[2]);
+  return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z) ? [x, y, z] : null;
+}
+
+function addVectors(left, right) {
+  return [left[0] + right[0], left[1] + right[1], left[2] + right[2]];
+}
+
+function subtractVectors(left, right) {
+  return [left[0] - right[0], left[1] - right[1], left[2] - right[2]];
+}
+
+function displayCameraClipping(settings = {}) {
+  return {
+    radius: clamp(settings.clipFocusRadius ?? 0, 0, 99),
+    far: Boolean(settings.clipFar ?? false),
+    minNear: clamp(settings.clipMinNear ?? 0.01, 0.01, 100),
+  };
+}
+
+function shouldForceFullCameraClipping(settings = {}) {
+  return (
+    clamp(settings.clipFocusRadius ?? 0, 0, 99) <= 0 &&
+    !Boolean(settings.clipFar ?? false) &&
+    clamp(settings.clipMinNear ?? 0.01, 0.01, 100) <= 0.011
+  );
+}
+
+function applyCameraForceFullClipping(canvas, settings = {}) {
+  const camera = canvas?.camera;
+  if (!camera) {
+    return false;
+  }
+  const nextForceFull = shouldForceFullCameraClipping(settings);
+  const changed = camera.forceFull !== nextForceFull;
+  camera.forceFull = nextForceFull;
+  return changed;
+}
+
+function surfaceColorSmoothing(settings = {}) {
+  const mode = enumSetting(settings.surfaceColorSmoothing, ["auto", "on", "off"], "auto");
+  if (mode !== "on") {
+    return { name: mode, params: {} };
+  }
+  return {
+    name: "on",
+    params: {
+      resolutionFactor: clamp(settings.surfaceColorSmoothingResolutionFactor ?? 2, 0.5, 6),
+      sampleStride: integerClamp(settings.surfaceColorSmoothingSampleStride ?? 3, 1, 12),
+    },
+  };
+}
+
+function stableJson(value) {
+  try {
+    return JSON.stringify(value);
+  } catch (_error) {
+    return "";
+  }
 }
 
 function colorFromHex(value, fallback = "#ffffff") {
@@ -238,6 +318,132 @@ function typeParamsFor(settings, options = {}) {
   };
 }
 
+const REGION_REPRESENTATION_TYPES = {
+  cartoon: "cartoon",
+  surface: "molecular-surface",
+  stick: "ball-and-stick",
+  spacefill: "spacefill",
+  line: "line",
+};
+
+function normalizeRegionStyle(value, fallback = "cartoon") {
+  const style = String(value || fallback).trim().toLowerCase();
+  if (style === "hidden" || REGION_REPRESENTATION_TYPES[style]) {
+    return style;
+  }
+  return fallback;
+}
+
+function alphaFromCssColor(value, fallback = 1) {
+  const match = String(value || "").trim().match(
+    /^rgba\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*(0|1|0?\.\d+)\s*\)$/i
+  );
+  if (!match) {
+    return fallback;
+  }
+  const alpha = Number(match[1]);
+  return Number.isFinite(alpha) ? clamp(alpha, 0.02, 1) : fallback;
+}
+
+function regionRenderSpec(settings, regionKey, fallbackColor, options = {}) {
+  const styleFallback = options.styleFallback || "cartoon";
+  if (!regionKey) {
+    return {
+      style: normalizeRegionStyle(options.style || styleFallback, styleFallback),
+      color: options.colorOverride || fallbackColor,
+      alpha: clamp(options.alpha ?? alphaFromCssColor(options.colorOverride || fallbackColor, 1), 0.02, 1),
+    };
+  }
+  const color = options.colorOverride || settings?.[`${regionKey}Color`] || fallbackColor;
+  const defaultAlpha = regionKey === "restProtein"
+    ? Number(settings?.contextAlpha ?? 0.24)
+    : 1;
+  const alphaFallback = Number.isFinite(Number(options.alphaFallback))
+    ? Number(options.alphaFallback)
+    : defaultAlpha;
+  const configuredAlpha = settings?.[`${regionKey}Alpha`];
+  return {
+    style: normalizeRegionStyle(settings?.[`${regionKey}Style`], styleFallback),
+    color,
+    alpha: clamp(configuredAlpha ?? alphaFromCssColor(color, alphaFallback), 0.02, 1),
+  };
+}
+
+function representationTypeForStyle(style) {
+  return REGION_REPRESENTATION_TYPES[normalizeRegionStyle(style)] || "cartoon";
+}
+
+function setNumericParamIfCustom(extra, paramKey, settings, settingKey, defaultValue, min, max, options = {}) {
+  const raw = settings?.[settingKey];
+  const clamped = options.integer
+    ? integerClamp(raw ?? defaultValue, min, max)
+    : clamp(raw ?? defaultValue, min, max);
+  if (Math.abs(clamped - defaultValue) > 1e-9) {
+    extra[paramKey] = clamped;
+  }
+}
+
+function setBooleanParamIfCustom(extra, paramKey, settings, settingKey, defaultValue) {
+  const value = Boolean(settings?.[settingKey] ?? defaultValue);
+  if (value !== defaultValue) {
+    extra[paramKey] = value;
+  }
+}
+
+function setEnumParamIfCustom(extra, paramKey, settings, settingKey, allowedValues, defaultValue) {
+  const value = enumSetting(settings?.[settingKey], allowedValues, defaultValue);
+  if (value !== defaultValue) {
+    extra[paramKey] = value;
+  }
+}
+
+function typeParamsForRegionStyle(style, settings, options = {}) {
+  const normalized = normalizeRegionStyle(style);
+  const extra = { ...(options.extra || {}) };
+  if (normalized === "cartoon") {
+    setNumericParamIfCustom(extra, "sizeFactor", settings, "cartoonSizeFactor", 0.2, 0, 10);
+    setNumericParamIfCustom(extra, "aspectRatio", settings, "cartoonAspectRatio", 5, 0.1, 10);
+    setNumericParamIfCustom(extra, "arrowFactor", settings, "cartoonArrowFactor", 1.5, 0, 3);
+    setBooleanParamIfCustom(extra, "tubularHelices", settings, "cartoonTubularHelices", false);
+    setBooleanParamIfCustom(extra, "roundCap", settings, "cartoonRoundCaps", false);
+    setEnumParamIfCustom(extra, "helixProfile", settings, "cartoonHelixProfile", ["elliptical", "rounded", "square"], "elliptical");
+    setEnumParamIfCustom(extra, "nucleicProfile", settings, "cartoonNucleicProfile", ["elliptical", "rounded", "square"], "square");
+    setNumericParamIfCustom(extra, "linearSegments", settings, "cartoonLinearSegments", 8, 1, 48, { integer: true });
+    setNumericParamIfCustom(extra, "radialSegments", settings, "cartoonRadialSegments", 16, 2, 56, { integer: true });
+    setNumericParamIfCustom(extra, "detail", settings, "cartoonDetail", 0, 0, 3, { integer: true });
+  } else if (normalized === "stick") {
+    extra.sizeFactor = options.sizeFactor ?? extra.sizeFactor ?? 0.28;
+    extra.sizeAspectRatio = options.sizeAspectRatio ?? extra.sizeAspectRatio ?? 0.5;
+  } else if (normalized === "spacefill") {
+    extra.sizeFactor = options.sizeFactor ?? extra.sizeFactor ?? 0.58;
+  } else if (normalized === "line") {
+    extra.sizeFactor = options.sizeFactor ?? extra.sizeFactor ?? 0.35;
+  } else if (normalized === "surface") {
+    setNumericParamIfCustom(extra, "resolution", settings, "surfaceResolution", 0.5, 0.01, 20);
+    setNumericParamIfCustom(extra, "probeRadius", settings, "surfaceProbeRadius", 1.4, 0, 10);
+    setNumericParamIfCustom(extra, "probePositions", settings, "surfaceProbePositions", 36, 12, 90, { integer: true });
+    const smoothingMode = enumSetting(settings?.surfaceColorSmoothing, ["auto", "on", "off"], "auto");
+    if (
+      smoothingMode !== "auto" ||
+      Math.abs(clamp(settings?.surfaceColorSmoothingResolutionFactor ?? 2, 0.5, 6) - 2) > 1e-9 ||
+      integerClamp(settings?.surfaceColorSmoothingSampleStride ?? 3, 1, 12) !== 3
+    ) {
+      extra.smoothColors = surfaceColorSmoothing(settings);
+    }
+  }
+  return typeParamsFor(settings, {
+    ...options,
+    extra,
+  });
+}
+
+function regionRepresentationKey(spec, settings) {
+  return stableJson({
+    type: representationTypeForStyle(spec.style),
+    typeParams: typeParamsForRegionStyle(spec.style, settings, { alpha: spec.alpha }),
+  });
+}
+
 function parsePdbCaCoordinates(modelText) {
   const coordinates = new Map();
   const lines = String(modelText || "").split(/\r?\n/);
@@ -314,14 +520,102 @@ function residueNameForLocation(location) {
   return residueName || String(StructureProperties.atom.auth_comp_id?.(location) || "").toUpperCase();
 }
 
-function residueIdForLocation(location) {
-  const authSeqId = Number(StructureProperties.residue.auth_seq_id(location));
-  if (Number.isFinite(authSeqId)) {
-    return authSeqId;
+function uniqueNumbers(values) {
+  const seen = new Set();
+  const output = [];
+  for (const value of values) {
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue) || seen.has(numberValue)) {
+      continue;
+    }
+    seen.add(numberValue);
+    output.push(numberValue);
   }
-  const labelSeqId = Number(StructureProperties.residue.label_seq_id(location));
-  return Number.isFinite(labelSeqId) ? labelSeqId : null;
+  return output;
 }
+
+function residueIdsForUnitElement(unit, element) {
+  const ids = [];
+  try {
+    const residueIndex = unit?.residueIndex?.[element]
+      ?? unit?.model?.atomicHierarchy?.residueAtomSegments?.index?.[element];
+    const residues = unit?.model?.atomicHierarchy?.residues;
+    if (Number.isFinite(Number(residueIndex)) && residues) {
+      ids.push(residues.auth_seq_id?.value?.(residueIndex));
+      ids.push(residues.label_seq_id?.value?.(residueIndex));
+    }
+  } catch (_error) {
+    // Some Mol* loci, especially non-atomic visuals, do not expose residue columns.
+  }
+  return uniqueNumbers(ids);
+}
+
+function residueIdsForLocation(location) {
+  const ids = [];
+  if (StructureElement.Location.is(location)) {
+    try {
+      ids.push(StructureProperties.residue.auth_seq_id(location));
+      ids.push(StructureProperties.residue.label_seq_id(location));
+    } catch (_error) {
+      // Fall back to direct unit/element lookup below.
+    }
+    ids.push(...residueIdsForUnitElement(location.unit, location.element));
+  } else if (location?.kind === "bond-location") {
+    const aElement = location.aUnit?.elements?.[location.aIndex];
+    const bElement = location.bUnit?.elements?.[location.bIndex];
+    ids.push(...residueIdsForUnitElement(location.aUnit, aElement));
+    ids.push(...residueIdsForUnitElement(location.bUnit, bElement));
+  }
+  return uniqueNumbers(ids);
+}
+
+function residueIdForLocation(location) {
+  const ids = residueIdsForLocation(location);
+  return ids.length > 0 ? ids[0] : null;
+}
+
+function colorForResidueLocation(location, colorsByResidue, defaultColor) {
+  for (const residueId of residueIdsForLocation(location)) {
+    if (colorsByResidue.has(residueId)) {
+      return colorsByResidue.get(residueId);
+    }
+  }
+  return defaultColor;
+}
+
+const DomainInterfaceRegionColorThemeParams = {
+  defaultColor: ParamDefinition.Value("#cccccc", { isHidden: true }),
+  colors: ParamDefinition.Value([], { isHidden: true }),
+};
+
+function DomainInterfaceRegionColorTheme(_ctx, props = {}) {
+  const defaultColor = colorFromHex(props.defaultColor || "#cccccc", "#cccccc");
+  const colorsByResidue = new Map();
+  for (const entry of Array.isArray(props.colors) ? props.colors : []) {
+    const color = colorFromHex(entry?.color || props.defaultColor || "#cccccc", "#cccccc");
+    for (const residueId of numberList(entry?.residueIds)) {
+      colorsByResidue.set(residueId, color);
+    }
+  }
+  return {
+    factory: DomainInterfaceRegionColorTheme,
+    granularity: "group",
+    preferSmoothing: true,
+    color: (location) => colorForResidueLocation(location, colorsByResidue, defaultColor),
+    props,
+    description: "Domain interface region colors",
+  };
+}
+
+const DomainInterfaceRegionColorThemeProvider = {
+  name: REGION_COLOR_THEME_NAME,
+  label: "Domain interface regions",
+  category: "Misc",
+  factory: DomainInterfaceRegionColorTheme,
+  getParams: () => DomainInterfaceRegionColorThemeParams,
+  defaultValues: ParamDefinition.getDefaultValues(DomainInterfaceRegionColorThemeParams),
+  isApplicable: () => true,
+};
 
 function displaySettingsWithPreset(settings = {}) {
   const preset = settings.preset || "soft";
@@ -334,6 +628,7 @@ function displaySettingsWithPreset(settings = {}) {
       shadows: false,
       outline: false,
       fog: false,
+      bloom: false,
       quality: "medium",
       antialiasing: "smaa",
       antialiasSampleLevel: 1,
@@ -372,6 +667,29 @@ function displaySettingsWithPreset(settings = {}) {
 function antialiasingName(value) {
   const name = String(value || "smaa").toLowerCase();
   return name === "off" || name === "fxaa" || name === "smaa" ? name : "smaa";
+}
+
+function antialiasingParams(name, settings = {}) {
+  if (name === "fxaa") {
+    const edgeThresholdMin = clamp(settings.fxaaEdgeThresholdMin ?? 0.0312, 0.0312, 0.0833);
+    const edgeThresholdMax = Math.max(
+      edgeThresholdMin,
+      clamp(settings.fxaaEdgeThresholdMax ?? 0.063, 0.063, 0.333)
+    );
+    return {
+      edgeThresholdMin,
+      edgeThresholdMax,
+      iterations: integerClamp(settings.fxaaIterations ?? 12, 0, 16),
+      subpixelQuality: clamp(settings.fxaaSubpixelQuality ?? 0.3, 0, 1),
+    };
+  }
+  if (name === "smaa") {
+    return {
+      edgeThreshold: clamp(settings.smaaEdgeThreshold ?? 0.1, 0.05, 0.15),
+      maxSearchSteps: integerClamp(settings.smaaMaxSearchSteps ?? 16, 0, 32),
+    };
+  }
+  return {};
 }
 
 function multisampleLevel(settings) {
@@ -432,9 +750,17 @@ class DomainMolstarViewer {
     this.structureRef = null;
     this.representationRefs = [];
     this.currentModelText = "";
+    this.currentResidueCoordinates = null;
+    this.displaySettingsKey = "";
     this.hoverSubscription = null;
+    this.clickSubscription = null;
     this.pointer = null;
     this.loadGeneration = 0;
+    this.displaySettings = {};
+    this.hoverMarkOriginals = null;
+    this.hoverMarkingDisabled = false;
+    this.explicitHighlightActive = false;
+    this.regionColorThemeRegistered = false;
     this.readyPromise = null;
     this.root?.addEventListener("pointermove", (event) => {
       this.pointer = { x: event.clientX, y: event.clientY };
@@ -458,6 +784,74 @@ class DomainMolstarViewer {
     this.root?.prepend(mount);
     this.mount = mount;
     return mount;
+  }
+
+  registerRegionColorTheme() {
+    const registry = this.plugin?.representation?.structure?.themes?.colorThemeRegistry;
+    if (!registry || this.regionColorThemeRegistered) {
+      return;
+    }
+    try {
+      if (!registry.has?.(DomainInterfaceRegionColorThemeProvider)) {
+        registry.add(DomainInterfaceRegionColorThemeProvider);
+      }
+      this.regionColorThemeRegistered = true;
+    } catch (_error) {
+      this.regionColorThemeRegistered = true;
+    }
+  }
+
+  setHoverMarkingEnabled(enabled) {
+    const highlights = this.plugin?.managers?.interactivity?.lociHighlights;
+    if (!highlights) {
+      return;
+    }
+    try {
+      if (!this.hoverMarkOriginals) {
+        this.hoverMarkOriginals = {
+          highlightOnly: typeof highlights.highlightOnly === "function"
+            ? highlights.highlightOnly.bind(highlights)
+            : null,
+          highlightOnlyExtend: typeof highlights.highlightOnlyExtend === "function"
+            ? highlights.highlightOnlyExtend.bind(highlights)
+            : null,
+        };
+      }
+      if (enabled) {
+        if (this.hoverMarkingDisabled && this.hoverMarkOriginals) {
+          if (this.hoverMarkOriginals.highlightOnly) {
+            highlights.highlightOnly = this.hoverMarkOriginals.highlightOnly;
+          }
+          if (this.hoverMarkOriginals.highlightOnlyExtend) {
+            highlights.highlightOnlyExtend = this.hoverMarkOriginals.highlightOnlyExtend;
+          }
+        }
+        this.hoverMarkingDisabled = false;
+        return;
+      }
+      if (!this.hoverMarkingDisabled && this.hoverMarkOriginals) {
+        if (!this.explicitHighlightActive) {
+          highlights.clearHighlights?.(true);
+        }
+        if (this.hoverMarkOriginals.highlightOnly) {
+          highlights.highlightOnly = (current, applyGranularity = true) => {
+            if (applyGranularity === false) {
+              this.hoverMarkOriginals.highlightOnly(current, applyGranularity);
+            }
+          };
+        }
+        if (this.hoverMarkOriginals.highlightOnlyExtend) {
+          highlights.highlightOnlyExtend = (current, applyGranularity = true) => {
+            if (applyGranularity === false) {
+              this.hoverMarkOriginals.highlightOnlyExtend(current, applyGranularity);
+            }
+          };
+        }
+      }
+      this.hoverMarkingDisabled = true;
+    } catch (_error) {
+      // Hover marking is optional; explicit selection marking and app-level hover labels still work without it.
+    }
   }
 
   async ensureViewer(settings = {}) {
@@ -498,6 +892,7 @@ class DomainMolstarViewer {
     }).then((viewer) => {
       this.viewer = viewer;
       this.plugin = viewer.plugin;
+      this.registerRegionColorTheme();
       this.plugin.managers.interactivity.setProps({ granularity: "residue" });
       this.applyDisplaySettings(settings);
       return viewer;
@@ -524,6 +919,8 @@ class DomainMolstarViewer {
     representativeLens = "",
     onHover = null,
     onHoverEnd = null,
+    onResidueClick = null,
+    onRendered = null,
     displaySettings = {},
     cameraView = null,
   }) {
@@ -540,8 +937,10 @@ class DomainMolstarViewer {
     const normalizedModelText = normalizeStructureModelText(modelText, format);
     validateStructureModelText(normalizedModelText);
     this.detachHover();
+    this.detachResidueClick();
     this.representationRefs = [];
     this.currentModelText = normalizedModelText;
+    this.currentResidueCoordinates = null;
     await this.plugin.clear();
     if (generation !== this.loadGeneration) {
       return;
@@ -576,11 +975,13 @@ class DomainMolstarViewer {
       modelText: normalizedModelText,
     });
     this.attachHover(onHover, onHoverEnd);
+    this.attachResidueClick(onResidueClick);
     this.resize();
     if (cameraView) {
       this.setView(cameraView, { poseOnly: true });
     }
     this.render();
+    onRendered?.();
   }
 
   representationRefFor(selector) {
@@ -628,6 +1029,8 @@ class DomainMolstarViewer {
     representativeLens = "",
     onHover = null,
     onHoverEnd = null,
+    onResidueClick = null,
+    onRendered = null,
     displaySettings = {},
   }) {
     const generation = this.loadGeneration + 1;
@@ -642,6 +1045,7 @@ class DomainMolstarViewer {
     }
     this.applyDisplaySettings(settings);
     this.detachHover();
+    this.detachResidueClick();
     await this.clearRepresentations();
     if (generation !== this.loadGeneration) {
       return;
@@ -662,6 +1066,7 @@ class DomainMolstarViewer {
     this.attachHover(onHover, onHoverEnd);
     this.resize();
     this.render();
+    onRendered?.();
   }
 
   async addRepresentations(options) {
@@ -685,7 +1090,7 @@ class DomainMolstarViewer {
       pdbResidueIds(modelText),
       ...contextExclusions
     );
-    await this.addContextCartoon(settings, contextResidues, {
+    await this.addContextRepresentation(settings, contextResidues, {
       fallbackAll: mode !== "representative",
     });
     if (mode === "representative") {
@@ -695,23 +1100,36 @@ class DomainMolstarViewer {
     await this.addStructureRepresentations(options);
   }
 
-  async addContextCartoon(settings, residueIds, options = {}) {
+  async addContextRepresentation(settings, residueIds, options = {}) {
     const ids = numberList(residueIds);
     if (ids.length > 0) {
-      await this.addResidueCartoon(ids, WHOLE_PROTEIN_COLOR, settings, "protein-context", "Protein context", {
-        alpha: clamp(settings.contextAlpha ?? 0.24, 0.05, 0.9),
-      });
+      await this.addResidueRepresentation(
+        ids,
+        WHOLE_PROTEIN_COLOR,
+        settings,
+        "protein-context",
+        "Protein context",
+        {
+          regionKey: "restProtein",
+          alphaFallback: settings.contextAlpha ?? 0.24,
+        }
+      );
       return;
     }
     if (options.fallbackAll === false) {
       return;
     }
-    await this.addStaticCartoon("all", WHOLE_PROTEIN_COLOR, settings, "Protein context", {
-      alpha: clamp(settings.contextAlpha ?? 0.24, 0.05, 0.9),
+    await this.addStaticRepresentation("all", WHOLE_PROTEIN_COLOR, settings, "Protein context", {
+      regionKey: "restProtein",
+      alphaFallback: settings.contextAlpha ?? 0.24,
     });
   }
 
-  async addStaticCartoon(componentType, color, settings, label, options = {}) {
+  async addStaticRepresentation(componentType, fallbackColor, settings, label, options = {}) {
+    const spec = regionRenderSpec(settings, options.regionKey, fallbackColor, options);
+    if (spec.style === "hidden") {
+      return;
+    }
     try {
       const component = await this.plugin.builders.structure.tryCreateComponentStatic(
         this.structureRef,
@@ -723,10 +1141,10 @@ class DomainMolstarViewer {
       }
       this.trackRepresentationRef(component);
       await this.plugin.builders.structure.representation.addRepresentation(component, {
-        type: "cartoon",
-        typeParams: typeParamsFor(settings, { alpha: options.alpha ?? 1 }),
+        type: representationTypeForStyle(spec.style),
+        typeParams: typeParamsForRegionStyle(spec.style, settings, { alpha: spec.alpha }),
         color: "uniform",
-        colorParams: { value: colorFromHex(color) },
+        colorParams: { value: colorFromHex(spec.color, fallbackColor) },
       });
     } catch (_error) {
       // Optional context rendering must not make the structure unavailable.
@@ -766,41 +1184,100 @@ class DomainMolstarViewer {
       await this.addResiduesByColor(
         stylesToColorMap(residueStyles),
         settings,
-        "column"
+        "column",
+        { regionKey: "mainDomain" }
       );
+    } else if (settings.combineSameStyleRegions) {
+      await this.addMergedRegionRepresentations([
+        {
+          residueIds: domainOnlyResidues,
+          fallbackColor: MAIN_DOMAIN_COLOR,
+          regionKey: "mainDomain",
+          key: "main-domain",
+          label: "Main domain",
+        },
+        {
+          residueIds: surfaceOnlyResidues,
+          fallbackColor: MAIN_SURFACE_COLOR,
+          regionKey: "mainSurface",
+          key: "main-surface",
+          label: "Main surface",
+        },
+        {
+          residueIds: interfaceResidues,
+          fallbackColor: MAIN_INTERFACE_COLOR,
+          regionKey: "mainInterface",
+          key: "main-interface",
+          label: "Main interface",
+        },
+      ], settings, "main");
     } else {
-      await this.addResidueCartoon(domainOnlyResidues, MAIN_DOMAIN_COLOR, settings, "main-domain", "Main domain");
-      await this.addResidueCartoon(surfaceOnlyResidues, MAIN_SURFACE_COLOR, settings, "main-surface", "Main surface");
-      await this.addResidueCartoon(
+      await this.addResidueRepresentation(domainOnlyResidues, MAIN_DOMAIN_COLOR, settings, "main-domain", "Main domain", {
+        regionKey: "mainDomain",
+      });
+      await this.addResidueRepresentation(surfaceOnlyResidues, MAIN_SURFACE_COLOR, settings, "main-surface", "Main surface", {
+        regionKey: "mainSurface",
+      });
+      await this.addResidueRepresentation(
         interfaceResidues,
         MAIN_INTERFACE_COLOR,
         settings,
         "main-interface",
-        "Main interface"
+        "Main interface",
+        { regionKey: "mainInterface" }
       );
     }
     await this.addMarkerResidues(stylesToColorMap(markerResidueStyles), settings);
-    await this.addResidueCartoon(
-      partnerDomainOnlyResidues,
-      PARTNER_DOMAIN_COLOR,
-      settings,
-      "partner-domain",
-      "Partner domain"
-    );
-    await this.addResidueCartoon(
-      partnerSurfaceOnlyResidues,
-      PARTNER_SURFACE_COLOR,
-      settings,
-      "partner-surface",
-      "Partner surface"
-    );
-    await this.addResidueCartoon(
-      partnerInterfaceResidues,
-      PARTNER_INTERFACE_COLOR,
-      settings,
-      "partner-interface",
-      "Partner interface"
-    );
+    if (settings.combineSameStyleRegions) {
+      await this.addMergedRegionRepresentations([
+        {
+          residueIds: partnerDomainOnlyResidues,
+          fallbackColor: PARTNER_DOMAIN_COLOR,
+          regionKey: "partnerDomain",
+          key: "partner-domain",
+          label: "Partner domain",
+        },
+        {
+          residueIds: partnerSurfaceOnlyResidues,
+          fallbackColor: PARTNER_SURFACE_COLOR,
+          regionKey: "partnerSurface",
+          key: "partner-surface",
+          label: "Partner surface",
+        },
+        {
+          residueIds: partnerInterfaceResidues,
+          fallbackColor: PARTNER_INTERFACE_COLOR,
+          regionKey: "partnerInterface",
+          key: "partner-interface",
+          label: "Partner interface",
+        },
+      ], settings, "partner");
+    } else {
+      await this.addResidueRepresentation(
+        partnerDomainOnlyResidues,
+        PARTNER_DOMAIN_COLOR,
+        settings,
+        "partner-domain",
+        "Partner domain",
+        { regionKey: "partnerDomain" }
+      );
+      await this.addResidueRepresentation(
+        partnerSurfaceOnlyResidues,
+        PARTNER_SURFACE_COLOR,
+        settings,
+        "partner-surface",
+        "Partner surface",
+        { regionKey: "partnerSurface" }
+      );
+      await this.addResidueRepresentation(
+        partnerInterfaceResidues,
+        PARTNER_INTERFACE_COLOR,
+        settings,
+        "partner-interface",
+        "Partner interface",
+        { regionKey: "partnerInterface" }
+      );
+    }
     if (mode !== "compare" && contactsVisible) {
       await this.addResidueContactRepresentation(modelText, payload, settings);
     }
@@ -809,25 +1286,110 @@ class DomainMolstarViewer {
   async addRepresentativeRepresentations(options) {
     const { payload, residueStyles, clusterLensData, representativeLens, settings } = options;
     const styledResidues = residueStyleIds(residueStyles);
-    await this.addResidueCartoon(
+    await this.addResidueRepresentation(
       differenceResidues(mainFragmentResidues(payload), styledResidues),
       MAIN_DOMAIN_COLOR,
       settings,
       "representative-domain",
-      "Representative domain"
+      "Representative domain",
+      { regionKey: "mainDomain" }
     );
-    await this.addResiduesByColor(stylesToColorMap(residueStyles), settings, "representative");
+    await this.addResiduesByColor(stylesToColorMap(residueStyles), settings, "representative", {
+      regionKey: "mainDomain",
+    });
   }
 
-  async addResiduesByColor(residueColorMap, settings, keyPrefix) {
+  async addResiduesByColor(residueColorMap, settings, keyPrefix, options = {}) {
     for (const [color, residueIds] of residueColorMap.entries()) {
-      await this.addResidueCartoon(
+      await this.addResidueRepresentation(
         residueIds,
         color,
         settings,
         `${keyPrefix}-${String(color).replace(/[^a-z0-9]/gi, "")}`,
-        "Residue group"
+        "Residue group",
+        {
+          ...options,
+          colorOverride: color,
+        }
       );
+    }
+  }
+
+  async addMergedRegionRepresentations(regionGroups, settings, keyPrefix) {
+    const buckets = new Map();
+    for (const group of regionGroups) {
+      const ids = numberList(group.residueIds);
+      if (ids.length === 0) {
+        continue;
+      }
+      const spec = regionRenderSpec(settings, group.regionKey, group.fallbackColor, group);
+      if (spec.style === "hidden") {
+        continue;
+      }
+      const bucketKey = regionRepresentationKey(spec, settings);
+      const bucket = buckets.get(bucketKey) || [];
+      bucket.push({ ...group, residueIds: ids, spec });
+      buckets.set(bucketKey, bucket);
+    }
+    let bucketIndex = 0;
+    for (const bucket of buckets.values()) {
+      bucketIndex += 1;
+      if (bucket.length === 1) {
+        const [group] = bucket;
+        await this.addResidueRepresentation(
+          group.residueIds,
+          group.fallbackColor,
+          settings,
+          group.key,
+          group.label,
+          { regionKey: group.regionKey }
+        );
+        continue;
+      }
+      await this.addColoredResidueRepresentation(
+        bucket,
+        settings,
+        `${keyPrefix}-merged-${bucketIndex}`,
+        bucket.map((group) => group.label).join(" + ")
+      );
+    }
+  }
+
+  async addColoredResidueRepresentation(regionGroups, settings, key, label) {
+    const ids = unionResidues(...regionGroups.map((group) => group.residueIds));
+    if (ids.length === 0) {
+      return;
+    }
+    const expression = residueExpression(ids);
+    if (!expression) {
+      return;
+    }
+    const first = regionGroups[0];
+    try {
+      const component = await this.plugin.builders.structure.tryCreateComponentFromExpression(
+        this.structureRef,
+        expression,
+        key,
+        { label }
+      );
+      if (!component) {
+        return;
+      }
+      this.trackRepresentationRef(component);
+      await this.plugin.builders.structure.representation.addRepresentation(component, {
+        type: representationTypeForStyle(first.spec.style),
+        typeParams: typeParamsForRegionStyle(first.spec.style, settings, { alpha: first.spec.alpha }),
+        color: REGION_COLOR_THEME_NAME,
+        colorParams: {
+          defaultColor: first.spec.color,
+          colors: regionGroups.map((group) => ({
+            residueIds: group.residueIds,
+            color: group.spec.color,
+          })),
+        },
+      });
+    } catch (_error) {
+      // Combined region rendering is optional; fall back to making the structure unavailable only if parsing failed.
     }
   }
 
@@ -845,9 +1407,13 @@ class DomainMolstarViewer {
     }
   }
 
-  async addResidueCartoon(residueIds, color, settings, key, label, options = {}) {
+  async addResidueRepresentation(residueIds, fallbackColor, settings, key, label, options = {}) {
     const ids = numberList(residueIds);
     if (ids.length === 0) {
+      return;
+    }
+    const spec = regionRenderSpec(settings, options.regionKey, fallbackColor, options);
+    if (spec.style === "hidden") {
       return;
     }
     const expression = residueExpression(ids);
@@ -866,13 +1432,13 @@ class DomainMolstarViewer {
       }
       this.trackRepresentationRef(component);
       await this.plugin.builders.structure.representation.addRepresentation(component, {
-        type: "cartoon",
-        typeParams: typeParamsFor(settings, { alpha: options.alpha ?? 1 }),
+        type: representationTypeForStyle(spec.style),
+        typeParams: typeParamsForRegionStyle(spec.style, settings, { alpha: spec.alpha }),
         color: "uniform",
-        colorParams: { value: colorFromHex(color) },
+        colorParams: { value: colorFromHex(spec.color, fallbackColor) },
       });
     } catch (_error) {
-      // A missing residue range should not make the whole tile unavailable.
+      // A missing residue range or unsupported style should not make the whole tile unavailable.
     }
   }
 
@@ -949,7 +1515,7 @@ class DomainMolstarViewer {
           },
         }),
         color: "uniform",
-        colorParams: { value: colorFromHex(RESIDUE_CONTACT_COLOR) },
+        colorParams: { value: colorFromHex(settings.contactColor || RESIDUE_CONTACT_COLOR, RESIDUE_CONTACT_COLOR) },
       });
     } catch (_error) {
       // Contact decoration is optional and should never block structure rendering.
@@ -976,13 +1542,15 @@ class DomainMolstarViewer {
         onHoverEnd?.();
         return;
       }
-      const residueId = residueIdForLocation(location);
+      const residueIds = residueIdsForLocation(location);
+      const residueId = residueIds[0] ?? null;
       if (residueId === null) {
         onHoverEnd?.();
         return;
       }
       onHover({
         residueId,
+        residueIds,
         residueName: residueNameForLocation(location),
         pointer: this.pointer,
       });
@@ -1001,6 +1569,60 @@ class DomainMolstarViewer {
     this.hoverSubscription = null;
   }
 
+  residueCoordinate(residueId) {
+    if (!this.currentResidueCoordinates && this.currentModelText) {
+      this.currentResidueCoordinates = parsePdbCaCoordinates(this.currentModelText);
+    }
+    return this.currentResidueCoordinates?.get(residueId) || null;
+  }
+
+  residuePickFromInteraction(event) {
+    const loci = event?.current?.loci;
+    if (!StructureElement.Loci.is(loci) || StructureElement.Loci.isEmpty(loci)) {
+      return null;
+    }
+    if (!this.isPrimaryStructureLoci(loci)) {
+      return null;
+    }
+    const firstResidue = StructureElement.Loci.firstResidue(loci);
+    const location = StructureElement.Loci.getFirstLocation(firstResidue);
+    if (!location) {
+      return null;
+    }
+    const residueIds = residueIdsForLocation(location);
+    const residueId = residueIds[0] ?? null;
+    if (residueId === null) {
+      return null;
+    }
+    const position = coordinateVector(event?.position);
+    const fallback = position ? null : this.residueCoordinate(residueId);
+    return {
+      residueId,
+      residueIds,
+      residueName: residueNameForLocation(location),
+      position: position || coordinateVector(fallback),
+      pointer: this.pointer,
+    };
+  }
+
+  attachResidueClick(onResidueClick) {
+    this.detachResidueClick();
+    if (!this.plugin || typeof onResidueClick !== "function") {
+      return;
+    }
+    this.clickSubscription = this.plugin.behaviors.interaction.click.subscribe((event) => {
+      const pick = this.residuePickFromInteraction(event);
+      if (pick) {
+        onResidueClick(pick);
+      }
+    });
+  }
+
+  detachResidueClick() {
+    this.clickSubscription?.unsubscribe?.();
+    this.clickSubscription = null;
+  }
+
   getResidueLoci(residueIds) {
     if (!this.structure) {
       return null;
@@ -1016,14 +1638,55 @@ class DomainMolstarViewer {
     }
   }
 
+  applyCameraClippingSettings(settings = this.displaySettings) {
+    if (!this.plugin?.canvas3d) {
+      return;
+    }
+    const resolved = displaySettingsWithPreset(settings || {});
+    try {
+      const forceFullChanged = applyCameraForceFullClipping(this.plugin.canvas3d, resolved);
+      this.plugin.canvas3d.setProps({ cameraClipping: displayCameraClipping(resolved) });
+      if (forceFullChanged) {
+        this.render();
+      }
+    } catch (_error) {
+      // Camera clipping updates are best-effort; rendering should continue if Mol* rejects a value.
+    }
+  }
+
+  setCameraTarget(position) {
+    const nextTarget = coordinateVector(position);
+    const canvas = this.plugin?.canvas3d;
+    const snapshot = canvas?.camera?.getSnapshot?.();
+    const currentTarget = coordinateVector(snapshot?.target);
+    const currentPosition = coordinateVector(snapshot?.position);
+    if (!nextTarget || !canvas || !snapshot || !currentTarget || !currentPosition) {
+      return false;
+    }
+    const delta = subtractVectors(nextTarget, currentTarget);
+    canvas.requestCameraReset?.({
+      snapshot: {
+        ...snapshot,
+        target: nextTarget,
+        position: addVectors(currentPosition, delta),
+      },
+      durationMs: 0,
+    });
+    this.applyCameraClippingSettings();
+    this.render();
+    return true;
+  }
+
   focusResidues(residueIds, extraRadius = 6) {
     const loci = this.getResidueLoci(residueIds);
     if (loci && !StructureElement.Loci.isEmpty(loci)) {
       this.plugin?.managers?.camera?.focusLoci(loci, { durationMs: 0, extraRadius });
+      this.applyCameraClippingSettings();
       return;
     }
     if (this.plugin) {
       PluginCommands.Camera.Reset(this.plugin, { durationMs: 0 });
+      this.applyCameraClippingSettings();
     }
   }
 
@@ -1047,6 +1710,7 @@ class DomainMolstarViewer {
       return;
     }
     if (loci && !StructureElement.Loci.isEmpty(loci)) {
+      this.explicitHighlightActive = true;
       highlights.highlightOnly({ loci }, false);
       this.render();
       return;
@@ -1055,6 +1719,7 @@ class DomainMolstarViewer {
   }
 
   clearHighlight() {
+    this.explicitHighlightActive = false;
     this.plugin?.managers?.interactivity?.lociHighlights?.clearHighlights?.();
     this.render();
   }
@@ -1072,6 +1737,7 @@ class DomainMolstarViewer {
       return;
     }
     PluginCommands.Camera.SetSnapshot(this.plugin, { snapshot, durationMs: 0 });
+    this.applyCameraClippingSettings();
   }
 
   resize() {
@@ -1086,6 +1752,7 @@ class DomainMolstarViewer {
   clear() {
     this.loadGeneration += 1;
     this.detachHover();
+    this.detachResidueClick();
     if (this.plugin) {
       void this.plugin.clear();
     }
@@ -1093,15 +1760,23 @@ class DomainMolstarViewer {
     this.structureRef = null;
     this.representationRefs = [];
     this.currentModelText = "";
+    this.currentResidueCoordinates = null;
   }
 
   destroy() {
     this.loadGeneration += 1;
     this.detachHover();
+    this.detachResidueClick();
     this.structure = null;
     this.structureRef = null;
     this.representationRefs = [];
     this.currentModelText = "";
+    this.currentResidueCoordinates = null;
+    this.displaySettingsKey = "";
+    this.hoverMarkOriginals = null;
+    this.hoverMarkingDisabled = false;
+    this.explicitHighlightActive = false;
+    this.regionColorThemeRegistered = false;
     this.viewer?.dispose?.();
     if (!this.viewer?.dispose && this.plugin) {
       this.plugin.dispose?.();
@@ -1112,112 +1787,160 @@ class DomainMolstarViewer {
 
   applyDisplaySettings(settings = {}) {
     if (!this.plugin?.canvas3d) {
-      return;
+      return false;
     }
     const resolved = displaySettingsWithPreset(settings);
     const canvas = this.plugin.canvas3d;
     const background = colorFromHex(resolved.background || "#fdfcf8");
-    const occlusionStrength = clamp(resolved.occlusionStrength ?? 0.8, 0, 2);
+    const occlusionStrength = clamp(resolved.occlusionStrength ?? 0.8, 0, 3);
     const antialiasing = antialiasingName(resolved.antialiasing);
     const sampleLevel = multisampleLevel(resolved);
-    try {
-      canvas.setProps({
-        camera: {
-          mode: resolved.cameraMode || "perspective",
-          helper: { axes: { name: "off", params: {} } },
-          fov: clamp(resolved.fieldOfView ?? 45, 20, 90),
-        },
-        cameraClipping: {
-          far: false,
-          minNear: 0.01,
-        },
-        cameraFog: resolved.fog
-          ? { name: "on", params: { intensity: clamp(resolved.fogIntensity ?? 18, 1, 80) } }
+    const illuminationRendersMin = integerClamp(resolved.illuminationRendersPerFrameMin ?? 1, 1, 64);
+    const illuminationRendersMax = Math.max(
+      illuminationRendersMin,
+      integerClamp(resolved.illuminationRendersPerFrameMax ?? 16, 1, 64)
+    );
+    const illuminationDenoiseMin = clamp(resolved.illuminationDenoiseMin ?? 0.15, 0, 4);
+    const illuminationDenoiseMax = Math.max(
+      illuminationDenoiseMin,
+      clamp(resolved.illuminationDenoiseMax ?? 1, 0, 4)
+    );
+    const forceFullChanged = applyCameraForceFullClipping(canvas, resolved);
+    const props = {
+      camera: {
+        mode: resolved.cameraMode || "perspective",
+        helper: { axes: { name: "off", params: {} } },
+        fov: clamp(resolved.fieldOfView ?? 45, 20, 90),
+      },
+      cameraClipping: displayCameraClipping(resolved),
+      cameraFog: resolved.fog
+        ? { name: "on", params: { intensity: clamp(resolved.fogIntensity ?? 18, 1, 100) } }
+        : { name: "off", params: {} },
+      renderer: {
+        backgroundColor: background,
+        ambientIntensity: clamp(resolved.ambientIntensity ?? 0.48, 0, 2),
+        exposure: clamp(resolved.exposure ?? 1.0, 0.2, 2.5),
+        highlightColor: colorFromHex(resolved.highlightColor || "#f3c14f"),
+        highlightStrength: clamp(resolved.highlightStrength ?? 0.42, 0, 1),
+        light: [
+          {
+            inclination: 145,
+            azimuth: 320,
+            color: Color(0xffffff),
+            intensity: clamp(resolved.lightIntensity ?? 0.82, 0, 3),
+          },
+        ],
+      },
+      illumination: {
+        enabled: Boolean(resolved.illumination ?? false),
+        maxIterations: integerClamp(resolved.illuminationMaxIterations ?? 8, 0, 16),
+        rendersPerFrame: [illuminationRendersMin, illuminationRendersMax],
+        targetFps: clamp(resolved.illuminationTargetFps ?? 30, 0, 120),
+        steps: integerClamp(resolved.illuminationSteps ?? 32, 1, 1024),
+        refineSteps: integerClamp(resolved.illuminationRefineSteps ?? 4, 0, 8),
+        bounces: integerClamp(resolved.illuminationBounces ?? 4, 1, 32),
+        denoise: Boolean(resolved.illuminationDenoise ?? true),
+        denoiseThreshold: [illuminationDenoiseMin, illuminationDenoiseMax],
+        ignoreOutline: Boolean(resolved.illuminationIgnoreOutline ?? true),
+      },
+      multiSample: {
+        mode: sampleLevel > 0 ? "on" : "off",
+        sampleLevel,
+        reduceFlicker: true,
+        reuseOcclusion: false,
+      },
+      postprocessing: {
+        enabled: true,
+        occlusion: resolved.ambientOcclusion
+          ? {
+              name: "on",
+              params: {
+                multiScale: { name: "off", params: {} },
+                radius: clamp(resolved.aoRadius ?? 5, 0, 20),
+                bias: occlusionStrength,
+                blurKernelSize: integerClamp(resolved.aoBlurKernelSize ?? 15, 1, 25),
+                blurDepthBias: 0.5,
+                samples: integerClamp(resolved.aoSamples ?? 32, 1, 256),
+                resolutionScale: clamp(resolved.aoResolutionScale ?? (resolved.quality === "low" ? 0.6 : 1), 0.1, 1),
+                color: Color(0x000000),
+                transparentThreshold: 0.4,
+              },
+            }
           : { name: "off", params: {} },
-        renderer: {
-          backgroundColor: background,
-          ambientIntensity: clamp(resolved.ambientIntensity ?? 0.48, 0, 2),
-          exposure: clamp(resolved.exposure ?? 1.0, 0.2, 2.5),
-          highlightColor: colorFromHex(resolved.highlightColor || "#f3c14f"),
-          highlightStrength: clamp(resolved.highlightStrength ?? 0.42, 0, 1),
-          light: [
-            {
-              inclination: 145,
-              azimuth: 320,
-              color: Color(0xffffff),
-              intensity: clamp(resolved.lightIntensity ?? 0.82, 0, 3),
-            },
-          ],
-        },
-        illumination: { enabled: Boolean(resolved.illumination ?? false) },
-        multiSample: {
-          mode: sampleLevel > 0 ? "on" : "off",
-          sampleLevel,
-          reduceFlicker: true,
-          reuseOcclusion: false,
-        },
-        postprocessing: {
-          enabled: true,
-          occlusion: resolved.ambientOcclusion
-            ? {
-                name: "on",
-                params: {
-                  multiScale: { name: "off", params: {} },
-                  radius: 5,
-                  bias: occlusionStrength,
-                  blurKernelSize: 15,
-                  blurDepthBias: 0.5,
-                  samples: 32,
-                  resolutionScale: clamp(resolved.quality === "low" ? 0.6 : 1, 0.1, 1),
-                  color: Color(0x000000),
-                  transparentThreshold: 0.4,
-                },
-              }
-            : { name: "off", params: {} },
-          shadow: resolved.shadows
-            ? {
-                name: "on",
-                params: {
-                  steps: 2,
-                  maxDistance: clamp(resolved.shadowDistance ?? 4, 0, 24),
-                  tolerance: 1.0,
-                },
-              }
-            : { name: "off", params: {} },
-          outline: resolved.outline
-            ? {
-                name: "on",
-                params: {
-                  scale: clamp(resolved.outlineScale ?? 1, 1, 5),
-                  threshold: 0.33,
-                  color: Color(0x1e1b17),
-                  includeTransparent: true,
-                },
-              }
-            : { name: "off", params: {} },
-          dof: resolved.depthOfField
-            ? {
-                name: "on",
-                params: {
-                  blurSize: clamp(resolved.dofBlur ?? 8, 1, 24),
-                  blurSpread: 1.0,
-                  inFocus: 0,
-                  PPM: clamp(resolved.dofFocusRange ?? 28, 1, 160),
-                  center: "camera-target",
-                  mode: "sphere",
-                },
-              }
-            : { name: "off", params: {} },
-          antialiasing: { name: antialiasing, params: {} },
-          sharpening: resolved.sharpen
-            ? { name: "on", params: { sharpness: 0.35, denoise: true } }
-            : { name: "off", params: {} },
-          bloom: { name: "off", params: {} },
-        },
-      });
+        shadow: resolved.shadows
+          ? {
+              name: "on",
+              params: {
+                steps: integerClamp(resolved.shadowSteps ?? 2, 1, 64),
+                maxDistance: clamp(resolved.shadowDistance ?? 4, 0, 256),
+                tolerance: clamp(resolved.shadowTolerance ?? 1, 0, 10),
+              },
+            }
+          : { name: "off", params: {} },
+        outline: resolved.outline
+          ? {
+              name: "on",
+              params: {
+                scale: clamp(resolved.outlineScale ?? 1, 1, 5),
+                threshold: clamp(resolved.outlineThreshold ?? 0.33, 0.01, 1),
+                color: colorFromHex(resolved.outlineColor || "#1e1b17", "#1e1b17"),
+                includeTransparent: Boolean(resolved.outlineTransparent ?? true),
+              },
+            }
+          : { name: "off", params: {} },
+        dof: resolved.depthOfField
+          ? {
+              name: "on",
+              params: {
+                blurSize: clamp(resolved.dofBlur ?? 8, 1, 24),
+                blurSpread: clamp(resolved.dofBlurSpread ?? 1, 0, 10),
+                inFocus: clamp(resolved.dofFocusOffset ?? 0, -5000, 5000),
+                PPM: clamp(resolved.dofFocusRange ?? 28, 1, 160),
+                center: enumSetting(resolved.dofFocusTarget, ["camera-target", "scene-center"], "camera-target"),
+                mode: enumSetting(resolved.dofFocusMode, ["sphere", "plane"], "sphere"),
+              },
+            }
+          : { name: "off", params: {} },
+        antialiasing: { name: antialiasing, params: antialiasingParams(antialiasing, resolved) },
+        sharpening: resolved.sharpen
+          ? {
+              name: "on",
+              params: {
+                sharpness: clamp(resolved.sharpenStrength ?? 0.35, 0, 1),
+                denoise: Boolean(resolved.sharpenDenoise ?? true),
+              },
+            }
+          : { name: "off", params: {} },
+        bloom: resolved.bloom
+          ? {
+              name: "on",
+              params: {
+                strength: clamp(resolved.bloomStrength ?? 0.65, 0, 3),
+                radius: clamp(resolved.bloomRadius ?? 0.18, 0, 1),
+                threshold: clamp(resolved.bloomThreshold ?? 0.82, 0, 1),
+                mode: enumSetting(resolved.bloomMode, ["luminosity", "emissive"], "luminosity"),
+              },
+            }
+          : { name: "off", params: {} },
+      },
+    };
+    const propsKey = stableJson(props);
+    this.displaySettings = resolved;
+    this.setHoverMarkingEnabled(!Boolean(resolved.illumination ?? false));
+    if (propsKey && propsKey === this.displaySettingsKey) {
+      if (forceFullChanged) {
+        this.render();
+      }
+      return forceFullChanged;
+    }
+    try {
+      canvas.setProps(props);
+      this.displaySettingsKey = propsKey;
       this.render();
+      return true;
     } catch (error) {
       console.debug("[molstar] display settings update failed", error);
+      return false;
     }
   }
 }

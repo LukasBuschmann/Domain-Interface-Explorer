@@ -22,6 +22,7 @@ export function createRepresentativeViewController({
   allRepresentativeClusterLabels,
   visibleRepresentativeClusters,
   partnerColor,
+  structureDisplaySettingsForView = (_viewKey = "") => state.structureDisplaySettings,
 }) {
   function uniprotEntryUrl(accession) {
     return `https://www.uniprot.org/uniprotkb/${encodeURIComponent(String(accession || "").trim())}`;
@@ -480,7 +481,7 @@ export function createRepresentativeViewController({
       residueStyles,
       clusterLensData,
       representativeLens: representativeLens(),
-      displaySettings: state.structureDisplaySettings,
+      displaySettings: structureDisplaySettingsForView("representative"),
       cameraView: previousView,
       onHover: (hover) => handleRepresentativeHover(hover, representative.row, clusterLensData),
       onHoverEnd: clearRepresentativeHover,

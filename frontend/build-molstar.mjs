@@ -112,6 +112,7 @@ async function preserveExistingVendorBehavior(bundlePath) {
     `export {
   Color,
   MolScriptBuilder as MS,
+  ParamDefinition,
   PluginCommands,
   PluginConfig,
   element_exports as StructureElement,
@@ -121,6 +122,7 @@ async function preserveExistingVendorBehavior(bundlePath) {
     `export {
   Color,
   MolScriptBuilder as MS,
+  ParamDefinition,
   PluginConfig,
   PluginCommands,
   element_exports as StructureElement,

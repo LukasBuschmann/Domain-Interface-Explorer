@@ -1270,88 +1270,474 @@
           <div id="structure-display-settings-panel" class="structure-display-settings-panel hidden" aria-hidden="true">
             <div class="structure-display-settings-header">
               <strong>Display</strong>
-              <button id="structure-display-settings-close" type="button" aria-label="Close display settings">x</button>
+              <div class="structure-display-settings-actions">
+                <button class="structure-display-reset-button" type="button" data-structure-display-reset>Reset</button>
+                <button id="structure-display-settings-close" type="button" aria-label="Close display settings">x</button>
+              </div>
             </div>
-            <label>
-              <span>Preset <button class="structure-display-help" type="button" title="Applies a balanced group of effect settings.">?</button></span>
-              <select id="structure-display-preset" class="structure-display-input" data-structure-display-setting="preset">
-                <option value="soft">Soft scientific</option>
-                <option value="crisp">Crisp depth</option>
-                <option value="illustrative">Illustrative</option>
-                <option value="performance">Performance</option>
-                <option value="custom">Custom</option>
-              </select>
-            </label>
-            <label>
-              <span>Background <button class="structure-display-help" type="button" title="Sets the canvas background color.">?</button></span>
-              <input id="structure-display-background" class="structure-display-input" type="color" data-structure-display-setting="background">
-            </label>
-            <label>
-              <span>Camera <button class="structure-display-help" type="button" title="Perspective gives depth; orthographic preserves scale.">?</button></span>
-              <select id="structure-display-camera-mode" class="structure-display-input" data-structure-display-setting="cameraMode">
-                <option value="perspective">Perspective</option>
-                <option value="orthographic">Orthographic</option>
-              </select>
-            </label>
-            <label>
-              <span>Field of view <button class="structure-display-help" type="button" title="Higher values widen the perspective camera.">?</button></span>
-              <input id="structure-display-field-of-view" class="structure-display-input" type="range" min="20" max="90" step="1" data-structure-display-setting="fieldOfView">
-            </label>
-            <label>
-              <span>Edge AA <button class="structure-display-help" type="button" title="SMAA is usually cleaner for molecular cartoons; FXAA is cheaper but softer.">?</button></span>
-              <select id="structure-display-antialiasing" class="structure-display-input" data-structure-display-setting="antialiasing">
-                <option value="smaa">SMAA</option>
-                <option value="fxaa">FXAA</option>
-                <option value="off">Off</option>
-              </select>
-            </label>
-            <label>
-              <span>Samples <button class="structure-display-help" type="button" title="Higher values reduce jagged edges and cost more GPU time.">?</button></span>
-              <input id="structure-display-antialias-sample-level" class="structure-display-input" type="range" min="0" max="5" step="1" data-structure-display-setting="antialiasSampleLevel">
-            </label>
-            <div class="structure-display-toggle-grid">
-              <label><input id="structure-column-view-toggle" type="checkbox"> Column</label>
-              <label><input id="structure-contact-view-toggle" type="checkbox" checked> Contacts</label>
-              <label><input id="structure-display-illumination" type="checkbox" data-structure-display-setting="illumination"> Illumination</label>
-              <label><input id="structure-display-ambient-occlusion" type="checkbox" data-structure-display-setting="ambientOcclusion"> AO</label>
-              <label><input id="structure-display-shadows" type="checkbox" data-structure-display-setting="shadows"> Shadows</label>
-              <label><input id="structure-display-outline" type="checkbox" data-structure-display-setting="outline"> Outline</label>
-              <label><input id="structure-display-depth-of-field" type="checkbox" data-structure-display-setting="depthOfField"> DOF</label>
-              <label><input id="structure-display-fog" type="checkbox" data-structure-display-setting="fog"> Fog</label>
-              <label><input id="structure-display-sharpen" type="checkbox" data-structure-display-setting="sharpen"> Sharpen</label>
+            <div class="structure-display-nav" role="tablist" aria-label="Structure display sections">
+              <button type="button" class="active" data-structure-display-section="regions" role="tab" aria-selected="true">Regions</button>
+              <button type="button" data-structure-display-section="scene" role="tab" aria-selected="false">Scene</button>
+              <button type="button" data-structure-display-section="effects" role="tab" aria-selected="false">Effects</button>
             </div>
-            <label>
-              <span>Ambient light <button class="structure-display-help" type="button" title="Raises or lowers the base scene brightness.">?</button></span>
-              <input id="structure-display-ambient-intensity" class="structure-display-input" type="range" min="0" max="2" step="0.01" data-structure-display-setting="ambientIntensity">
-            </label>
-            <label>
-              <span>Key light <button class="structure-display-help" type="button" title="Controls the main directional light strength.">?</button></span>
-              <input id="structure-display-light-intensity" class="structure-display-input" type="range" min="0" max="3" step="0.01" data-structure-display-setting="lightIntensity">
-            </label>
-            <label>
-              <span>Exposure <button class="structure-display-help" type="button" title="Adjusts final scene brightness after lighting.">?</button></span>
-              <input id="structure-display-exposure" class="structure-display-input" type="range" min="0.2" max="2.5" step="0.01" data-structure-display-setting="exposure">
-            </label>
-            <label>
-              <span>Context opacity <button class="structure-display-help" type="button" title="Controls the transparent whole-protein context layer.">?</button></span>
-              <input id="structure-display-context-alpha" class="structure-display-input" type="range" min="0.05" max="0.9" step="0.01" data-structure-display-setting="contextAlpha" data-representation-setting="true">
-            </label>
-            <label>
-              <span>Contact opacity <button class="structure-display-help" type="button" title="Controls the residue contact connector opacity.">?</button></span>
-              <input id="structure-display-contact-opacity" class="structure-display-input" type="range" min="0.05" max="1" step="0.01" data-structure-display-setting="contactOpacity" data-representation-setting="true">
-            </label>
-            <label>
-              <span>Contact width <button class="structure-display-help" type="button" title="Controls contact connector thickness.">?</button></span>
-              <input id="structure-display-contact-radius" class="structure-display-input" type="range" min="0.02" max="0.18" step="0.005" data-structure-display-setting="contactRadius" data-representation-setting="true">
-            </label>
-            <label>
-              <span>Wax roughness <button class="structure-display-help" type="button" title="Higher roughness softens highlights on cartoons and surfaces.">?</button></span>
-              <input id="structure-display-roughness" class="structure-display-input" type="range" min="0" max="1" step="0.01" data-structure-display-setting="roughness" data-representation-setting="true">
-            </label>
-            <label>
-              <span>Highlight <button class="structure-display-help" type="button" title="Controls Mol* hover highlight strength.">?</button></span>
-              <input id="structure-display-highlight-strength" class="structure-display-input" type="range" min="0" max="1" step="0.01" data-structure-display-setting="highlightStrength">
-            </label>
+            <div class="structure-display-section" data-structure-display-panel="regions" role="tabpanel">
+              <div class="structure-display-fieldset">
+                <span class="structure-display-fieldset-title">Region rendering</span>
+                <div class="structure-display-toggle-grid">
+                  <label><input id="structure-display-combine-regions" type="checkbox" data-structure-display-setting="combineSameStyleRegions" data-representation-setting="true"> Merge same-style regions</label>
+                </div>
+              </div>
+              <div id="structure-region-settings" class="structure-region-settings"></div>
+            </div>
+            <div class="structure-display-section hidden" data-structure-display-panel="scene" role="tabpanel">
+              <label>
+                <span>Preset <button class="structure-display-help" type="button" title="Applies a balanced group of effect settings.">?</button></span>
+                <select id="structure-display-preset" class="structure-display-input" data-structure-display-setting="preset">
+                  <option value="soft">Soft scientific</option>
+                  <option value="crisp">Crisp depth</option>
+                  <option value="illustrative">Illustrative</option>
+                  <option value="performance">Performance</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </label>
+              <div class="structure-display-action-row structure-display-preset-save">
+                <input id="structure-display-preset-name" class="structure-display-input" type="text" maxlength="48" placeholder="Preset name" data-structure-display-preset-name>
+                <button class="structure-display-secondary-button" type="button" data-structure-display-save-preset>Save preset</button>
+              </div>
+              <details class="structure-display-fieldset">
+                <summary class="structure-display-fieldset-title">View presets</summary>
+                <label>
+                  <span>Fullscreen structure <button class="structure-display-help" type="button" title="Preset used by the large single-structure 3D modal. Current menu settings keeps the existing shared behavior.">?</button></span>
+                  <select class="structure-display-input" data-structure-view-preset="structure">
+                    <option value="current">Current menu settings</option>
+                    <option value="soft">Soft scientific</option>
+                    <option value="crisp">Crisp depth</option>
+                    <option value="illustrative">Illustrative</option>
+                    <option value="performance">Performance</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Representative panel <button class="structure-display-help" type="button" title="Preset used by the persistent representative 3D view.">?</button></span>
+                  <select class="structure-display-input" data-structure-view-preset="representative">
+                    <option value="current">Current menu settings</option>
+                    <option value="soft">Soft scientific</option>
+                    <option value="crisp">Crisp depth</option>
+                    <option value="illustrative">Illustrative</option>
+                    <option value="performance">Performance</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Structure comparison tiles <button class="structure-display-help" type="button" title="Preset used by each 3D tile in the normal cluster structure comparison modal.">?</button></span>
+                  <select class="structure-display-input" data-structure-view-preset="clusterCompare">
+                    <option value="current">Current menu settings</option>
+                    <option value="soft">Soft scientific</option>
+                    <option value="crisp">Crisp depth</option>
+                    <option value="illustrative">Illustrative</option>
+                    <option value="performance">Performance</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Cluster overview tiles <button class="structure-display-help" type="button" title="Preset used by the representative cluster overview tile grid.">?</button></span>
+                  <select class="structure-display-input" data-structure-view-preset="clusterOverview">
+                    <option value="current">Current menu settings</option>
+                    <option value="soft">Soft scientific</option>
+                    <option value="crisp">Crisp depth</option>
+                    <option value="illustrative">Illustrative</option>
+                    <option value="performance">Performance</option>
+                  </select>
+                </label>
+              </details>
+              <label>
+                <span>Background <button class="structure-display-help" type="button" title="Sets the canvas background color.">?</button></span>
+                <input id="structure-display-background" class="structure-display-input" type="color" data-structure-display-setting="background">
+              </label>
+              <label>
+                <span>Camera <button class="structure-display-help" type="button" title="Perspective gives depth; orthographic preserves scale.">?</button></span>
+                <select id="structure-display-camera-mode" class="structure-display-input" data-structure-display-setting="cameraMode">
+                  <option value="perspective">Perspective</option>
+                  <option value="orthographic">Orthographic</option>
+                </select>
+              </label>
+              <label>
+                <span>Field of view <button class="structure-display-help" type="button" title="Higher values widen the perspective camera.">?</button></span>
+                <input id="structure-display-field-of-view" class="structure-display-input" type="range" min="20" max="90" step="1" data-structure-display-setting="fieldOfView">
+              </label>
+              <div class="structure-display-fieldset">
+                <span class="structure-display-fieldset-title">Clipping</span>
+                <label>
+                  <span>Focus clipping <button class="structure-display-help" type="button" title="0 disables target-centered clipping and keeps the whole scene in the camera clip volume. Higher values clip more tightly around the current focus.">?</button></span>
+                  <input id="structure-display-clip-focus-radius" class="structure-display-input" type="range" min="0" max="99" step="1" data-structure-display-setting="clipFocusRadius">
+                </label>
+                <label>
+                  <span>Near plane <button class="structure-display-help" type="button" title="Moves the nearest visible plane away from the camera. Larger values clip foreground atoms sooner.">?</button></span>
+                  <input id="structure-display-clip-min-near" class="structure-display-input" type="range" min="0.01" max="20" step="0.01" data-structure-display-setting="clipMinNear">
+                </label>
+                <div class="structure-display-toggle-grid">
+                  <label><input id="structure-display-clip-far" type="checkbox" data-structure-display-setting="clipFar"> Far plane</label>
+                </div>
+              </div>
+              <div class="structure-display-toggle-grid">
+                <label><input id="structure-column-view-toggle" type="checkbox"> Column</label>
+                <label><input id="structure-contact-view-toggle" type="checkbox" checked> Contacts</label>
+              </div>
+            </div>
+            <div class="structure-display-section hidden" data-structure-display-panel="effects" role="tabpanel">
+              <details class="structure-display-fieldset">
+                <summary class="structure-display-fieldset-title">Postprocessing</summary>
+                <label>
+                  <span>Edge AA <button class="structure-display-help" type="button" title="SMAA is usually cleaner for molecular cartoons; FXAA is cheaper but softer.">?</button></span>
+                  <select id="structure-display-antialiasing" class="structure-display-input" data-structure-display-setting="antialiasing">
+                    <option value="smaa">SMAA</option>
+                    <option value="fxaa">FXAA</option>
+                    <option value="off">Off</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Samples <button class="structure-display-help" type="button" title="Higher values reduce jagged edges and cost more GPU time.">?</button></span>
+                  <input id="structure-display-antialias-sample-level" class="structure-display-input" type="range" min="0" max="5" step="1" data-structure-display-setting="antialiasSampleLevel">
+                </label>
+                <label>
+                  <span>SMAA threshold <button class="structure-display-help" type="button" title="Lower values detect more edges for SMAA smoothing.">?</button></span>
+                  <input id="structure-display-smaa-threshold" class="structure-display-input" type="range" min="0.05" max="0.15" step="0.01" data-structure-display-setting="smaaEdgeThreshold">
+                </label>
+                <label>
+                  <span>SMAA search <button class="structure-display-help" type="button" title="Higher values let SMAA search farther along edges.">?</button></span>
+                  <input id="structure-display-smaa-search" class="structure-display-input" type="range" min="0" max="32" step="1" data-structure-display-setting="smaaMaxSearchSteps">
+                </label>
+                <label>
+                  <span>FXAA subpixel <button class="structure-display-help" type="button" title="Higher values smooth more sub-pixel shimmer when FXAA is selected.">?</button></span>
+                  <input id="structure-display-fxaa-subpixel" class="structure-display-input" type="range" min="0" max="1" step="0.01" data-structure-display-setting="fxaaSubpixelQuality">
+                </label>
+                <div class="structure-display-toggle-grid">
+                  <label><input id="structure-display-illumination" type="checkbox" data-structure-display-setting="illumination"> Illumination</label>
+                  <label><input id="structure-display-ambient-occlusion" type="checkbox" data-structure-display-setting="ambientOcclusion"> AO</label>
+                  <label><input id="structure-display-shadows" type="checkbox" data-structure-display-setting="shadows"> Shadows</label>
+                  <label><input id="structure-display-outline" type="checkbox" data-structure-display-setting="outline"> Outline</label>
+                  <label><input id="structure-display-depth-of-field" type="checkbox" data-structure-display-setting="depthOfField"> DOF</label>
+                  <label><input id="structure-display-fog" type="checkbox" data-structure-display-setting="fog"> Fog</label>
+                  <label><input id="structure-display-sharpen" type="checkbox" data-structure-display-setting="sharpen"> Sharpen</label>
+                  <label><input id="structure-display-bloom" type="checkbox" data-structure-display-setting="bloom"> Bloom</label>
+                </div>
+              </details>
+              <details class="structure-display-fieldset" data-structure-effect-panel="illumination">
+                <summary class="structure-display-fieldset-title">Illumination</summary>
+                <label>
+                  <span>Max iterations <button class="structure-display-help" type="button" title="Caps progressive illumination refinement. Each step doubles the final tracing iterations. Mol* defaults to 5; higher values reduce grain and cost more GPU time.">?</button></span>
+                  <input id="structure-display-illumination-max-iterations" class="structure-display-input" type="range" min="0" max="16" step="1" data-structure-display-setting="illuminationMaxIterations">
+                </label>
+                <label>
+                  <span>Renders/frame min <button class="structure-display-help" type="button" title="Lower bound for illumination refinement work per frame.">?</button></span>
+                  <input id="structure-display-illumination-renders-min" class="structure-display-input" type="range" min="1" max="64" step="1" data-structure-display-setting="illuminationRendersPerFrameMin">
+                </label>
+                <label>
+                  <span>Renders/frame max <button class="structure-display-help" type="button" title="Upper bound for illumination refinement work per frame.">?</button></span>
+                  <input id="structure-display-illumination-renders-max" class="structure-display-input" type="range" min="1" max="64" step="1" data-structure-display-setting="illuminationRendersPerFrameMax">
+                </label>
+                <label>
+                  <span>Target FPS <button class="structure-display-help" type="button" title="Mol* adjusts illumination refinement work around this frame-rate target.">?</button></span>
+                  <input id="structure-display-illumination-target-fps" class="structure-display-input" type="range" min="0" max="120" step="1" data-structure-display-setting="illuminationTargetFps">
+                </label>
+                <label>
+                  <span>Ray steps <button class="structure-display-help" type="button" title="Tracing steps per illumination sample. Higher values can reduce missed detail and cost more time.">?</button></span>
+                  <input id="structure-display-illumination-steps" class="structure-display-input" type="range" min="1" max="1024" step="1" data-structure-display-setting="illuminationSteps">
+                </label>
+                <label>
+                  <span>Refine steps <button class="structure-display-help" type="button" title="Extra binary-search refinement steps for each traced ray hit.">?</button></span>
+                  <input id="structure-display-illumination-refine-steps" class="structure-display-input" type="range" min="0" max="8" step="1" data-structure-display-setting="illuminationRefineSteps">
+                </label>
+                <label>
+                  <span>Bounces <button class="structure-display-help" type="button" title="Number of diffuse light bounces. More bounces can smooth indirect illumination and cost more time.">?</button></span>
+                  <input id="structure-display-illumination-bounces" class="structure-display-input" type="range" min="1" max="32" step="1" data-structure-display-setting="illuminationBounces">
+                </label>
+                <label>
+                  <span>Denoise low <button class="structure-display-help" type="button" title="Lower denoise threshold for illumination. Smaller values preserve more detail; larger values smooth more grain.">?</button></span>
+                  <input id="structure-display-illumination-denoise-min" class="structure-display-input" type="range" min="0" max="4" step="0.01" data-structure-display-setting="illuminationDenoiseMin">
+                </label>
+                <label>
+                  <span>Denoise high <button class="structure-display-help" type="button" title="Upper denoise threshold for illumination smoothing.">?</button></span>
+                  <input id="structure-display-illumination-denoise-max" class="structure-display-input" type="range" min="0" max="4" step="0.01" data-structure-display-setting="illuminationDenoiseMax">
+                </label>
+                <div class="structure-display-toggle-grid">
+                  <label><input id="structure-display-illumination-denoise" type="checkbox" data-structure-display-setting="illuminationDenoise"> Denoise</label>
+                  <label><input id="structure-display-illumination-ignore-outline" type="checkbox" data-structure-display-setting="illuminationIgnoreOutline"> Ignore outline</label>
+                </div>
+              </details>
+              <details class="structure-display-fieldset">
+                <summary class="structure-display-fieldset-title">Lighting</summary>
+                <label>
+                  <span>Ambient light <button class="structure-display-help" type="button" title="Raises or lowers the base scene brightness.">?</button></span>
+                  <input id="structure-display-ambient-intensity" class="structure-display-input" type="range" min="0" max="2" step="0.01" data-structure-display-setting="ambientIntensity">
+                </label>
+                <label>
+                  <span>Key light <button class="structure-display-help" type="button" title="Controls the main directional light strength.">?</button></span>
+                  <input id="structure-display-light-intensity" class="structure-display-input" type="range" min="0" max="3" step="0.01" data-structure-display-setting="lightIntensity">
+                </label>
+                <label>
+                  <span>Exposure <button class="structure-display-help" type="button" title="Adjusts final scene brightness after lighting.">?</button></span>
+                  <input id="structure-display-exposure" class="structure-display-input" type="range" min="0.2" max="2.5" step="0.01" data-structure-display-setting="exposure">
+                </label>
+              </details>
+              <details class="structure-display-fieldset" data-structure-effect-panel="ambientOcclusion">
+                <summary class="structure-display-fieldset-title">Ambient occlusion</summary>
+                <label>
+                  <span>Strength <button class="structure-display-help" type="button" title="Controls crevice darkening from screen-space ambient occlusion.">?</button></span>
+                  <input id="structure-display-occlusion-strength" class="structure-display-input" type="range" min="0" max="3" step="0.01" data-structure-display-setting="occlusionStrength">
+                </label>
+                <label>
+                  <span>Radius <button class="structure-display-help" type="button" title="Controls the occlusion search radius.">?</button></span>
+                  <input id="structure-display-ao-radius" class="structure-display-input" type="range" min="0" max="20" step="0.1" data-structure-display-setting="aoRadius">
+                </label>
+                <label>
+                  <span>Samples <button class="structure-display-help" type="button" title="Higher sample counts are smoother but slower.">?</button></span>
+                  <input id="structure-display-ao-samples" class="structure-display-input" type="range" min="1" max="128" step="1" data-structure-display-setting="aoSamples">
+                </label>
+                <label>
+                  <span>Resolution <button class="structure-display-help" type="button" title="Lower values make AO cheaper and softer.">?</button></span>
+                  <input id="structure-display-ao-resolution" class="structure-display-input" type="range" min="0.1" max="1" step="0.05" data-structure-display-setting="aoResolutionScale">
+                </label>
+              </details>
+              <details class="structure-display-fieldset" data-structure-effect-panel="outline">
+                <summary class="structure-display-fieldset-title">Outline</summary>
+                <label>
+                  <span>Color <button class="structure-display-help" type="button" title="Sets the outline color.">?</button></span>
+                  <input id="structure-display-outline-color" class="structure-display-input" type="color" data-structure-display-setting="outlineColor">
+                </label>
+                <label>
+                  <span>Scale <button class="structure-display-help" type="button" title="Controls outline thickness.">?</button></span>
+                  <input id="structure-display-outline-scale" class="structure-display-input" type="range" min="1" max="5" step="0.1" data-structure-display-setting="outlineScale">
+                </label>
+                <label>
+                  <span>Threshold <button class="structure-display-help" type="button" title="Lower values detect more outline edges.">?</button></span>
+                  <input id="structure-display-outline-threshold" class="structure-display-input" type="range" min="0.01" max="1" step="0.01" data-structure-display-setting="outlineThreshold">
+                </label>
+                <div class="structure-display-toggle-grid">
+                  <label><input id="structure-display-outline-transparent" type="checkbox" data-structure-display-setting="outlineTransparent"> Transparent</label>
+                </div>
+              </details>
+              <details class="structure-display-fieldset" data-structure-effect-panel="shadows">
+                <summary class="structure-display-fieldset-title">Shadows</summary>
+                <label>
+                  <span>Distance <button class="structure-display-help" type="button" title="Maximum distance used for screen-space shadows.">?</button></span>
+                  <input id="structure-display-shadow-distance" class="structure-display-input" type="range" min="0" max="64" step="1" data-structure-display-setting="shadowDistance">
+                </label>
+                <label>
+                  <span>Steps <button class="structure-display-help" type="button" title="More steps can improve shadows and cost more GPU time.">?</button></span>
+                  <input id="structure-display-shadow-steps" class="structure-display-input" type="range" min="1" max="32" step="1" data-structure-display-setting="shadowSteps">
+                </label>
+                <label>
+                  <span>Tolerance <button class="structure-display-help" type="button" title="Controls how easily nearby depth differences become shadows.">?</button></span>
+                  <input id="structure-display-shadow-tolerance" class="structure-display-input" type="range" min="0" max="10" step="0.1" data-structure-display-setting="shadowTolerance">
+                </label>
+              </details>
+              <details class="structure-display-fieldset" data-structure-effect-panel="depthOfField">
+                <summary class="structure-display-fieldset-title">Depth of field</summary>
+                <div class="structure-display-action-row">
+                  <button id="structure-display-dof-pick-focus" class="structure-display-secondary-button" type="button" data-structure-dof-focus-pick>Select focus residue</button>
+                  <output id="structure-display-dof-focus-label" class="structure-display-focus-label" data-structure-dof-focus-label>No manual focus</output>
+                </div>
+                <label>
+                  <span>Blur size <button class="structure-display-help" type="button" title="Controls how strongly out-of-focus regions are blurred.">?</button></span>
+                  <input id="structure-display-dof-blur" class="structure-display-input" type="range" min="1" max="24" step="1" data-structure-display-setting="dofBlur">
+                </label>
+                <label>
+                  <span>Blur spread <button class="structure-display-help" type="button" title="Spreads the blur kernel without changing the kernel size.">?</button></span>
+                  <input id="structure-display-dof-blur-spread" class="structure-display-input" type="range" min="0" max="10" step="0.1" data-structure-display-setting="dofBlurSpread">
+                </label>
+                <label>
+                  <span>Focus width <button class="structure-display-help" type="button" title="Wider values keep more depth in focus.">?</button></span>
+                  <input id="structure-display-dof-focus-range" class="structure-display-input" type="range" min="1" max="160" step="1" data-structure-display-setting="dofFocusRange">
+                </label>
+                <label>
+                  <span>Focus offset <button class="structure-display-help" type="button" title="Moves the focus plane relative to the selected focus target. Manual residue focus resets this to 0.">?</button></span>
+                  <input id="structure-display-dof-focus-offset" class="structure-display-input" type="range" min="-160" max="160" step="1" data-structure-display-setting="dofFocusOffset">
+                </label>
+                <label>
+                  <span>Focus target <button class="structure-display-help" type="button" title="Camera target follows the current centered structure region; scene center uses the whole loaded structure.">?</button></span>
+                  <select id="structure-display-dof-focus-target" class="structure-display-input" data-structure-display-setting="dofFocusTarget">
+                    <option value="camera-target">Camera target</option>
+                    <option value="scene-center">Scene center</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Focus mode <button class="structure-display-help" type="button" title="Sphere focuses around the target point; plane focuses by camera depth.">?</button></span>
+                  <select id="structure-display-dof-focus-mode" class="structure-display-input" data-structure-display-setting="dofFocusMode">
+                    <option value="sphere">Sphere</option>
+                    <option value="plane">Plane</option>
+                  </select>
+                </label>
+              </details>
+              <details class="structure-display-fieldset" data-structure-effect-panel="fog">
+                <summary class="structure-display-fieldset-title">Fog</summary>
+                <label>
+                  <span>Intensity <button class="structure-display-help" type="button" title="Controls distance fog strength.">?</button></span>
+                  <input id="structure-display-fog-intensity" class="structure-display-input" type="range" min="1" max="100" step="1" data-structure-display-setting="fogIntensity">
+                </label>
+                <label>
+                  <span>Fog color <button class="structure-display-help" type="button" title="Mol* uses the scene background color for fog, so this also changes the canvas background.">?</button></span>
+                  <input id="structure-display-fog-color" class="structure-display-input" type="color" data-structure-display-setting="background">
+                </label>
+              </details>
+              <details class="structure-display-fieldset" data-structure-effect-panel="sharpen">
+                <summary class="structure-display-fieldset-title">Sharpen</summary>
+                <label>
+                  <span>Strength <button class="structure-display-help" type="button" title="Controls contrast adaptive sharpening.">?</button></span>
+                  <input id="structure-display-sharpen-strength" class="structure-display-input" type="range" min="0" max="1" step="0.05" data-structure-display-setting="sharpenStrength">
+                </label>
+                <div class="structure-display-toggle-grid">
+                  <label><input id="structure-display-sharpen-denoise" type="checkbox" data-structure-display-setting="sharpenDenoise"> Denoise</label>
+                </div>
+              </details>
+              <details class="structure-display-fieldset" data-structure-effect-panel="bloom">
+                <summary class="structure-display-fieldset-title">Bloom</summary>
+                <label>
+                  <span>Mode <button class="structure-display-help" type="button" title="Luminosity blooms bright pixels; emissive blooms emissive materials.">?</button></span>
+                  <select id="structure-display-bloom-mode" class="structure-display-input" data-structure-display-setting="bloomMode">
+                    <option value="luminosity">Luminosity</option>
+                    <option value="emissive">Emissive</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Strength <button class="structure-display-help" type="button" title="Controls bloom intensity.">?</button></span>
+                  <input id="structure-display-bloom-strength" class="structure-display-input" type="range" min="0" max="3" step="0.1" data-structure-display-setting="bloomStrength">
+                </label>
+                <label>
+                  <span>Radius <button class="structure-display-help" type="button" title="Controls bloom spread.">?</button></span>
+                  <input id="structure-display-bloom-radius" class="structure-display-input" type="range" min="0" max="1" step="0.01" data-structure-display-setting="bloomRadius">
+                </label>
+                <label>
+                  <span>Threshold <button class="structure-display-help" type="button" title="In luminosity mode, only brighter pixels bloom at higher thresholds.">?</button></span>
+                  <input id="structure-display-bloom-threshold" class="structure-display-input" type="range" min="0" max="1" step="0.01" data-structure-display-setting="bloomThreshold">
+                </label>
+              </details>
+              <details class="structure-display-fieldset">
+                <summary class="structure-display-fieldset-title">Contacts</summary>
+                <div class="structure-display-toggle-grid">
+                  <label><input id="structure-display-contact-lines-visible" type="checkbox" data-structure-display-setting="contactLinesVisible" data-representation-setting="true"> Draw connectors</label>
+                </div>
+                <label>
+                  <span>Contact color <button class="structure-display-help" type="button" title="Sets the contact connector color.">?</button></span>
+                  <input id="structure-display-contact-color" class="structure-display-input" type="color" data-structure-display-setting="contactColor" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>Contact opacity <button class="structure-display-help" type="button" title="Controls the residue contact connector opacity.">?</button></span>
+                  <input id="structure-display-contact-opacity" class="structure-display-input" type="range" min="0.05" max="1" step="0.01" data-structure-display-setting="contactOpacity" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>Contact width <button class="structure-display-help" type="button" title="Controls contact connector thickness.">?</button></span>
+                  <input id="structure-display-contact-radius" class="structure-display-input" type="range" min="0.02" max="0.18" step="0.005" data-structure-display-setting="contactRadius" data-representation-setting="true">
+                </label>
+              </details>
+              <details class="structure-display-fieldset">
+                <summary class="structure-display-fieldset-title">Cartoon geometry</summary>
+                <label>
+                  <span>Scale <button class="structure-display-help" type="button" title="Controls cartoon ribbon and tube thickness.">?</button></span>
+                  <input id="structure-display-cartoon-size" class="structure-display-input" type="range" min="0.02" max="1" step="0.01" data-structure-display-setting="cartoonSizeFactor" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>Aspect ratio <button class="structure-display-help" type="button" title="Controls ribbon width relative to thickness.">?</button></span>
+                  <input id="structure-display-cartoon-aspect" class="structure-display-input" type="range" min="0.1" max="10" step="0.1" data-structure-display-setting="cartoonAspectRatio" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>Sheet arrows <button class="structure-display-help" type="button" title="Controls beta-sheet arrow size.">?</button></span>
+                  <input id="structure-display-cartoon-arrow" class="structure-display-input" type="range" min="0" max="3" step="0.1" data-structure-display-setting="cartoonArrowFactor" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>Trace segments <button class="structure-display-help" type="button" title="Higher values create smoother cartoon curves and cost more time.">?</button></span>
+                  <input id="structure-display-cartoon-linear" class="structure-display-input" type="range" min="1" max="48" step="1" data-structure-display-setting="cartoonLinearSegments" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>Radial segments <button class="structure-display-help" type="button" title="Higher values make tubes and rounded profiles smoother.">?</button></span>
+                  <input id="structure-display-cartoon-radial" class="structure-display-input" type="range" min="2" max="56" step="2" data-structure-display-setting="cartoonRadialSegments" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>Detail <button class="structure-display-help" type="button" title="Additional geometry detail for cartoon meshes.">?</button></span>
+                  <input id="structure-display-cartoon-detail" class="structure-display-input" type="range" min="0" max="3" step="1" data-structure-display-setting="cartoonDetail" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>Helix profile <button class="structure-display-help" type="button" title="Controls alpha-helix cross-section shape.">?</button></span>
+                  <select id="structure-display-cartoon-helix-profile" class="structure-display-input" data-structure-display-setting="cartoonHelixProfile" data-representation-setting="true">
+                    <option value="elliptical">Elliptical</option>
+                    <option value="rounded">Rounded</option>
+                    <option value="square">Square</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Nucleic profile <button class="structure-display-help" type="button" title="Controls nucleic strand cross-section shape.">?</button></span>
+                  <select id="structure-display-cartoon-nucleic-profile" class="structure-display-input" data-structure-display-setting="cartoonNucleicProfile" data-representation-setting="true">
+                    <option value="square">Square</option>
+                    <option value="elliptical">Elliptical</option>
+                    <option value="rounded">Rounded</option>
+                  </select>
+                </label>
+                <div class="structure-display-toggle-grid">
+                  <label><input id="structure-display-cartoon-tubular-helices" type="checkbox" data-structure-display-setting="cartoonTubularHelices" data-representation-setting="true"> Tube helices</label>
+                  <label><input id="structure-display-cartoon-round-caps" type="checkbox" data-structure-display-setting="cartoonRoundCaps" data-representation-setting="true"> Round caps</label>
+                </div>
+              </details>
+              <details class="structure-display-fieldset">
+                <summary class="structure-display-fieldset-title">Surface geometry</summary>
+                <label>
+                  <span>Quality <button class="structure-display-help" type="button" title="Representation quality. Higher values can smooth geometry but cost more time.">?</button></span>
+                  <select id="structure-display-quality" class="structure-display-input" data-structure-display-setting="quality" data-representation-setting="true">
+                    <option value="auto">Auto</option>
+                    <option value="highest">Highest</option>
+                    <option value="higher">Higher</option>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                    <option value="lower">Lower</option>
+                    <option value="lowest">Lowest</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Surface resolution <button class="structure-display-help" type="button" title="Lower values use a finer grid and smoother molecular surfaces, but render slower.">?</button></span>
+                  <input id="structure-display-surface-resolution" class="structure-display-input" type="range" min="0.1" max="2" step="0.05" data-structure-display-setting="surfaceResolution" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>Probe radius <button class="structure-display-help" type="button" title="Controls the probe radius used to trace molecular surfaces.">?</button></span>
+                  <input id="structure-display-surface-probe-radius" class="structure-display-input" type="range" min="0" max="4" step="0.1" data-structure-display-setting="surfaceProbeRadius" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>Probe positions <button class="structure-display-help" type="button" title="More positions can make molecular surfaces smoother and slower.">?</button></span>
+                  <input id="structure-display-surface-probe-positions" class="structure-display-input" type="range" min="12" max="90" step="1" data-structure-display-setting="surfaceProbePositions" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>Color smoothing <button class="structure-display-help" type="button" title="Smooths interpolated coloring on surface geometry.">?</button></span>
+                  <select id="structure-display-surface-color-smoothing" class="structure-display-input" data-structure-display-setting="surfaceColorSmoothing" data-representation-setting="true">
+                    <option value="auto">Auto</option>
+                    <option value="on">On</option>
+                    <option value="off">Off</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Smoothing scale <button class="structure-display-help" type="button" title="Higher values smooth surface colors over a wider grid.">?</button></span>
+                  <input id="structure-display-surface-smoothing-factor" class="structure-display-input" type="range" min="0.5" max="6" step="0.1" data-structure-display-setting="surfaceColorSmoothingResolutionFactor" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>Smoothing stride <button class="structure-display-help" type="button" title="Lower stride samples color smoothing more densely and can cost more time.">?</button></span>
+                  <input id="structure-display-surface-smoothing-stride" class="structure-display-input" type="range" min="1" max="12" step="1" data-structure-display-setting="surfaceColorSmoothingSampleStride" data-representation-setting="true">
+                </label>
+              </details>
+              <details class="structure-display-fieldset">
+                <summary class="structure-display-fieldset-title">Material</summary>
+                <label>
+                  <span>Roughness <button class="structure-display-help" type="button" title="Higher roughness softens highlights on cartoons and surfaces.">?</button></span>
+                  <input id="structure-display-roughness" class="structure-display-input" type="range" min="0" max="1" step="0.01" data-structure-display-setting="roughness" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>Metalness <button class="structure-display-help" type="button" title="Controls metallic material response for representations.">?</button></span>
+                  <input id="structure-display-metalness" class="structure-display-input" type="range" min="0" max="1" step="0.01" data-structure-display-setting="metalness" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>Bumpiness <button class="structure-display-help" type="button" title="Controls material bump shading where supported.">?</button></span>
+                  <input id="structure-display-bumpiness" class="structure-display-input" type="range" min="0" max="1" step="0.01" data-structure-display-setting="bumpiness" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>Highlight <button class="structure-display-help" type="button" title="Controls Mol* hover highlight strength.">?</button></span>
+                  <input id="structure-display-highlight-strength" class="structure-display-input" type="range" min="0" max="1" step="0.01" data-structure-display-setting="highlightStrength">
+                </label>
+              </details>
+            </div>            </div>
           </div>
           <div id="structure-hover-card" class="structure-hover-card hidden">
             <strong>Main Residue</strong>
@@ -1418,7 +1804,7 @@
             </span>
           </div>
           <p id="structure-modal-status" class="structure-status">
-            Whole protein: gray transparent. Main domain: gray. Main surface/interface: orange and red. Partner domain: muted blue with stronger blue interaction layers.
+            Open display settings with D to adjust regions, clipping, DOF, effects, and geometry.
           </p>
         </div>
       </div>

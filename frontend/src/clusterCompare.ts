@@ -20,6 +20,7 @@ export function createClusterCompareController({
   representativeClusterOverviewUrl = () => "",
   normalizeRepresentativeRow = (row) => row,
   representativeClusterSummaryFromPayload = (_payload, _clusterLabel, fallbackSummary) => fallbackSummary,
+  structureDisplaySettingsForView = () => state.structureDisplaySettings,
   representativeClusterCompareTileStyles = () => ({
     residueStyles: [],
     clusterLensData: null,
@@ -215,6 +216,10 @@ export function createClusterCompareController({
 
   function normalizedRepresentativeMethod(method = state.representativeClusterCompareMethod) {
     return String(method || "") === "residue" ? "residue" : "balanced";
+  }
+
+  function clusterCompareDisplayViewKey() {
+    return state.clusterCompareMode === "representative-clusters" ? "clusterOverview" : "clusterCompare";
   }
 
   function setClusterCompareRepresentativeMethodMenuOpen(open) {
@@ -904,7 +909,7 @@ export function createClusterCompareController({
       residueStyles: tile.residueStyles || [],
       clusterLensData: tile.clusterLensData || null,
       representativeLens: representativeClusterTile ? "cluster" : "",
-      displaySettings: state.structureDisplaySettings,
+      displaySettings: structureDisplaySettingsForView(clusterCompareDisplayViewKey()),
       onHover: (hover) => {
         tile.hoverResidue = hover;
       },
@@ -936,7 +941,7 @@ export function createClusterCompareController({
         if (!viewer || typeof viewer.ensureViewer !== "function") {
           return;
         }
-        await viewer.ensureViewer(state.structureDisplaySettings);
+        await viewer.ensureViewer(structureDisplaySettingsForView(clusterCompareDisplayViewKey()));
         viewer.resize();
         viewer.render();
       })
@@ -1019,6 +1024,17 @@ export function createClusterCompareController({
       tile.viewer.resize();
       tile.viewer.render();
     }
+  }
+
+  function refreshClusterCompareViewers() {
+    return Promise.allSettled(
+      state.clusterCompareTiles.map((tile, tileIndex) => {
+        if (!tile?.viewer || !tile.payload || !tile.modelText || tile.error) {
+          return Promise.resolve();
+        }
+        return renderClusterCompareTile(tileIndex);
+      })
+    );
   }
 
   async function fetchClusterCompareStructure(entry, alignToRowKey = "") {
@@ -1708,5 +1724,6 @@ export function createClusterCompareController({
     openClusterCompareForLabel,
     openRepresentativeClusterCompare,
     resizeClusterCompareViewers,
+    refreshClusterCompareViewers,
   };
 }

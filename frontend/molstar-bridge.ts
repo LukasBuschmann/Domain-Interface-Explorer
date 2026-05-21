@@ -9,3 +9,4 @@ export {
   StructureProperties,
 } from "molstar/lib/mol-model/structure.js";
 export { Color } from "molstar/lib/mol-util/color/index.js";
+export { ParamDefinition } from "molstar/lib/mol-util/param-definition.js";

@@ -212133,6 +212133,7 @@ var Viewer = class _Viewer {
 export {
   Color,
   MolScriptBuilder as MS,
+  ParamDefinition,
   PluginConfig,
   PluginCommands,
   element_exports as StructureElement,

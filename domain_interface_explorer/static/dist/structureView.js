@@ -2,12 +2,16 @@ import { fetchJson, fetchText } from "./api.js";
 import { interactionRowKey, interfaceFilePfamId, parseInteractionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams } from "./selectionSettings.js";
 import { createDomainMolstarViewer } from "./molstarView.js";
-export function createStructureViewController({ state, elements, THREE_TO_ONE, interfaceSelect, setLoading, hideLoading, buildStructureResidueLookup, columnResidueStyles, structureMarkerResidueStyles = () => [], msaColumnMaxIndex, topResiduesForColumn, columnStateDistribution, syncColumnLegends, getSelectedRow, getStructurePreloadRows, clearEmbeddingMemberSelection, partnerColor = () => "#817a71", }) {
+export function createStructureViewController({ state, elements, THREE_TO_ONE, interfaceSelect, setLoading, hideLoading, buildStructureResidueLookup, columnResidueStyles, structureMarkerResidueStyles = () => [], msaColumnMaxIndex, topResiduesForColumn, columnStateDistribution, syncColumnLegends, getSelectedRow, getStructurePreloadRows, clearEmbeddingMemberSelection, partnerColor = () => "#817a71", onResidueClick = null, structureDisplaySettingsForView = () => state.structureDisplaySettings, }) {
     const STRUCTURE_PREVIEW_CACHE_LIMIT = 40;
     const STRUCTURE_MODEL_TEXT_CACHE_LIMIT = 24;
     const STRUCTURE_PRELOAD_CONCURRENCY = 1;
+    const STRUCTURE_PRELOAD_LIMIT = 2;
+    const STRUCTURE_PRELOAD_DELAY_MS = 750;
     const structurePreviewInFlight = new Map();
     const structureModelTextInFlight = new Map();
+    let structurePreloadAbortController = null;
+    let structurePreloadTimer = 0;
     function uniprotEntryUrl(accession) {
         return `https://www.uniprot.org/uniprotkb/${encodeURIComponent(String(accession || "").trim())}`;
     }
@@ -312,7 +316,8 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         if (cachedStructure?.payload) {
             return cachedStructure.payload;
         }
-        const inFlight = structurePreviewInFlight.get(previewUrl);
+        const useSharedInFlight = !options?.signal;
+        const inFlight = useSharedInFlight ? structurePreviewInFlight.get(previewUrl) : null;
         if (inFlight) {
             return inFlight;
         }
@@ -322,9 +327,13 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             return payload;
         })
             .finally(() => {
-            structurePreviewInFlight.delete(previewUrl);
+            if (useSharedInFlight) {
+                structurePreviewInFlight.delete(previewUrl);
+            }
         });
-        structurePreviewInFlight.set(previewUrl, request);
+        if (useSharedInFlight) {
+            structurePreviewInFlight.set(previewUrl, request);
+        }
         return request;
     }
     async function loadStructureModelText(modelUrl, options = {}) {
@@ -332,7 +341,8 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         if (typeof cachedModelText === "string") {
             return cachedModelText;
         }
-        const inFlight = structureModelTextInFlight.get(modelUrl);
+        const useSharedInFlight = !options?.signal;
+        const inFlight = useSharedInFlight ? structureModelTextInFlight.get(modelUrl) : null;
         if (inFlight) {
             return inFlight;
         }
@@ -342,9 +352,13 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             return modelText;
         })
             .finally(() => {
-            structureModelTextInFlight.delete(modelUrl);
+            if (useSharedInFlight) {
+                structureModelTextInFlight.delete(modelUrl);
+            }
         });
-        structureModelTextInFlight.set(modelUrl, request);
+        if (useSharedInFlight) {
+            structureModelTextInFlight.set(modelUrl, request);
+        }
         return request;
     }
     function cacheLoadedStructure(previewUrl, payload, modelText) {
@@ -403,6 +417,12 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
     }
     function stopStructurePreloading() {
         state.structurePreloadGeneration += 1;
+        if (structurePreloadTimer) {
+            window.clearTimeout(structurePreloadTimer);
+            structurePreloadTimer = 0;
+        }
+        structurePreloadAbortController?.abort?.();
+        structurePreloadAbortController = null;
     }
     function stopForegroundStructureLoad() {
         state.structureRequestId += 1;
@@ -415,9 +435,16 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         }
         const activeKey = String(activeRow?.row_key || "");
         const activeIndex = rows.findIndex((row) => String(row?.row_key || "") === activeKey);
-        const ordered = activeIndex >= 0
-            ? rows.slice(activeIndex + 1).concat(rows.slice(0, activeIndex))
-            : rows;
+        const ordered = [];
+        if (activeIndex >= 0) {
+            for (const offset of [1, -1, 2, -2]) {
+                const index = (activeIndex + offset + rows.length) % rows.length;
+                ordered.push(rows[index]);
+            }
+        }
+        else {
+            ordered.push(...rows);
+        }
         const seen = new Set();
         return ordered.filter((row) => {
             const rowKey = String(row?.row_key || "");
@@ -426,30 +453,30 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             }
             seen.add(rowKey);
             return true;
-        });
+        }).slice(0, STRUCTURE_PRELOAD_LIMIT);
     }
-    async function preloadStructureRow(row, generation) {
+    async function preloadStructureRow(row, generation, signal) {
         const previewUrl = structurePreviewUrlForRow(row);
-        const payload = await loadStructurePreviewPayload(previewUrl);
-        if (generation !== state.structurePreloadGeneration || !structureModalIsOpen()) {
+        const payload = await loadStructurePreviewPayload(previewUrl, { signal });
+        if (signal?.aborted || generation !== state.structurePreloadGeneration || !structureModalIsOpen()) {
             return;
         }
-        await loadStructureModelText(payload.model_url);
+        await loadStructureModelText(payload.model_url, { signal });
     }
-    async function preloadStructureRows(rows, generation) {
+    async function preloadStructureRows(rows, generation, signal) {
         let nextIndex = 0;
         const worker = async () => {
-            while (generation === state.structurePreloadGeneration && structureModalIsOpen()) {
+            while (!signal?.aborted && generation === state.structurePreloadGeneration && structureModalIsOpen()) {
                 const row = rows[nextIndex];
                 nextIndex += 1;
                 if (!row) {
                     return;
                 }
                 try {
-                    await preloadStructureRow(row, generation);
+                    await preloadStructureRow(row, generation, signal);
                 }
                 catch (error) {
-                    if (generation !== state.structurePreloadGeneration || !structureModalIsOpen()) {
+                    if (signal?.aborted || generation !== state.structurePreloadGeneration || !structureModalIsOpen()) {
                         return;
                     }
                 }
@@ -467,12 +494,25 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             return;
         }
         const generation = state.structurePreloadGeneration;
-        void preloadStructureRows(rows, generation)
-            .catch((error) => {
-            if (generation === state.structurePreloadGeneration && structureModalIsOpen()) {
-                console.debug("[structure-preload] stopped", error);
+        const controller = new AbortController();
+        structurePreloadAbortController = controller;
+        structurePreloadTimer = window.setTimeout(() => {
+            structurePreloadTimer = 0;
+            if (controller.signal.aborted || generation !== state.structurePreloadGeneration || !structureModalIsOpen()) {
+                return;
             }
-        });
+            void preloadStructureRows(rows, generation, controller.signal)
+                .catch((error) => {
+                if (!controller.signal.aborted && generation === state.structurePreloadGeneration && structureModalIsOpen()) {
+                    console.debug("[structure-preload] stopped", error);
+                }
+            })
+                .finally(() => {
+                if (structurePreloadAbortController === controller) {
+                    structurePreloadAbortController = null;
+                }
+            });
+        }, STRUCTURE_PRELOAD_DELAY_MS);
     }
     function resetStructurePanel(message = "Click a row name or use the button to open the structure.") {
         setStructureLoadingUi(false);
@@ -480,7 +520,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         elements.structureStatus.textContent = message;
         elements.structureModalSubtitle.textContent = message;
         elements.structureModalStatus.textContent =
-            "Whole protein: gray transparent. Main domain: gray. Main surface/interface: orange and red. Partner domain: muted blue with stronger blue interaction layers.";
+            "Open display settings with D to adjust regions, clipping, DOF, effects, and geometry.";
         state.structureResidueLookup = null;
         state.structureData = null;
         state.structureRenderedModelKey = null;
@@ -656,12 +696,15 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         };
     }
     function handleStructureHover(hoverPayload) {
-        const residueId = Number(hoverPayload?.residueId);
-        if (!Number.isFinite(residueId) || !state.structureResidueLookup?.has(residueId)) {
+        const residueIds = [hoverPayload?.residueId, ...(Array.isArray(hoverPayload?.residueIds) ? hoverPayload.residueIds : [])]
+            .map((residueId) => Number(residueId))
+            .filter((residueId) => Number.isFinite(residueId));
+        const residueId = residueIds.find((candidate) => state.structureResidueLookup?.has(candidate));
+        if (!Number.isFinite(residueId)) {
             clearStructureHover();
             return;
         }
-        const hover = formatStructureHover(hoverPayload);
+        const hover = formatStructureHover({ ...hoverPayload, residueId });
         elements.structureHoverCard.classList.remove("hidden");
         setStructureHoverDetails(hover);
         setStructureHoverHistogram(topResiduesForColumn(hover.columnIndex, hover.residueLetter));
@@ -692,9 +735,18 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             currentModelIdentityKey === state.structureRenderedModelIdentityKey;
         const initialView = copyStructureView(structure.initialView);
         const previousView = initialView || (shouldPreserveView ? copyStructureView(viewer.getView()) : null);
+        let renderedNotified = false;
+        const notifyRendered = () => {
+            if (renderedNotified) {
+                return;
+            }
+            renderedNotified = true;
+            options.onRendered?.();
+        };
         state.structureResidueLookup = buildStructureResidueLookup(row);
         const residueStyles = columnResidueStyles(state.structureResidueLookup);
         const markerResidueStyles = structureMarkerResidueStyles(state.structureResidueLookup);
+        const displaySettings = structureDisplaySettingsForView("structure");
         const representationOptions = {
             modelText,
             payload,
@@ -702,13 +754,15 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             label: structureRowLabel(row) || "Structure",
             mode: "structure",
             columnView: state.structureColumnView,
-            contactsVisible: state.structureContactsVisible,
+            contactsVisible: state.structureContactsVisible && displaySettings?.contactLinesVisible !== false,
             residueLookup: state.structureResidueLookup,
             residueStyles,
             markerResidueStyles,
-            displaySettings: state.structureDisplaySettings,
+            displaySettings,
+            onRendered: notifyRendered,
             onHover: handleStructureHover,
             onHoverEnd: clearStructureHover,
+            onResidueClick,
         };
         if (shouldReuseStructure) {
             try {
@@ -735,6 +789,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             }
         }
         viewer.render();
+        notifyRendered();
         if (initialView && typeof viewer.setView === "function") {
             const applyInitialView = () => {
                 if (state.structureData?.modelKey !== currentModelKey) {
@@ -785,7 +840,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
                 `${payload.matched_partners.join(", ") ? ` | partners: ${payload.matched_partners.join(", ")}` : ""}` +
                 `${alignmentNote}`;
         elements.structureModalStatus.textContent = state.structureColumnView
-            ? `Whole protein: gray transparent. Main domain: rainbow by MSA column 0-${msaColumnMaxIndex()}. Partner domain keeps the blue context layers.${markerStatusNote}`
+            ? `Main domain uses MSA column colors 0-${msaColumnMaxIndex()}. Region styles, alpha, and contact appearance can be adjusted from Display.${markerStatusNote}`
             : `Main interface: ${payload.interface_residue_ids.length} | ` +
                 `Main surface: ${payload.surface_residue_ids.length} | ` +
                 `Partner interface: ${payload.partner_interface_residue_ids.length} | ` +
@@ -800,6 +855,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         }
         stopForegroundStructureLoad();
         stopStructurePreloading();
+        const requestId = state.structureRequestId;
         cacheLoadedStructure(options.previewUrl || "", payload, modelText);
         state.structureData = {
             row,
@@ -811,7 +867,13 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         };
         openStructureModal();
         setStructureLoadingUi(true, "Rendering structure", modelFileLabel(payload, row));
-        await renderInteractiveStructure();
+        await renderInteractiveStructure({
+            onRendered: () => {
+                if (requestId === state.structureRequestId) {
+                    setStructureLoadingUi(false);
+                }
+            },
+        });
         setStructureLoadingUi(false);
         startStructurePreloading(row);
         setLoading(100, "Structure ready", structureRowLabel(row));
@@ -823,6 +885,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             return;
         }
         stopForegroundStructureLoad();
+        stopStructurePreloading();
         const requestId = state.structureRequestId + 1;
         state.structureRequestId = requestId;
         const previewUrl = structurePreviewUrlForRow(row);
@@ -865,7 +928,13 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             modelKey: structureModelKey(row, payload),
             modelIdentityKey: structureModelIdentityKey(payload),
         };
-        await renderInteractiveStructure();
+        await renderInteractiveStructure({
+            onRendered: () => {
+                if (requestId === state.structureRequestId) {
+                    setStructureLoadingUi(false);
+                }
+            },
+        });
         setStructureLoadingUi(false);
         startStructurePreloading(row);
         setLoading(100, "Structure ready", structureRowLabel(row));
@@ -890,6 +959,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             elements.structurePartnerSelect.value = rowKey;
         }
         applyStructurePartnerControlColor(targetRow);
+        stopStructurePreloading();
         const requestId = state.structureRequestId + 1;
         state.structureRequestId = requestId;
         const previewUrl = structurePreviewUrlForRow(targetRow);
@@ -923,7 +993,14 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             modelKey: structureModelKey(targetRow, payload),
             modelIdentityKey: nextIdentityKey,
         };
-        await renderInteractiveStructure({ reuseModel });
+        await renderInteractiveStructure({
+            reuseModel,
+            onRendered: () => {
+                if (requestId === state.structureRequestId) {
+                    setStructureLoadingUi(false);
+                }
+            },
+        });
         if (requestId === state.structureRequestId) {
             setStructureLoadingUi(false);
         }

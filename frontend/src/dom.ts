@@ -177,6 +177,7 @@ export const elements = {
   structureContactViewToggle: document.getElementById("structure-contact-view-toggle"),
   structureDisplaySettingsPanel: document.getElementById("structure-display-settings-panel"),
   structureDisplaySettingsClose: document.getElementById("structure-display-settings-close"),
+  structureRegionSettingsRoot: document.getElementById("structure-region-settings"),
   structureColumnLegend: document.getElementById("structure-column-legend"),
   structureColumnLegendStart: document.getElementById("structure-column-legend-start"),
   structureColumnLegendMid: document.getElementById("structure-column-legend-mid"),

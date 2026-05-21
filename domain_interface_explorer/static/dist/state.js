@@ -1,4 +1,4 @@
-import { DEFAULT_CLUSTERING_SETTINGS, DEFAULT_EMBEDDING_SETTINGS, DEFAULT_SELECTION_SETTINGS, DEFAULT_STRUCTURE_DISPLAY_SETTINGS, } from "./constants.js";
+import { DEFAULT_CLUSTERING_SETTINGS, DEFAULT_EMBEDDING_SETTINGS, DEFAULT_SELECTION_SETTINGS, DEFAULT_STRUCTURE_DISPLAY_SETTINGS, DEFAULT_STRUCTURE_DISPLAY_VIEW_PRESETS, } from "./constants.js";
 export const state = {
     files: null,
     msa: null,
@@ -172,6 +172,11 @@ export const state = {
     structureColumnView: false,
     structureContactsVisible: true,
     structureDisplaySettingsOpen: false,
+    structureDofFocusPicking: false,
+    structureDisplayCustomPresets: [],
+    structureDisplayViewPresets: {
+        ...DEFAULT_STRUCTURE_DISPLAY_VIEW_PRESETS,
+    },
     structureDisplaySettings: {
         ...DEFAULT_STRUCTURE_DISPLAY_SETTINGS,
     },

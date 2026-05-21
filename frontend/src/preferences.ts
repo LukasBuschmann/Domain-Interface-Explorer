@@ -4,6 +4,7 @@ import {
   DEFAULT_EMBEDDING_SETTINGS,
   DEFAULT_SELECTION_SETTINGS,
   DEFAULT_STRUCTURE_DISPLAY_SETTINGS,
+  DEFAULT_STRUCTURE_DISPLAY_VIEW_PRESETS,
 } from "./constants.js";
 import { normalizeSelectionSettings } from "./selectionSettings.js";
 
@@ -11,6 +12,8 @@ const UI_PREFERENCES_KEY = "die.uiPreferences.v1";
 const UI_PREFERENCES_VERSION = 1;
 const PANEL_VIEWS = ["info", "msa", "embeddings", "columns", "dendrogram"];
 const EMBEDDING_SETTINGS_SECTIONS = ["points", "clustering"];
+const STRUCTURE_DISPLAY_BUILT_IN_PRESETS = ["soft", "crisp", "illustrative", "performance"];
+const STRUCTURE_USER_PRESET_PREFIX = "user:";
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -310,7 +313,70 @@ function normalizeStructureDisplaySettings(rawSettings = {}) {
       normalized[key] = value;
     }
   }
+  if (source.restProteinAlpha === undefined && Number.isFinite(Number(source.contextAlpha))) {
+    normalized.restProteinAlpha = Number(source.contextAlpha);
+  }
   return normalized;
+}
+
+function structureDisplayPresetId(value, fallbackName = "preset") {
+  const raw = String(value || "").trim();
+  const source = raw || String(fallbackName || "preset");
+  const slug = source
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  return slug || "preset";
+}
+
+function normalizeStructureDisplayViewPresets(rawPresets = {}) {
+  const source = isRecord(rawPresets) ? rawPresets : {};
+  const normalized = { ...DEFAULT_STRUCTURE_DISPLAY_VIEW_PRESETS };
+  for (const key of Object.keys(DEFAULT_STRUCTURE_DISPLAY_VIEW_PRESETS)) {
+    const value = String(source[key] || "");
+    if (
+      value === "current" ||
+      STRUCTURE_DISPLAY_BUILT_IN_PRESETS.includes(value) ||
+      value.startsWith(STRUCTURE_USER_PRESET_PREFIX)
+    ) {
+      normalized[key] = value;
+    }
+  }
+  return normalized;
+}
+
+function normalizeStructureDisplayCustomPresets(rawPresets = []) {
+  const source = Array.isArray(rawPresets) ? rawPresets : [];
+  const presets = [];
+  const seen = new Set();
+  for (const rawPreset of source) {
+    if (!isRecord(rawPreset)) {
+      continue;
+    }
+    const name = String(rawPreset.name || "").trim().slice(0, 48);
+    if (!name) {
+      continue;
+    }
+    let id = structureDisplayPresetId(rawPreset.id, name);
+    if (seen.has(id)) {
+      let suffix = 2;
+      while (seen.has(`${id}-${suffix}`)) {
+        suffix += 1;
+      }
+      id = `${id}-${suffix}`;
+    }
+    seen.add(id);
+    presets.push({
+      id,
+      name,
+      settings: {
+        ...normalizeStructureDisplaySettings(rawPreset.settings),
+        preset: "custom",
+      },
+    });
+  }
+  return presets.slice(-24);
 }
 
 function loadUiPreferences() {
@@ -474,9 +540,23 @@ export function applyUiPreferences(state) {
     typeof preferences.structureColumnView === "boolean"
       ? preferences.structureColumnView
       : state.structureColumnView;
+  state.structureDisplayCustomPresets = normalizeStructureDisplayCustomPresets(
+    preferences.structureDisplayCustomPresets,
+  );
   state.structureDisplaySettings = normalizeStructureDisplaySettings(
     preferences.structureDisplaySettings,
   );
+  state.structureDisplayViewPresets = normalizeStructureDisplayViewPresets(
+    preferences.structureDisplayViewPresets,
+  );
+  const displaySettingsSource = isRecord(preferences.structureDisplaySettings)
+    ? preferences.structureDisplaySettings
+    : {};
+  if (typeof displaySettingsSource.contactLinesVisible === "boolean") {
+    state.structureContactsVisible = state.structureDisplaySettings.contactLinesVisible;
+  } else {
+    state.structureDisplaySettings.contactLinesVisible = state.structureContactsVisible;
+  }
 }
 
 function preferencesPayload(state) {
@@ -517,6 +597,8 @@ function preferencesPayload(state) {
     representativeMethod: state.representativeMethod,
     structureContactsVisible: state.structureContactsVisible,
     structureColumnView: state.structureColumnView,
+    structureDisplayCustomPresets: state.structureDisplayCustomPresets || [],
+    structureDisplayViewPresets: state.structureDisplayViewPresets || DEFAULT_STRUCTURE_DISPLAY_VIEW_PRESETS,
     structureDisplaySettings: state.structureDisplaySettings,
   };
 }
