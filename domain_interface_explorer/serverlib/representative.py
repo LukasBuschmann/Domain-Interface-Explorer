@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import heapq
+
 from .interface_embedding import build_interface_alignment_rows_from_metadata
 from .timing import timed_step
 
@@ -9,6 +12,7 @@ REPRESENTATIVE_METHODS = {
     REPRESENTATIVE_METHOD_BALANCED,
     REPRESENTATIVE_METHOD_RESIDUE,
 }
+REPRESENTATIVE_SAMPLE_LIMIT = 1000
 
 
 def interaction_row_key(interface_row_key: object, partner_domain: object) -> str:
@@ -89,6 +93,42 @@ def _select_balanced_representative(
         "coverage_distance": float(coverage_distances[selected_index]),
         "interface_column_count": int(interface_sizes[selected_index]),
     }
+
+
+def representative_sample_key(
+    candidate: dict[str, object],
+    *,
+    scope: str,
+    cluster_label: int | None,
+    method: str,
+) -> tuple[bytes, str]:
+    row_key = _candidate_row_key(candidate)
+    cluster_key = cluster_label if cluster_label is not None else ""
+    seed = f"representative-sample-v1|{scope}|{cluster_key}|{method}|{row_key}"
+    digest = hashlib.blake2b(seed.encode("utf-8"), digest_size=16).digest()
+    return digest, row_key
+
+
+def sample_representative_candidates(
+    candidates: list[dict[str, object]],
+    *,
+    scope: str,
+    cluster_label: int | None,
+    method: str,
+    sample_limit: int = REPRESENTATIVE_SAMPLE_LIMIT,
+) -> list[dict[str, object]]:
+    if sample_limit <= 0 or len(candidates) <= sample_limit:
+        return candidates
+    return heapq.nsmallest(
+        sample_limit,
+        candidates,
+        key=lambda candidate: representative_sample_key(
+            candidate,
+            scope=scope,
+            cluster_label=cluster_label,
+            method=method,
+        ),
+    )
 
 
 def _select_residue_consensus_representative(
@@ -226,6 +266,7 @@ def compute_representative_payload(
     scope: str = "overall",
     cluster_label: int | None = None,
     method: str = REPRESENTATIVE_METHOD_BALANCED,
+    source_candidate_count: int | None = None,
 ) -> dict[str, object]:
     method = method if method in REPRESENTATIVE_METHODS else REPRESENTATIVE_METHOD_BALANCED
     normalized_candidates = [
@@ -233,22 +274,38 @@ def compute_representative_payload(
         for candidate in candidates
         if interface_column_count(candidate) > 0
     ]
+    candidate_count = (
+        int(source_candidate_count)
+        if source_candidate_count is not None
+        else len(normalized_candidates)
+    )
+    sampled_candidates = sample_representative_candidates(
+        normalized_candidates,
+        scope=scope,
+        cluster_label=cluster_label,
+        method=method,
+    )
     with timed_step(
         "representative",
         "select representative row",
         representative_scope=scope,
         cluster_label=cluster_label if cluster_label is not None else "",
         representative_method=method,
-        candidates=len(normalized_candidates),
+        candidates=candidate_count,
+        sampled_candidates=len(sampled_candidates),
+        sample_limit=REPRESENTATIVE_SAMPLE_LIMIT,
         alignment_length=alignment_length,
     ) as timer:
-        if alignment_length <= 0 or not normalized_candidates:
+        if alignment_length <= 0 or not sampled_candidates:
             timer.set(selected="")
             return {
                 "scope": scope,
                 "cluster_label": cluster_label,
                 "representative_method": method,
-                "candidate_count": len(normalized_candidates),
+                "candidate_count": candidate_count,
+                "sampled_candidate_count": len(sampled_candidates),
+                "representative_sample_limit": REPRESENTATIVE_SAMPLE_LIMIT,
+                "representative_sampled": candidate_count > len(sampled_candidates),
                 "alignment_length": alignment_length,
                 "representative_row_key": None,
                 "row": None,
@@ -259,11 +316,11 @@ def compute_representative_payload(
 
         gap_code = 26
         matrix = np.full(
-            (len(normalized_candidates), alignment_length),
+            (len(sampled_candidates), alignment_length),
             gap_code,
             dtype=np.uint8,
         )
-        for row_index, candidate in enumerate(normalized_candidates):
+        for row_index, candidate in enumerate(sampled_candidates):
             sequence = str(candidate.get("aligned_sequence") or "").upper()
             if not sequence:
                 continue
@@ -277,13 +334,13 @@ def compute_representative_payload(
 
         if method == REPRESENTATIVE_METHOD_RESIDUE:
             selected, score_payload = _select_residue_consensus_representative(
-                normalized_candidates,
+                sampled_candidates,
                 matrix,
                 alignment_length,
             )
         else:
             selected, score_payload = _select_balanced_representative(
-                normalized_candidates,
+                sampled_candidates,
                 matrix,
                 alignment_length,
             )
@@ -309,7 +366,10 @@ def compute_representative_payload(
             "scope": scope,
             "cluster_label": cluster_label,
             "representative_method": method,
-            "candidate_count": len(normalized_candidates),
+            "candidate_count": candidate_count,
+            "sampled_candidate_count": len(sampled_candidates),
+            "representative_sample_limit": REPRESENTATIVE_SAMPLE_LIMIT,
+            "representative_sampled": candidate_count > len(sampled_candidates),
             "alignment_length": alignment_length,
             "representative_row_key": representative_row_key,
             "row": row,

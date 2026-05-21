@@ -2,7 +2,7 @@ import { fetchJson, fetchText } from "./api.js";
 import { interactionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams } from "./selectionSettings.js";
 import { createDomainMolstarViewer } from "./molstarView.js";
-export function createClusterCompareController({ state, elements, interfaceSelect, currentClusterCompareQuery, getRowByKey, embeddingClusterLabel, embeddingDistanceLabel, nextBrowserPaint, openStructureForEntry, openClusterResidueMembers, representativeClusterCompareSummaries = () => [], representativeClusterCompareUrl = () => "", normalizeRepresentativeRow = (row) => row, representativeClusterSummaryFromPayload = (_payload, _clusterLabel, fallbackSummary) => fallbackSummary, representativeClusterCompareTileStyles = () => ({
+export function createClusterCompareController({ state, elements, interfaceSelect, currentClusterCompareQuery, getRowByKey, embeddingClusterLabel, embeddingDistanceLabel, nextBrowserPaint, openStructureForEntry, openClusterResidueMembers, representativeClusterCompareSummaries = () => [], representativeClusterCompareUrl = () => "", representativeClusterOverviewUrl = () => "", normalizeRepresentativeRow = (row) => row, representativeClusterSummaryFromPayload = (_payload, _clusterLabel, fallbackSummary) => fallbackSummary, representativeClusterCompareTileStyles = () => ({
     residueStyles: [],
     clusterLensData: null,
 }), }) {
@@ -914,6 +914,8 @@ export function createClusterCompareController({ state, elements, interfaceSelec
                 coverageCount: Number(entry.coverage_count || 0),
                 coveragePercent: Number(entry.coverage_percent || 0),
                 coverageFraction: Number(entry.coverage_fraction || 0),
+                coverageLabel: String(entry.coverage_label || ""),
+                coverageTitle: String(entry.coverage_title || ""),
                 row: getRowByKey(interactionRowKey(entry.row_key, entry.partner_domain)),
             })),
         };
@@ -1111,6 +1113,7 @@ export function createClusterCompareController({ state, elements, interfaceSelec
                 remainingEntryCount,
                 selectedEntries,
                 distanceMetric,
+                subtitle: String(clusterCompareData.subtitle || ""),
                 alignmentAnchorRowKey: previousAlignmentAnchorRowKey || selectedEntries[0]?.rowKey || "",
                 results: [],
             };
@@ -1185,6 +1188,59 @@ export function createClusterCompareController({ state, elements, interfaceSelec
                 setClusterCompareLoading(false);
             }
         }
+    }
+    function representativeClusterEntryFromPayload(cluster, payload, method) {
+        const row = normalizeRepresentativeRow(payload?.row || null, payload?.alignment_length);
+        if (!row?.row_key && !row?.interface_row_key) {
+            throw new Error(`${cluster.label || embeddingClusterLabel(cluster.clusterLabel)} has no representative row.`);
+        }
+        const clusterSummary = representativeClusterSummaryFromPayload(payload, cluster.clusterLabel, cluster);
+        const memberCount = Number(cluster.compareMemberCount ?? cluster.memberCount ?? payload?.candidate_count ?? 0);
+        const entry = {
+            key: `representative-cluster:${cluster.clusterLabel}`,
+            rowKey: String(row.interface_row_key || row.row_key),
+            openLabel: row.display_row_key || row.row_key || row.interface_row_key || "",
+            partnerDomain: String(row.partner_domain || ""),
+            clusterLabel: Number(cluster.clusterLabel),
+            title: cluster.label || embeddingClusterLabel(cluster.clusterLabel),
+            subtitle: `${memberCount} members · ${row.display_row_key || row.row_key || row.interface_row_key || ""}`,
+            color: cluster.color,
+            coverageCount: memberCount,
+            coveragePercent: Number(cluster.coveragePercent || 0),
+            coverageFraction: Number(cluster.coverageFraction || 0),
+            coverageLabel: `${roundedPercent(cluster.coveragePercent || 0)}%`,
+            coverageTitle: `${memberCount}/${cluster.totalMemberCount || memberCount} clustered entries`,
+            selectionRank: Number(cluster.selectionRank || 0),
+            row,
+            clusterSummary,
+            representativePayload: {
+                ...payload,
+                representative_method: payload?.representative_method || method,
+            },
+        };
+        return entryWithClusterCycleMembers(entry, clusterSummary);
+    }
+    async function fetchRepresentativeClusterOverviewSelections(clusters, method) {
+        const payload = await fetchJson(representativeClusterOverviewUrl(clusters, method));
+        const selectionsByCluster = new Map((payload.selected_representatives || []).map((selection) => [
+            String(selection.cluster_label),
+            {
+                ...selection,
+                file: payload.file,
+                pfam_id: payload.pfam_id,
+                filter_settings: payload.filter_settings,
+                partner_filter: payload.partner_filter,
+                representative_method: selection.representative_method || payload.representative_method,
+                alignment_length: selection.alignment_length || payload.alignment_length,
+            },
+        ]));
+        return clusters.map((cluster) => {
+            const selection = selectionsByCluster.get(String(cluster.clusterLabel));
+            if (!selection) {
+                throw new Error(`${cluster.label || embeddingClusterLabel(cluster.clusterLabel)} has no representative row.`);
+            }
+            return representativeClusterEntryFromPayload(cluster, selection, method);
+        });
     }
     async function fetchRepresentativeClusterSelection(cluster, method) {
         const payload = await fetchJson(representativeClusterCompareUrl(cluster.clusterLabel, method));
@@ -1274,18 +1330,10 @@ export function createClusterCompareController({ state, elements, interfaceSelec
                 writeClusterCompareCache(cacheKey, renderedClusterCompareRecord(cachedRecord));
                 return;
             }
-            let completedSelections = 0;
-            const selectedEntries = await Promise.all(clusters.map(async (cluster) => {
-                try {
-                    return await fetchRepresentativeClusterSelection(cluster, method);
-                }
-                finally {
-                    completedSelections += 1;
-                    if (requestId === state.clusterCompareRequestId) {
-                        setClusterCompareLoading(true, `Selecting overview representatives (${completedSelections}/${clusters.length})...`, Math.round((completedSelections / clusters.length) * 35));
-                    }
-                }
-            }));
+            const selectedEntries = await fetchRepresentativeClusterOverviewSelections(clusters, method);
+            if (requestId === state.clusterCompareRequestId) {
+                setClusterCompareLoading(true, `Selected overview representatives (${selectedEntries.length}/${clusters.length})...`, 35);
+            }
             if (requestId !== state.clusterCompareRequestId) {
                 return;
             }

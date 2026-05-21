@@ -46,6 +46,8 @@ CLEAN_COLUMN_IDENTITY_IN_FLIGHT: dict[str, Future[list[int]]] = {}
 CLEAN_COLUMN_IDENTITY_CACHE_VERSION = "3"
 CLEAN_COLUMN_IDENTITY_BATCH_SIZE = 2048
 PFAM_ACCESSION_PATTERN = re.compile(r"^PF\d+$", re.IGNORECASE)
+PFAM_METADATA_REFRESH_IN_FLIGHT: set[str] = set()
+PFAM_METADATA_REFRESH_IN_FLIGHT_LOCK = threading.Lock()
 
 
 def open_selector_stats_interface_json(path: Path):
@@ -1071,11 +1073,23 @@ def start_background_pfam_metadata_refresh(
     pfam_option_stats: dict[str, dict[str, object]],
     stats_lock: threading.Lock | None = None,
 ) -> threading.Thread | None:
-    if not pfam_option_stats or not pfam_metadata_cache_is_stale(cache_dir):
+    if not pfam_metadata_cache_is_stale(cache_dir):
         return None
+    cache_key = str(cache_dir.resolve())
+    with PFAM_METADATA_REFRESH_IN_FLIGHT_LOCK:
+        if cache_key in PFAM_METADATA_REFRESH_IN_FLIGHT:
+            return None
+        PFAM_METADATA_REFRESH_IN_FLIGHT.add(cache_key)
+
+    def refresh_and_clear() -> None:
+        try:
+            refresh_pfam_metadata_cache(cache_dir, pfam_option_stats, stats_lock)
+        finally:
+            with PFAM_METADATA_REFRESH_IN_FLIGHT_LOCK:
+                PFAM_METADATA_REFRESH_IN_FLIGHT.discard(cache_key)
+
     thread = threading.Thread(
-        target=refresh_pfam_metadata_cache,
-        args=(cache_dir, pfam_option_stats, stats_lock),
+        target=refresh_and_clear,
         daemon=True,
         name="pfam-metadata-refresh",
     )

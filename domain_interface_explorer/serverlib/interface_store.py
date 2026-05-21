@@ -559,6 +559,69 @@ class InterfaceStore:
             "pfam_row_coverage_histogram": histogram_entries_from_counts(pfam_row_coverage_histogram),
         }
 
+    def get_interface_summary_payload(
+        self,
+        path: Path,
+        filter_settings: dict[str, object],
+    ) -> dict[str, object]:
+        source_id = self.ensure_source_ready(path)
+        min_size = filter_min_interface_size(filter_settings)
+        where_sql, where_args = self.filtered_where(min_size)
+        with timed_step("store", "load interface summary payload", file=path.name) as timer:
+            with self.connect() as connection:
+                filename, pfam_id, _alignment_length = self.source_summary(connection, source_id)
+                total_rows = int(
+                    connection.execute(
+                        f"SELECT COUNT(*) FROM interface_rows WHERE source_id = ? AND {where_sql}",
+                        (source_id, *where_args),
+                    ).fetchone()[0]
+                )
+                filtered_alignment_length = int(
+                    connection.execute(
+                        f"""
+                        SELECT COALESCE(MAX(LENGTH(aligned_seq)), 0)
+                        FROM interface_rows
+                        WHERE source_id = ? AND {where_sql}
+                        """,
+                        (source_id, *where_args),
+                    ).fetchone()[0]
+                )
+                partner_counts = {
+                    str(partner): int(count)
+                    for partner, count in connection.execute(
+                        f"""
+                        SELECT partner_domain, COUNT(*)
+                        FROM interface_rows
+                        WHERE source_id = ? AND {where_sql}
+                        GROUP BY partner_domain
+                        ORDER BY partner_domain
+                        """,
+                        (source_id, *where_args),
+                    )
+                }
+                interface_summary = self.get_interface_summary(
+                    connection,
+                    source_id,
+                    where_sql,
+                    where_args,
+                    total_rows,
+                )
+            timer.set(
+                total_rows=total_rows,
+                partner_domains=len(partner_counts),
+                alignment_length=filtered_alignment_length,
+            )
+            return {
+                "file": filename,
+                "pfam_id": pfam_id,
+                "filter_settings": filter_settings,
+                "alignment_length": filtered_alignment_length,
+                "row_count": total_rows,
+                "interface_partner_domains": list(partner_counts),
+                "interface_partner_counts": partner_counts,
+                "interface_summary": interface_summary,
+            }
+
     def get_interface_page(
         self,
         path: Path,
@@ -571,6 +634,7 @@ class InterfaceStore:
         data_offset: int,
         data_limit: int | None,
         include_clean_column_identity: bool,
+        include_summary: bool = True,
     ) -> dict[str, object]:
         source_id = self.ensure_source_ready(path)
         min_size = filter_min_interface_size(filter_settings)
@@ -613,12 +677,16 @@ class InterfaceStore:
                         (source_id, *where_args),
                     )
                 }
-                interface_summary = self.get_interface_summary(
-                    connection,
-                    source_id,
-                    where_sql,
-                    where_args,
-                    total_rows,
+                interface_summary = (
+                    self.get_interface_summary(
+                        connection,
+                        source_id,
+                        where_sql,
+                        where_args,
+                        total_rows,
+                    )
+                    if include_summary
+                    else None
                 )
                 raw_rows = (
                     self.query_alignment_rows(
@@ -665,13 +733,14 @@ class InterfaceStore:
                 "row_count": total_rows,
                 "interface_partner_domains": list(partner_counts),
                 "interface_partner_counts": partner_counts,
-                "interface_summary": interface_summary,
                 "row_offset": row_offset,
                 "row_limit": row_limit,
                 "rows_loaded": rows_loaded,
                 "rows_complete": row_offset + rows_loaded >= total_rows,
                 "rows": rows,
             }
+            if interface_summary is not None:
+                response["interface_summary"] = interface_summary
             if include_clean_column_identity:
                 response["clean_column_identity"] = self.get_clean_column_identity(path)
             if overlay_payload is not None:
@@ -976,6 +1045,117 @@ class InterfaceStore:
                     )
             timer.set(rows=len(candidates), alignment_length=alignment_length)
             return candidates, alignment_length
+
+    def get_representative_candidate_keys(
+        self,
+        path: Path,
+        filter_settings: dict[str, object],
+        partner_filter: str = "__all__",
+    ) -> tuple[list[dict[str, object]], int]:
+        source_id = self.ensure_source_ready(path)
+        min_size = filter_min_interface_size(filter_settings)
+        where_sql, where_args = self.filtered_where(min_size)
+        partner_sql = "" if partner_filter == "__all__" else "AND partner_domain = ?"
+        args: tuple[object, ...] = (source_id, *where_args)
+        if partner_filter != "__all__":
+            args = (*args, partner_filter)
+        with timed_step("store", "load representative candidate keys", file=path.name) as timer:
+            with self.connect() as connection:
+                alignment_length = int(
+                    connection.execute(
+                        f"""
+                        SELECT COALESCE(MAX(LENGTH(aligned_seq)), 0)
+                        FROM interface_rows
+                        WHERE source_id = ? AND {where_sql}
+                          {partner_sql}
+                        """,
+                        args,
+                    ).fetchone()[0]
+                )
+                candidates = [
+                    {
+                        "interface_row_key": str(row[0]),
+                        "partner_domain": str(row[1]),
+                    }
+                    for row in connection.execute(
+                        f"""
+                        SELECT interface_row_key, partner_domain
+                        FROM interface_rows
+                        WHERE source_id = ? AND {where_sql}
+                          {partner_sql}
+                        ORDER BY row_order
+                        """,
+                        args,
+                    )
+                ]
+            timer.set(rows=len(candidates), alignment_length=alignment_length, partner=partner_filter)
+            return candidates, alignment_length
+
+    def get_representative_candidates_by_keys(
+        self,
+        path: Path,
+        filter_settings: dict[str, object],
+        keys: list[tuple[str, str]],
+    ) -> list[dict[str, object]]:
+        if not keys:
+            return []
+        source_id = self.ensure_source_ready(path)
+        min_size = filter_min_interface_size(filter_settings)
+        where_sql, where_args = self.filtered_where(min_size)
+        unique_keys: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for row_key, partner_domain in keys:
+            key = (str(row_key), str(partner_domain))
+            if not key[0] or not key[1] or key in seen:
+                continue
+            seen.add(key)
+            unique_keys.append(key)
+        if not unique_keys:
+            return []
+        with timed_step("store", "load sampled representative candidates", file=path.name, keys=len(unique_keys)) as timer:
+            candidates_by_key: dict[tuple[str, str], dict[str, object]] = {}
+            with self.connect() as connection:
+                for offset in range(0, len(unique_keys), 400):
+                    chunk = unique_keys[offset:offset + 400]
+                    pair_sql = " OR ".join(
+                        "(partner_domain = ? AND interface_row_key = ?)"
+                        for _row_key, _partner_domain in chunk
+                    )
+                    pair_args: list[object] = []
+                    for row_key, partner_domain in chunk:
+                        pair_args.extend([partner_domain, row_key])
+                    for row in connection.execute(
+                        f"""
+                        SELECT interface_row_key, protein_id, fragment_key,
+                               partner_fragment_key, partner_domain, aligned_seq,
+                               interface_residues_a, surface_residue_ids_a,
+                               interface_msa_columns_a, surface_msa_columns_a
+                        FROM interface_rows
+                        WHERE source_id = ? AND {where_sql}
+                          AND ({pair_sql})
+                        """,
+                        (source_id, *where_args, *pair_args),
+                    ):
+                        key = (str(row[0]), str(row[4]))
+                        candidates_by_key[key] = {
+                            "interface_row_key": str(row[0]),
+                            "protein_id": str(row[1]),
+                            "fragment_key": str(row[2]),
+                            "partner_fragment_key": str(row[3]),
+                            "partner_domain": str(row[4]),
+                            "aligned_sequence": str(row[5] or ""),
+                            "interface_residues_a": unpack_uints(row[6]),
+                            "surface_residue_ids_a": unpack_uints(row[7]),
+                            "interface_msa_columns_a": unpack_uints(row[8]),
+                            "surface_msa_columns_a": unpack_uints(row[9]),
+                        }
+            candidates = [
+                candidates_by_key[key]
+                for key in unique_keys
+                if key in candidates_by_key
+            ]
+            timer.set(rows=len(candidates))
+            return candidates
 
     def get_structure_interface_payload(
         self,

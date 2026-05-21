@@ -4,6 +4,7 @@ node_modules/
 
 cache/*
 !cache/.gitkeep
+cache_*/
 
 interface_distance/target/
 interface_distance/target-cross/

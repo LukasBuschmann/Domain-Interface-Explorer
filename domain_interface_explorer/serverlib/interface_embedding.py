@@ -4951,6 +4951,255 @@ def clustering_payload_matches_entries(
     return True
 
 
+def cluster_compare_column_distance(
+    left_columns: tuple[int, ...],
+    right_columns: tuple[int, ...],
+    distance_metric: str,
+) -> float:
+    left_set = set(left_columns)
+    right_set = set(right_columns)
+    if not left_set and not right_set:
+        return 0.0
+    intersection = len(left_set & right_set)
+    if distance_metric == "jaccard":
+        union = len(left_set | right_set)
+        return 0.0 if union == 0 else 1.0 - (intersection / union)
+    if distance_metric == "dice":
+        denominator = len(left_set) + len(right_set)
+        return 0.0 if denominator == 0 else 1.0 - ((2.0 * intersection) / denominator)
+    if distance_metric == "overlap":
+        denominator = min(len(left_set), len(right_set))
+        return 0.0 if denominator == 0 else 1.0 - (intersection / denominator)
+    return 0.0
+
+
+def cluster_compare_entry_for_point(
+    interface_payload: dict[str, dict[str, dict]] | None,
+    point: dict[str, object],
+) -> dict[str, object] | None:
+    if not isinstance(interface_payload, dict):
+        return None
+    partner_domain = str(point.get("partner_domain", ""))
+    row_key = str(point.get("row_key", ""))
+    row_payload = interface_payload.get(partner_domain, {}).get(row_key)
+    if not isinstance(row_payload, dict):
+        return None
+    columns = tuple(sorted({int(column) for column in row_payload.get("interface_msa_columns_a", [])}))
+    if not columns:
+        return None
+    return {
+        "partner_domain": partner_domain,
+        "row_key": row_key,
+        "columns": columns,
+        "domain_length": domain_length_from_row_payload(row_key, row_payload),
+        "pfam_row_coverage": pfam_row_coverage_percent_from_row_payload(row_key, row_payload),
+    }
+
+
+def compute_cluster_compare_payload_from_clustering(
+    clustering_payload: dict[str, object],
+    cluster_label: int,
+    limit: int = DEFAULT_CLUSTER_COMPARE_LIMIT,
+    interface_payload: dict[str, dict[str, dict]] | None = None,
+) -> dict[str, object]:
+    clustering_points = clustering_payload["points"]
+    cluster_items = []
+    for index, point in enumerate(clustering_points):
+        if int(point.get("cluster_label", -1)) != cluster_label:
+            continue
+        entry = cluster_compare_entry_for_point(interface_payload, point)
+        cluster_items.append((point, entry, index))
+    if not cluster_items:
+        raise ValueError(f"cluster {cluster_label} has no entries")
+
+    cluster_items.sort(
+        key=lambda item: (
+            str(item[0].get("row_key", "")),
+            str(item[0].get("partner_domain", "")),
+            item[2],
+        )
+    )
+    selection_limit = min(max(1, int(limit)), len(cluster_items))
+    distance_metric = str(clustering_payload.get("distance", "overlap") or "overlap")
+    has_column_entries = any(item[1] is not None for item in cluster_items)
+    if has_column_entries and selection_limit < len(cluster_items):
+        selected_items = approximate_diverse_cluster_compare_items(
+            cluster_items,
+            selection_limit,
+            distance_metric,
+        )
+        selection_method = "approximate_max_min_sample"
+        subtitle = (
+            f"Showing {len(selected_items)} of {len(cluster_items)} cluster entries. "
+            f"Examples are selected by approximate max-min {distance_metric} distance on sampled cluster members."
+        )
+    else:
+        selected_items = (
+            list(cluster_items)
+            if selection_limit >= len(cluster_items)
+            else sorted(
+                random.sample(cluster_items, selection_limit),
+                key=lambda item: (
+                    str(item[0].get("row_key", "")),
+                    str(item[0].get("partner_domain", "")),
+                    item[2],
+                ),
+            )
+        )
+        selection_method = "direct_cluster_sample"
+        subtitle = (
+            f"Showing {len(selected_items)} of {len(cluster_items)} cluster entries. "
+            "Examples are sampled directly from cluster members."
+        )
+
+    coverage_by_index = approximate_cluster_compare_coverage(
+        cluster_items,
+        selected_items,
+        distance_metric,
+    ) if has_column_entries else {}
+    remaining_count = max(0, len(cluster_items) - len(selected_items))
+    selected_entries = []
+    for selection_rank, (point, _entry, item_index) in enumerate(selected_items):
+        coverage_count = int(coverage_by_index.get(item_index, 0))
+        coverage_fraction = (coverage_count / remaining_count) if remaining_count > 0 else 0.0
+        selected_entries.append(
+            {
+                "row_key": str(point.get("row_key", "")),
+                "partner_domain": str(point.get("partner_domain", "")),
+                "selection_rank": selection_rank,
+                "coverage_count": coverage_count,
+                "coverage_fraction": coverage_fraction,
+                "coverage_percent": coverage_fraction * 100.0,
+                "coverage_label": "approx" if has_column_entries else "direct",
+                "coverage_title": (
+                    "Approximate nearest-member coverage over a sampled cluster subset."
+                    if has_column_entries
+                    else "Selected directly from cluster members; pairwise distance coverage was not computed."
+                ),
+            }
+        )
+    return {
+        "cluster_label": cluster_label,
+        "distance": distance_metric,
+        "entry_count": len(cluster_items),
+        "remaining_entry_count": remaining_count,
+        "selection_method": selection_method,
+        "subtitle": subtitle,
+        "selected_entries": selected_entries,
+    }
+
+
+def approximate_diverse_cluster_compare_items(
+    cluster_items: list[tuple[dict[str, object], dict[str, object] | None, int]],
+    selection_limit: int,
+    distance_metric: str,
+) -> list[tuple[dict[str, object], dict[str, object] | None, int]]:
+    selected_items = [random.choice(cluster_items)]
+    selected_indices = {selected_items[0][2]}
+    candidate_pool_size = min(len(cluster_items), max(512, selection_limit * 192))
+
+    def item_columns(item: tuple[dict[str, object], dict[str, object] | None, int]) -> tuple[int, ...]:
+        entry = item[1]
+        if not isinstance(entry, dict):
+            return ()
+        return tuple(int(column) for column in entry.get("columns", ()))
+
+    while len(selected_items) < selection_limit:
+        remaining_items = [item for item in cluster_items if item[2] not in selected_indices]
+        if not remaining_items:
+            break
+        candidates = (
+            remaining_items
+            if len(remaining_items) <= candidate_pool_size
+            else random.sample(remaining_items, candidate_pool_size)
+        )
+        best_item = None
+        best_min_distance = -1.0
+        best_mean_distance = -1.0
+        for candidate in candidates:
+            candidate_columns = item_columns(candidate)
+            distances = [
+                cluster_compare_column_distance(candidate_columns, item_columns(selected), distance_metric)
+                for selected in selected_items
+            ]
+            min_distance = min(distances) if distances else 0.0
+            mean_distance = sum(distances) / len(distances) if distances else 0.0
+            candidate_key = (
+                str(candidate[0].get("row_key", "")),
+                str(candidate[0].get("partner_domain", "")),
+                candidate[2],
+            )
+            best_key = (
+                str(best_item[0].get("row_key", "")),
+                str(best_item[0].get("partner_domain", "")),
+                best_item[2],
+            ) if best_item is not None else None
+            if (
+                min_distance > best_min_distance
+                or (
+                    min_distance == best_min_distance
+                    and (
+                        mean_distance > best_mean_distance
+                        or (mean_distance == best_mean_distance and (best_key is None or candidate_key < best_key))
+                    )
+                )
+            ):
+                best_item = candidate
+                best_min_distance = min_distance
+                best_mean_distance = mean_distance
+        if best_item is None:
+            break
+        selected_items.append(best_item)
+        selected_indices.add(best_item[2])
+    return selected_items
+
+
+def approximate_cluster_compare_coverage(
+    cluster_items: list[tuple[dict[str, object], dict[str, object] | None, int]],
+    selected_items: list[tuple[dict[str, object], dict[str, object] | None, int]],
+    distance_metric: str,
+) -> dict[int, int]:
+    selected_indices = {item[2] for item in selected_items}
+    remaining_items = [item for item in cluster_items if item[2] not in selected_indices]
+    if not remaining_items or not selected_items:
+        return {item[2]: 0 for item in selected_items}
+    coverage_sample_size = min(len(remaining_items), 4096)
+    coverage_items = (
+        remaining_items
+        if len(remaining_items) <= coverage_sample_size
+        else random.sample(remaining_items, coverage_sample_size)
+    )
+
+    def item_columns(item: tuple[dict[str, object], dict[str, object] | None, int]) -> tuple[int, ...]:
+        entry = item[1]
+        if not isinstance(entry, dict):
+            return ()
+        return tuple(int(column) for column in entry.get("columns", ()))
+
+    assigned_counts = {item[2]: 0 for item in selected_items}
+    selected_rank_by_index = {item[2]: rank for rank, item in enumerate(selected_items)}
+    for item in coverage_items:
+        item_columns_value = item_columns(item)
+        best_selected = None
+        best_distance = math.inf
+        best_rank = math.inf
+        for selected in selected_items:
+            distance = cluster_compare_column_distance(
+                item_columns_value,
+                item_columns(selected),
+                distance_metric,
+            )
+            rank = selected_rank_by_index[selected[2]]
+            if distance < best_distance or (distance == best_distance and rank < best_rank):
+                best_selected = selected
+                best_distance = distance
+                best_rank = rank
+        if best_selected is not None:
+            assigned_counts[best_selected[2]] = assigned_counts.get(best_selected[2], 0) + 1
+    scale = len(remaining_items) / len(coverage_items) if coverage_items else 1.0
+    return {key: int(round(value * scale)) for key, value in assigned_counts.items()}
+
+
 def compute_cluster_compare_payload(
     distance_data: dict[str, object],
     clustering_payload: dict[str, object],
