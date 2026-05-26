@@ -317,6 +317,28 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         }
         return normalizedSettings;
     }
+    function normalizedRepresentativeDomainSizeFilter(settings = state.clusterCompareDomainSizeFilter || {}) {
+        let domainSizeMin = positiveInteger(settings.domainSizeMin);
+        let domainSizeMax = positiveInteger(settings.domainSizeMax);
+        if (domainSizeMin !== null &&
+            domainSizeMax !== null &&
+            domainSizeMin > domainSizeMax) {
+            [domainSizeMin, domainSizeMax] = [domainSizeMax, domainSizeMin];
+        }
+        return {
+            domainSizeMin: domainSizeMin === null ? "" : String(domainSizeMin),
+            domainSizeMax: domainSizeMax === null ? "" : String(domainSizeMax),
+        };
+    }
+    function appendRepresentativeDomainSizeFilterParams(params) {
+        const range = normalizedRepresentativeDomainSizeFilter();
+        if (range.domainSizeMin !== "") {
+            params.set("representative_domain_size_min", range.domainSizeMin);
+        }
+        if (range.domainSizeMax !== "") {
+            params.set("representative_domain_size_max", range.domainSizeMax);
+        }
+    }
     function appendDomainSizeFilterParams(params, settings) {
         const normalizedSettings = normalizedClusteringSettingsForRequest(settings);
         const minSize = String(normalizedSettings?.domainSizeMin ?? "").trim();
@@ -429,6 +451,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 params.set("min_samples", String(state.embeddingClusteringSettings.minSamples));
             }
         }
+        appendRepresentativeDomainSizeFilterParams(params);
         return `/api/cluster-compare?${params.toString()}`;
     }
     function currentEmbeddingClusteringRequestKey() {

@@ -1103,6 +1103,18 @@ function setRepresentativeMethodMenuOpen(open) {
   fitRepresentativeDropdownToViewport(representativeMethodMenu, open);
 }
 
+function appendClusterCompareDomainSizeFilterParams(params) {
+  const range = normalizedDomainSizeRangeFromSettings(
+    state.clusterCompareDomainSizeFilter || {}
+  );
+  if (range.domainSizeMin !== "") {
+    params.set("representative_domain_size_min", range.domainSizeMin);
+  }
+  if (range.domainSizeMax !== "") {
+    params.set("representative_domain_size_max", range.domainSizeMax);
+  }
+}
+
 function appendClusteringSettingsToParams(params) {
   params.set("method", String(state.embeddingClusteringSettings.method));
   params.set("distance", String(state.embeddingClusteringSettings.distance));
@@ -1578,6 +1590,7 @@ function representativeClusterCompareUrl(clusterLabel, method = state.representa
   });
   appendSelectionSettingsToParams(params, state.selectionSettings);
   appendClusteringSettingsToParams(params);
+  appendClusterCompareDomainSizeFilterParams(params);
   return `/api/representative?${params.toString()}`;
 }
 
@@ -1592,6 +1605,7 @@ function representativeClusterOverviewUrl(clusters, method = state.representativ
   }
   appendSelectionSettingsToParams(params, state.selectionSettings);
   appendClusteringSettingsToParams(params);
+  appendClusterCompareDomainSizeFilterParams(params);
   return `/api/cluster-overview?${params.toString()}`;
 }
 
@@ -2388,6 +2402,7 @@ const clusterCompareController = createClusterCompareController({
   representativeClusterSummaryFromPayload,
   representativeClusterCompareTileStyles,
   structureDisplaySettingsForView,
+  scheduleUiPreferencesSave,
 });
 const {
   closeClusterCompareModal,

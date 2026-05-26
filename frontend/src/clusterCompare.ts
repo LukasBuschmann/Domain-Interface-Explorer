@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { fetchJson, fetchText } from "./api.js";
-import { interactionRowKey } from "./interfaceModel.js";
+import { interactionRowKey, parseInteractionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams } from "./selectionSettings.js";
 import { createDomainMolstarViewer } from "./molstarView.js";
 
@@ -25,6 +25,7 @@ export function createClusterCompareController({
     residueStyles: [],
     clusterLensData: null,
   }),
+  scheduleUiPreferencesSave = () => {},
 }) {
   const CLUSTER_COMPARE_CACHE_LIMIT = 8;
 
@@ -54,6 +55,85 @@ export function createClusterCompareController({
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#39;");
+  }
+
+  function positiveIntegerString(value) {
+    const text = String(value ?? "").trim();
+    if (text === "") {
+      return "";
+    }
+    const numberValue = Number.parseInt(text, 10);
+    return Number.isFinite(numberValue) && numberValue > 0 ? String(numberValue) : "";
+  }
+
+  function normalizedClusterCompareDomainSizeFilter(settings = state.clusterCompareDomainSizeFilter || {}) {
+    let domainSizeMin = positiveIntegerString(settings.domainSizeMin);
+    let domainSizeMax = positiveIntegerString(settings.domainSizeMax);
+    if (
+      domainSizeMin !== "" &&
+      domainSizeMax !== "" &&
+      Number(domainSizeMin) > Number(domainSizeMax)
+    ) {
+      [domainSizeMin, domainSizeMax] = [domainSizeMax, domainSizeMin];
+    }
+    return { domainSizeMin, domainSizeMax };
+  }
+
+  function clusterCompareDomainSizeFilterIsActive(filter = state.clusterCompareDomainSizeFilter) {
+    const range = normalizedClusterCompareDomainSizeFilter(filter);
+    return range.domainSizeMin !== "" || range.domainSizeMax !== "";
+  }
+
+  function clusterCompareDomainSizeFilterLabel(filter = state.clusterCompareDomainSizeFilter) {
+    const range = normalizedClusterCompareDomainSizeFilter(filter);
+    if (range.domainSizeMin === "" && range.domainSizeMax === "") {
+      return "Size: All";
+    }
+    if (range.domainSizeMin !== "" && range.domainSizeMax !== "") {
+      return `Size: ${range.domainSizeMin}-${range.domainSizeMax}`;
+    }
+    if (range.domainSizeMin !== "") {
+      return `Size: >=${range.domainSizeMin}`;
+    }
+    return `Size: <=${range.domainSizeMax}`;
+  }
+
+  function fragmentLength(fragmentKey) {
+    return String(fragmentKey || "")
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .reduce((total, part) => {
+        const [startText, endText] = part.split("-", 2);
+        const start = Number.parseInt(startText, 10);
+        const end = Number.parseInt(endText, 10);
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+          return total;
+        }
+        return total + end - start + 1;
+      }, 0);
+  }
+
+  function domainLengthFromRowKey(rowKey) {
+    return fragmentLength(parseInteractionRowKey(rowKey).fragmentKey);
+  }
+
+  function rowMatchesClusterCompareDomainSizeFilter(rowKey, filter = state.clusterCompareDomainSizeFilter) {
+    const range = normalizedClusterCompareDomainSizeFilter(filter);
+    if (range.domainSizeMin === "" && range.domainSizeMax === "") {
+      return true;
+    }
+    const domainLength = domainLengthFromRowKey(rowKey);
+    if (!Number.isFinite(domainLength) || domainLength <= 0) {
+      return false;
+    }
+    if (range.domainSizeMin !== "" && domainLength < Number(range.domainSizeMin)) {
+      return false;
+    }
+    if (range.domainSizeMax !== "" && domainLength > Number(range.domainSizeMax)) {
+      return false;
+    }
+    return true;
   }
 
   function fullScreenIconSvg() {
@@ -109,6 +189,9 @@ export function createClusterCompareController({
         if (selectedPartner !== "__all__" && partnerDomain !== selectedPartner) {
           continue;
         }
+        if (!rowMatchesClusterCompareDomainSizeFilter(rowKey)) {
+          continue;
+        }
         const memberKey = interactionRowKey(rowKey, partnerDomain);
         if (!memberKey || seen.has(memberKey)) {
           continue;
@@ -133,7 +216,7 @@ export function createClusterCompareController({
       }
     }
     const currentKey = clusterCompareEntryKey(entry);
-    if (currentKey && !seen.has(currentKey)) {
+    if (currentKey && !seen.has(currentKey) && rowMatchesClusterCompareDomainSizeFilter(entry?.rowKey || entry?.row_key || "")) {
       members.push({
         key: currentKey,
         rowKey: String(entry.rowKey || ""),
@@ -222,6 +305,72 @@ export function createClusterCompareController({
     return state.clusterCompareMode === "representative-clusters" ? "clusterOverview" : "clusterCompare";
   }
 
+  function setClusterCompareDomainSizeMenuOpen(open) {
+    if (!elements.clusterCompareDomainSizeMenu || !elements.clusterCompareDomainSizeButton) {
+      return;
+    }
+    if (open) {
+      const range = normalizedClusterCompareDomainSizeFilter(
+        state.clusterCompareDomainSizeFilterDraft || state.clusterCompareDomainSizeFilter || {}
+      );
+      if (elements.clusterCompareDomainSizeMinInput) {
+        elements.clusterCompareDomainSizeMinInput.value = range.domainSizeMin;
+      }
+      if (elements.clusterCompareDomainSizeMaxInput) {
+        elements.clusterCompareDomainSizeMaxInput.value = range.domainSizeMax;
+      }
+    }
+    elements.clusterCompareDomainSizeMenu.classList.toggle("hidden", !open);
+    elements.clusterCompareDomainSizeButton.setAttribute(
+      "aria-expanded",
+      open ? "true" : "false"
+    );
+  }
+
+  function syncClusterCompareDomainSizeControls() {
+    const filter = normalizedClusterCompareDomainSizeFilter(state.clusterCompareDomainSizeFilter);
+    state.clusterCompareDomainSizeFilter = filter;
+    if (!state.clusterCompareDomainSizeFilterDraft) {
+      state.clusterCompareDomainSizeFilterDraft = { ...filter };
+    }
+    if (elements.clusterCompareDomainSizeLabel) {
+      elements.clusterCompareDomainSizeLabel.textContent = clusterCompareDomainSizeFilterLabel(filter);
+    }
+    const isActive = clusterCompareDomainSizeFilterIsActive(filter);
+    elements.clusterCompareDomainSizeControl?.classList.toggle("active", isActive);
+    elements.clusterCompareDomainSizeButton?.classList.toggle("active", isActive);
+  }
+
+  function readClusterCompareDomainSizeDraftInputs() {
+    return normalizedClusterCompareDomainSizeFilter({
+      domainSizeMin: elements.clusterCompareDomainSizeMinInput?.value || "",
+      domainSizeMax: elements.clusterCompareDomainSizeMaxInput?.value || "",
+    });
+  }
+
+  function reloadClusterCompareForDomainSizeFilter() {
+    if (state.clusterCompareMode === "representative-clusters") {
+      void openRepresentativeClusterCompare({
+        method: state.representativeClusterCompareMethod,
+        force: true,
+      });
+      return;
+    }
+    if (state.clusterCompareClusterLabel !== null && state.clusterCompareClusterLabel !== undefined) {
+      void openClusterCompareForLabel(state.clusterCompareClusterLabel);
+    }
+  }
+
+  function applyClusterCompareDomainSizeFilter(filter = readClusterCompareDomainSizeDraftInputs()) {
+    const normalizedFilter = normalizedClusterCompareDomainSizeFilter(filter);
+    state.clusterCompareDomainSizeFilter = normalizedFilter;
+    state.clusterCompareDomainSizeFilterDraft = { ...normalizedFilter };
+    setClusterCompareDomainSizeMenuOpen(false);
+    syncClusterCompareDomainSizeControls();
+    scheduleUiPreferencesSave();
+    reloadClusterCompareForDomainSizeFilter();
+  }
+
   function setClusterCompareRepresentativeMethodMenuOpen(open) {
     if (!elements.clusterCompareRepresentativeMethodMenu || !elements.clusterCompareRepresentativeMethodButton) {
       return;
@@ -234,6 +383,7 @@ export function createClusterCompareController({
   }
 
   function syncClusterCompareHeaderControls() {
+    syncClusterCompareDomainSizeControls();
     const isRepresentativeClusterMode = state.clusterCompareMode === "representative-clusters";
     elements.clusterCompareRepresentativeMethodControl?.classList.toggle(
       "hidden",
@@ -457,6 +607,7 @@ export function createClusterCompareController({
       elements.clusterCompareModalSubtitle.textContent = "No cluster selected.";
     }
     setClusterCompareLoading(false);
+    setClusterCompareDomainSizeMenuOpen(false);
     syncClusterCompareHeaderControls();
     elements.clusterCompareModal?.classList.add("hidden");
     elements.clusterCompareModal?.setAttribute("aria-hidden", "true");
@@ -1447,13 +1598,18 @@ export function createClusterCompareController({
         },
       ])
     );
-    return clusters.map((cluster) => {
+    const entries = [];
+    for (const cluster of clusters) {
       const selection = selectionsByCluster.get(String(cluster.clusterLabel));
-      if (!selection) {
-        throw new Error(`${cluster.label || embeddingClusterLabel(cluster.clusterLabel)} has no representative row.`);
+      if (!selection?.row) {
+        continue;
       }
-      return representativeClusterEntryFromPayload(cluster, selection, method);
-    });
+      entries.push(representativeClusterEntryFromPayload(cluster, selection, method));
+    }
+    if (entries.length === 0) {
+      throw new Error("No cluster overview representatives match the current domain size filter.");
+    }
+    return entries;
   }
 
   async function fetchRepresentativeClusterSelection(cluster, method) {
@@ -1686,7 +1842,48 @@ export function createClusterCompareController({
     }
   }
 
+  elements.clusterCompareDomainSizeButton?.addEventListener("click", () => {
+    setClusterCompareRepresentativeMethodMenuOpen(false);
+    setClusterCompareDomainSizeMenuOpen(
+      elements.clusterCompareDomainSizeMenu?.classList.contains("hidden")
+    );
+  });
+
+  elements.clusterCompareDomainSizeApply?.addEventListener("click", () => {
+    applyClusterCompareDomainSizeFilter();
+  });
+
+  elements.clusterCompareDomainSizeReset?.addEventListener("click", () => {
+    if (elements.clusterCompareDomainSizeMinInput) {
+      elements.clusterCompareDomainSizeMinInput.value = "";
+    }
+    if (elements.clusterCompareDomainSizeMaxInput) {
+      elements.clusterCompareDomainSizeMaxInput.value = "";
+    }
+    applyClusterCompareDomainSizeFilter({ domainSizeMin: "", domainSizeMax: "" });
+  });
+
+  [
+    elements.clusterCompareDomainSizeMinInput,
+    elements.clusterCompareDomainSizeMaxInput,
+  ].forEach((input) => {
+    input?.addEventListener("input", () => {
+      state.clusterCompareDomainSizeFilterDraft = readClusterCompareDomainSizeDraftInputs();
+      scheduleUiPreferencesSave();
+    });
+    input?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        applyClusterCompareDomainSizeFilter();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        setClusterCompareDomainSizeMenuOpen(false);
+      }
+    });
+  });
+
   elements.clusterCompareRepresentativeMethodButton?.addEventListener("click", () => {
+    setClusterCompareDomainSizeMenuOpen(false);
     setClusterCompareRepresentativeMethodMenuOpen(
       elements.clusterCompareRepresentativeMethodMenu?.classList.contains("hidden")
     );
@@ -1716,6 +1913,9 @@ export function createClusterCompareController({
   document.addEventListener("click", (event) => {
     if (!event.target.closest("#cluster-compare-representative-method-control")) {
       setClusterCompareRepresentativeMethodMenuOpen(false);
+    }
+    if (!event.target.closest("#cluster-compare-domain-size-control")) {
+      setClusterCompareDomainSizeMenuOpen(false);
     }
   });
 

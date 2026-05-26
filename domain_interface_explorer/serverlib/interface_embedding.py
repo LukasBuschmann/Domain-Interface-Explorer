@@ -5001,15 +5001,32 @@ def compute_cluster_compare_payload_from_clustering(
     cluster_label: int,
     limit: int = DEFAULT_CLUSTER_COMPARE_LIMIT,
     interface_payload: dict[str, dict[str, dict]] | None = None,
+    representative_domain_size_filter: tuple[int | None, int | None] | None = None,
 ) -> dict[str, object]:
     clustering_points = clustering_payload["points"]
     cluster_items = []
+    unfiltered_cluster_count = 0
+    domain_size_filter_active = domain_size_filter_is_active(representative_domain_size_filter)
     for index, point in enumerate(clustering_points):
         if int(point.get("cluster_label", -1)) != cluster_label:
             continue
+        unfiltered_cluster_count += 1
         entry = cluster_compare_entry_for_point(interface_payload, point)
+        if domain_size_filter_active:
+            filter_entry = entry if isinstance(entry, dict) else {
+                "domain_length": domain_length_from_row_payload(point.get("row_key"), {}),
+            }
+            if not entry_matches_domain_size_filter(
+                filter_entry,
+                representative_domain_size_filter,
+            ):
+                continue
         cluster_items.append((point, entry, index))
     if not cluster_items:
+        if domain_size_filter_active and unfiltered_cluster_count > 0:
+            raise ValueError(
+                f"cluster {cluster_label} has no entries matching the representative domain size filter"
+            )
         raise ValueError(f"cluster {cluster_label} has no entries")
 
     cluster_items.sort(
@@ -5030,7 +5047,7 @@ def compute_cluster_compare_payload_from_clustering(
         )
         selection_method = "approximate_max_min_sample"
         subtitle = (
-            f"Showing {len(selected_items)} of {len(cluster_items)} cluster entries. "
+            f"Showing {len(selected_items)} of {len(cluster_items)} eligible cluster entries. "
             f"Examples are selected by approximate max-min {distance_metric} distance on sampled cluster members."
         )
     else:
@@ -5048,7 +5065,7 @@ def compute_cluster_compare_payload_from_clustering(
         )
         selection_method = "direct_cluster_sample"
         subtitle = (
-            f"Showing {len(selected_items)} of {len(cluster_items)} cluster entries. "
+            f"Showing {len(selected_items)} of {len(cluster_items)} eligible cluster entries. "
             "Examples are sampled directly from cluster members."
         )
 
@@ -5059,14 +5076,20 @@ def compute_cluster_compare_payload_from_clustering(
     ) if has_column_entries else {}
     remaining_count = max(0, len(cluster_items) - len(selected_items))
     selected_entries = []
-    for selection_rank, (point, _entry, item_index) in enumerate(selected_items):
+    for selection_rank, (point, entry, item_index) in enumerate(selected_items):
         coverage_count = int(coverage_by_index.get(item_index, 0))
+        domain_length = (
+            int(entry.get("domain_length", 0))
+            if isinstance(entry, dict)
+            else domain_length_from_row_payload(point.get("row_key"), {})
+        )
         coverage_fraction = (coverage_count / remaining_count) if remaining_count > 0 else 0.0
         selected_entries.append(
             {
                 "row_key": str(point.get("row_key", "")),
                 "partner_domain": str(point.get("partner_domain", "")),
                 "selection_rank": selection_rank,
+                "domain_length": domain_length,
                 "coverage_count": coverage_count,
                 "coverage_fraction": coverage_fraction,
                 "coverage_percent": coverage_fraction * 100.0,
@@ -5082,7 +5105,9 @@ def compute_cluster_compare_payload_from_clustering(
         "cluster_label": cluster_label,
         "distance": distance_metric,
         "entry_count": len(cluster_items),
+        "unfiltered_entry_count": unfiltered_cluster_count,
         "remaining_entry_count": remaining_count,
+        "representative_domain_size_filter": domain_size_filter_key(representative_domain_size_filter),
         "selection_method": selection_method,
         "subtitle": subtitle,
         "selected_entries": selected_entries,

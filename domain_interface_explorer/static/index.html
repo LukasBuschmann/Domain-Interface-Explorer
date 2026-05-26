@@ -1820,6 +1820,63 @@
           </div>
           <div class="cluster-compare-header-actions">
             <div
+              id="cluster-compare-domain-size-control"
+              class="representative-method-control cluster-compare-domain-size-control"
+            >
+              <button
+                id="cluster-compare-domain-size-button"
+                class="representative-method-button"
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-label="Representative domain size filter"
+              >
+                <span id="cluster-compare-domain-size-label">Size: All</span>
+                <span class="picker-caret">▾</span>
+              </button>
+              <div
+                id="cluster-compare-domain-size-menu"
+                class="representative-method-menu cluster-compare-domain-size-menu hidden"
+                role="menu"
+                aria-label="Representative domain size filter"
+              >
+                <label class="cluster-compare-domain-size-field">
+                  <span>Min residues</span>
+                  <input
+                    id="cluster-compare-domain-size-min"
+                    class="embedding-settings-input"
+                    type="number"
+                    step="1"
+                    min="1"
+                    placeholder="any"
+                  >
+                </label>
+                <label class="cluster-compare-domain-size-field">
+                  <span>Max residues</span>
+                  <input
+                    id="cluster-compare-domain-size-max"
+                    class="embedding-settings-input"
+                    type="number"
+                    step="1"
+                    min="1"
+                    placeholder="any"
+                  >
+                </label>
+                <div class="cluster-compare-domain-size-actions">
+                  <button
+                    id="cluster-compare-domain-size-reset"
+                    class="structure-display-secondary-button"
+                    type="button"
+                  >Reset</button>
+                  <button
+                    id="cluster-compare-domain-size-apply"
+                    class="embedding-settings-apply"
+                    type="button"
+                  >Apply</button>
+                </div>
+              </div>
+            </div>
+            <div
               id="cluster-compare-representative-method-control"
               class="representative-method-control cluster-compare-representative-method-control hidden"
             >

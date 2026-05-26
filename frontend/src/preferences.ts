@@ -532,6 +532,12 @@ export function applyUiPreferences(state) {
     ["balanced", "residue"],
     state.representativeMethod,
   );
+  state.clusterCompareDomainSizeFilter = normalizeDomainSizeRange(
+    preferences.clusterCompareDomainSizeFilter,
+  );
+  state.clusterCompareDomainSizeFilterDraft = normalizeDomainSizeRange(
+    preferences.clusterCompareDomainSizeFilterDraft || state.clusterCompareDomainSizeFilter,
+  );
   state.structureContactsVisible =
     typeof preferences.structureContactsVisible === "boolean"
       ? preferences.structureContactsVisible
@@ -595,6 +601,8 @@ function preferencesPayload(state) {
     },
     representativeLens: state.representativeLens,
     representativeMethod: state.representativeMethod,
+    clusterCompareDomainSizeFilter: state.clusterCompareDomainSizeFilter || {},
+    clusterCompareDomainSizeFilterDraft: state.clusterCompareDomainSizeFilterDraft || {},
     structureContactsVisible: state.structureContactsVisible,
     structureColumnView: state.structureColumnView,
     structureDisplayCustomPresets: state.structureDisplayCustomPresets || [],

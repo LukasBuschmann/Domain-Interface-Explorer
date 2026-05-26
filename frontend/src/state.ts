@@ -155,6 +155,14 @@ export const state = {
   representativeRenderedRequestId: 0,
   representativePointer: null,
   representativeClusterCompareMethod: "balanced",
+  clusterCompareDomainSizeFilter: {
+    domainSizeMin: "",
+    domainSizeMax: "",
+  },
+  clusterCompareDomainSizeFilterDraft: {
+    domainSizeMin: "",
+    domainSizeMax: "",
+  },
   clusterCompareMode: "cluster",
   clusterCompareClusterLabel: null,
   clusterCompareCache: new Map(),

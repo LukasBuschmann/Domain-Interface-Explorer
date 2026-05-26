@@ -40,6 +40,9 @@ from domain_interface_explorer.serverlib.interface_embedding import (
     hierarchy_status_payload,
     collect_interface_alignment_row_metadata,
     domain_length_from_row_payload,
+    domain_size_filter_is_active,
+    domain_size_filter_key,
+    entry_matches_domain_size_filter,
     interface_residue_count,
     interface_filter_settings_key,
     load_interface_point_data,
@@ -126,6 +129,62 @@ def safe_file_path(directory: Path, filename: str) -> Path | None:
     return candidate
 
 
+def optional_positive_int_query(
+    query: dict[str, list[str]],
+    *names: str,
+) -> int | None:
+    for name in names:
+        raw_values = query.get(name, [])
+        if not raw_values:
+            continue
+        raw_value = str(raw_values[0] or "").strip()
+        if raw_value == "":
+            return None
+        try:
+            value = int(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be a positive integer") from exc
+        if value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
+        return value
+    return None
+
+
+def representative_domain_size_filter_from_query(
+    query: dict[str, list[str]],
+) -> tuple[int | None, int | None]:
+    min_size = optional_positive_int_query(
+        query,
+        "representative_domain_size_min",
+        "shown_domain_size_min",
+    )
+    max_size = optional_positive_int_query(
+        query,
+        "representative_domain_size_max",
+        "shown_domain_size_max",
+    )
+    if min_size is not None and max_size is not None and min_size > max_size:
+        min_size, max_size = max_size, min_size
+    return min_size, max_size
+
+
+def candidate_matches_domain_size_filter(
+    candidate: dict[str, object],
+    domain_size_filter: tuple[int | None, int | None] | None,
+) -> bool:
+    if not domain_size_filter_is_active(domain_size_filter):
+        return True
+    return entry_matches_domain_size_filter(
+        {
+            "domain_length": domain_length_from_row_payload(
+                candidate.get("interface_row_key") or candidate.get("row_key"),
+                candidate,
+            ),
+        },
+        domain_size_filter,
+    )
+
+
 INTERFACE_VIEW_CACHE_LIMIT = 4
 INTERFACE_VIEW_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
 INTERFACE_VIEW_CACHE_LOCK = threading.Lock()
@@ -168,6 +227,7 @@ def representative_cache_key(
     representative_method: str,
     cluster_label: int | None,
     clustering_settings: dict[str, object] | None,
+    representative_domain_size_filter: tuple[int | None, int | None] | None = None,
 ) -> str:
     stat = path.stat()
     return "|".join(
@@ -181,6 +241,7 @@ def representative_cache_key(
             str(representative_method),
             "" if cluster_label is None else str(cluster_label),
             json.dumps(clustering_settings or {}, sort_keys=True),
+            domain_size_filter_key(representative_domain_size_filter),
         )
     )
 
@@ -210,6 +271,7 @@ def cluster_overview_cache_key(
     representative_method: str,
     cluster_labels: list[int],
     clustering_settings: dict[str, object],
+    representative_domain_size_filter: tuple[int | None, int | None] | None = None,
 ) -> str:
     stat = path.stat()
     return "|".join(
@@ -222,6 +284,7 @@ def cluster_overview_cache_key(
             str(representative_method),
             ",".join(str(label) for label in cluster_labels),
             json.dumps(clustering_settings or {}, sort_keys=True),
+            domain_size_filter_key(representative_domain_size_filter),
         )
     )
 
@@ -1373,6 +1436,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         try:
             cluster_label = int(cluster_label_raw)
             clustering_settings = parse_clustering_settings(query)
+            representative_domain_size_filter = representative_domain_size_filter_from_query(query)
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -1396,6 +1460,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                     clustering_payload,
                     cluster_label,
                     interface_payload=interface_payload,
+                    representative_domain_size_filter=representative_domain_size_filter,
                 ),
             }
         except (RuntimeError, ValueError) as exc:
@@ -1635,6 +1700,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         clustering_payload: dict[str, object],
         cluster_labels: list[int],
         partner_filter: str,
+        representative_domain_size_filter: tuple[int | None, int | None] | None = None,
     ) -> dict[int, list[dict[str, object]]]:
         requested_labels = set(cluster_labels)
         members_by_cluster: dict[int, list[dict[str, object]]] = {
@@ -1662,6 +1728,14 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             if not row_key or not partner_domain:
                 continue
             if partner_filter != "__all__" and partner_domain != partner_filter:
+                continue
+            if not candidate_matches_domain_size_filter(
+                {
+                    "interface_row_key": row_key,
+                    "partner_domain": partner_domain,
+                },
+                representative_domain_size_filter,
+            ):
                 continue
             key = (row_key, partner_domain)
             seen = seen_by_cluster.setdefault(cluster_label, set())
@@ -1714,6 +1788,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         try:
             cluster_labels = self._query_cluster_labels(query)
             clustering_settings = parse_clustering_settings(query)
+            representative_domain_size_filter = representative_domain_size_filter_from_query(query)
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -1727,6 +1802,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             representative_method,
             cluster_labels,
             clustering_settings,
+            representative_domain_size_filter,
         )
         with CLUSTER_OVERVIEW_CACHE_LOCK:
             cached_response = CLUSTER_OVERVIEW_CACHE.get(cache_key)
@@ -1770,6 +1846,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 clustering_payload,
                 cluster_labels,
                 partner_filter,
+                representative_domain_size_filter,
             )
             selected_representatives: list[dict[str, object]] = []
             with timed_step(
@@ -1827,6 +1904,9 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 "filter_settings": interface_filter_settings,
                 "partner_filter": partner_filter,
                 "representative_method": representative_method,
+                "representative_domain_size_filter": domain_size_filter_key(
+                    representative_domain_size_filter,
+                ),
                 "alignment_length": alignment_length,
                 "cluster_labels": cluster_labels,
                 "selected_representatives": selected_representatives,
@@ -1895,6 +1975,11 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 status=HTTPStatus.BAD_REQUEST,
             )
             return
+        try:
+            representative_domain_size_filter = representative_domain_size_filter_from_query(query)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
         cluster_label: int | None = None
         if scope == "cluster":
             cluster_label_raw = query.get("cluster_label", [""])[0].strip()
@@ -1917,6 +2002,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             representative_method,
             cluster_label,
             clustering_settings,
+            representative_domain_size_filter,
         )
         with REPRESENTATIVE_CACHE_LOCK:
             cached_response = REPRESENTATIVE_CACHE.get(cache_key)
@@ -1955,7 +2041,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             source_candidate_count: int | None = None
-            if scope == "overall":
+            if scope == "overall" and not domain_size_filter_is_active(representative_domain_size_filter):
                 candidate_keys, alignment_length = self._load_representative_candidate_keys(
                     path,
                     interface_filter_settings,
@@ -1984,6 +2070,13 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                         for candidate in candidates
                         if str(candidate.get("partner_domain") or "") == partner_filter
                     ]
+                if scope == "overall" and domain_size_filter_is_active(representative_domain_size_filter):
+                    candidates = [
+                        candidate
+                        for candidate in candidates
+                        if candidate_matches_domain_size_filter(candidate, representative_domain_size_filter)
+                    ]
+                    source_candidate_count = len(candidates)
             cluster_summaries: list[dict[str, object]] | None = None
             if scope == "cluster" and clustering_settings is not None and cluster_label is not None:
                 clustering_payload = self._load_clustering_payload(
@@ -2008,11 +2101,20 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                     )
                     in member_keys
                 ]
+                if domain_size_filter_is_active(representative_domain_size_filter):
+                    candidates = [
+                        candidate
+                        for candidate in candidates
+                        if candidate_matches_domain_size_filter(candidate, representative_domain_size_filter)
+                    ]
             response_payload = {
                 "file": path.name,
                 "pfam_id": interface_file_pfam_id(path),
                 "filter_settings": interface_filter_settings,
                 "partner_filter": partner_filter,
+                "representative_domain_size_filter": domain_size_filter_key(
+                    representative_domain_size_filter,
+                ),
                 **compute_representative_payload(
                     candidates,
                     alignment_length,

@@ -2471,7 +2471,8 @@ select,
 
 #representative-scope-label,
 #representative-method-label,
-#cluster-compare-representative-method-label {
+#cluster-compare-representative-method-label,
+#cluster-compare-domain-size-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2953,6 +2954,48 @@ select,
 
 .cluster-compare-representative-method-control {
   background: rgba(255, 252, 245, 0.88);
+}
+
+.cluster-compare-domain-size-control {
+  width: 146px;
+  background: rgba(255, 252, 245, 0.88);
+}
+
+.cluster-compare-domain-size-control.active {
+  border-color: rgba(141, 91, 44, 0.54);
+  box-shadow: 0 0 0 2px rgba(141, 91, 44, 0.08);
+}
+
+.cluster-compare-domain-size-menu {
+  left: auto;
+  right: -1px;
+  width: 238px;
+  padding: 8px;
+  gap: 8px;
+}
+
+.cluster-compare-domain-size-field {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.cluster-compare-domain-size-field input {
+  width: 100%;
+}
+
+.cluster-compare-domain-size-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.cluster-compare-domain-size-actions .embedding-settings-apply,
+.cluster-compare-domain-size-actions .structure-display-secondary-button {
+  width: 100%;
+  margin: 0;
+  justify-content: center;
 }
 
 .cluster-compare-icon-button,
