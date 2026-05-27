@@ -65,6 +65,11 @@ METRIC_CODES = {
     "overlap": 1,
     "dice": 2,
 }
+POINT_DISTANCE_METRICS = {"binary", "jaccard", "dice", "overlap"}
+PAIRWISE_DISTANCE_METRICS = {"jaccard", "dice", "overlap"}
+CLUSTERING_DISTANCE_METRICS = POINT_DISTANCE_METRICS
+VALID_HDBSCAN_SAMPLE_SCOPES = {"expanded", "unique"}
+HDBSCAN_HIERARCHY_CACHE_VERSION = "1"
 VALID_HIERARCHICAL_LINKAGES = {
     "single",
     "complete",
@@ -1450,7 +1455,7 @@ def overlap_distance_for_sets(left: set[int], right: set[int]) -> float:
 
 def parse_embedding_distance(query: dict[str, list[str]], default_metric: str = DEFAULT_EMBEDDING_DISTANCE) -> str:
     distance_raw = query.get("distance", [default_metric])[0].strip().lower()
-    if distance_raw not in {"binary", "jaccard", "dice", "overlap"}:
+    if distance_raw not in POINT_DISTANCE_METRICS:
         raise ValueError("point distance must be one of 'binary', 'jaccard', 'dice', or 'overlap'")
     return distance_raw
 
@@ -1517,6 +1522,10 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
     distance_raw = query.get("distance", [DEFAULT_DISTANCE_METRIC])[0].strip().lower()
     min_cluster_size_raw = query.get("min_cluster_size", [str(DEFAULT_CLUSTER_MIN_SIZE)])[0].strip()
     min_samples_raw = query.get("min_samples", [""])[0].strip()
+    hdbscan_sample_scope_raw = query.get(
+        "hdbscan_sample_scope",
+        query.get("sample_scope", ["expanded"]),
+    )[0].strip().lower()
     cluster_selection_epsilon_raw = query.get(
         "cluster_selection_epsilon", [str(DEFAULT_CLUSTER_SELECTION_EPSILON)]
     )[0].strip()
@@ -1589,8 +1598,13 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
     )[0].strip()
     if method_raw not in {"hdbscan", "hierarchical"}:
         raise ValueError("clustering method must be either 'hdbscan' or 'hierarchical'")
-    if distance_raw not in {"jaccard", "dice", "overlap"}:
-        raise ValueError("distance must be one of 'jaccard', 'dice', or 'overlap'")
+    if distance_raw not in CLUSTERING_DISTANCE_METRICS:
+        raise ValueError("distance must be one of 'binary', 'jaccard', 'dice', or 'overlap'")
+    if method_raw == "hierarchical" and distance_raw not in PAIRWISE_DISTANCE_METRICS:
+        raise ValueError("hierarchical clustering distance must be one of 'jaccard', 'dice', or 'overlap'")
+    hdbscan_sample_scope = hdbscan_sample_scope_raw or "expanded"
+    if hdbscan_sample_scope not in VALID_HDBSCAN_SAMPLE_SCOPES:
+        raise ValueError("HDBSCAN sample scope must be either 'expanded' or 'unique'")
     if linkage_raw not in VALID_HIERARCHICAL_LINKAGES:
         raise ValueError(
             "linkage must be one of 'single', 'complete', 'average', "
@@ -1603,6 +1617,8 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
     min_cluster_size = int(min_cluster_size_raw)
     if min_cluster_size <= 0:
         raise ValueError("min cluster size must be positive")
+    if method_raw == "hdbscan" and min_cluster_size < 2:
+        raise ValueError("HDBSCAN min cluster size must be at least 2")
     min_samples: int | None
     if min_samples_raw == "":
         min_samples = None
@@ -1730,6 +1746,8 @@ def parse_clustering_settings(query: dict[str, list[str]]) -> dict[str, object]:
                 settings["pfam_row_coverage_min"] = pfam_row_coverage_min
             if pfam_row_coverage_max is not None:
                 settings["pfam_row_coverage_max"] = pfam_row_coverage_max
+    elif method_raw == "hdbscan":
+        settings["hdbscan_sample_scope"] = hdbscan_sample_scope
     return settings
 
 
@@ -2067,6 +2085,62 @@ def compute_interface_feature_data(
         "compressed_entries": compressed_entries,
         "compressed_indicator_matrix": compressed_indicator_matrix,
         "compressed_msa_columns": compressed_msa_columns,
+        "original_sample_count": len(entries),
+        "compressed_sample_count": len(compressed_entries),
+    }
+
+
+def hdbscan_sample_scope(settings: dict[str, object]) -> str:
+    sample_scope = str(settings.get("hdbscan_sample_scope", "expanded") or "expanded")
+    if sample_scope not in VALID_HDBSCAN_SAMPLE_SCOPES:
+        raise ValueError("HDBSCAN sample scope must be either 'expanded' or 'unique'")
+    return sample_scope
+
+
+def compute_interface_binary_clustering_data(
+    interface_payload: dict[str, dict[str, dict]],
+    interface_path: Path | None = None,
+    interface_filter_settings: dict[str, object] | None = None,
+    sample_scope: str = "expanded",
+) -> dict[str, object]:
+    if sample_scope not in VALID_HDBSCAN_SAMPLE_SCOPES:
+        raise ValueError("HDBSCAN sample scope must be either 'expanded' or 'unique'")
+    if interface_path is not None:
+        entries, compression = load_or_build_compressed_interface_data(
+            interface_path,
+            interface_payload,
+            interface_filter_settings,
+        )
+    else:
+        entries, compression = build_compressed_interface_data_uncached(
+            interface_payload,
+            log_category="clustering",
+            parse_message="parse interfaces for binary clustering",
+            compress_message="compress interfaces for binary clustering",
+        )
+    compressed_entries = compression["entries"]
+    hdbscan_entries = compressed_entries if sample_scope == "unique" else entries
+    with timed_step(
+        "clustering",
+        "parse HDBSCAN binary vectors",
+        interface_count=len(entries),
+        hdbscan_sample_scope=sample_scope,
+        hdbscan_input_count=len(hdbscan_entries),
+    ) as timer:
+        indicator_matrix, msa_columns = build_indicator_matrix(hdbscan_entries)
+        timer.set(columns=len(msa_columns))
+    return {
+        "entries": entries,
+        "distance": "binary",
+        "compression_mode": compression["compression_mode"],
+        "group_index_by_entry": compression["group_index_by_entry"],
+        "compressed_entries": compressed_entries,
+        "hdbscan_entries": hdbscan_entries,
+        "hdbscan_indicator_matrix": indicator_matrix,
+        "hdbscan_sample_scope": sample_scope,
+        "hdbscan_input_count": len(hdbscan_entries),
+        "indicator_matrix": indicator_matrix,
+        "msa_columns": msa_columns,
         "original_sample_count": len(entries),
         "compressed_sample_count": len(compressed_entries),
     }
@@ -2656,7 +2730,168 @@ def compute_embedding_payload(
         return payload
 
 
-def compute_hdbscan_clustering_payload(distance_data: dict[str, object], settings: dict[str, object]) -> dict[str, object]:
+def load_hdbscan_distance_data(
+    cache_dir: Path,
+    interface_path: Path,
+    interface_payload: dict[str, dict[str, dict]],
+    clustering_settings: dict[str, object],
+    interface_filter_settings: dict[str, object] | None = None,
+    cache_workers: int = DEFAULT_CACHE_WORKERS,
+) -> dict[str, object]:
+    distance_metric = str(clustering_settings["distance"])
+    sample_scope = hdbscan_sample_scope(clustering_settings)
+    if distance_metric == "binary":
+        response = compute_interface_binary_clustering_data(
+            interface_payload,
+            interface_path=interface_path,
+            interface_filter_settings=interface_filter_settings,
+            sample_scope=sample_scope,
+        )
+    else:
+        distance_scope = "compressed" if sample_scope == "unique" else "expanded"
+        distance_data = load_interface_distance_data(
+            cache_dir,
+            interface_path,
+            interface_payload,
+            distance_metric,
+            interface_filter_settings,
+            distance_scope=distance_scope,
+            cache_workers=cache_workers,
+        )
+        response = dict(distance_data)
+        if sample_scope == "unique":
+            response["hdbscan_entries"] = response["compressed_entries"]
+            response["hdbscan_distance_matrix"] = response["compressed_distance_matrix"]
+        else:
+            response["hdbscan_entries"] = response["entries"]
+            response["hdbscan_distance_matrix"] = response["distance_matrix"]
+        response["hdbscan_sample_scope"] = sample_scope
+        response["hdbscan_input_count"] = len(response["hdbscan_entries"])
+    response["hdbscan_entries_signature_hash"] = distance_entries_signature(
+        response.get("hdbscan_entries", response.get("entries", []))
+    )
+    return response
+
+
+def hdbscan_effective_min_samples(
+    settings: dict[str, object],
+    sample_count: int | None = None,
+) -> int:
+    raw_min_samples = settings.get("min_samples")
+    if raw_min_samples is None or str(raw_min_samples).strip() == "":
+        effective_min_samples = int(settings["min_cluster_size"])
+    else:
+        effective_min_samples = int(raw_min_samples)
+    if effective_min_samples <= 0:
+        raise ValueError("min samples must be positive")
+    if sample_count is not None:
+        if sample_count <= 1:
+            return 1
+        effective_min_samples = min(int(sample_count) - 1, effective_min_samples)
+        effective_min_samples = max(1, effective_min_samples)
+    return effective_min_samples
+
+
+def hdbscan_hierarchy_cache_path(
+    cache_dir: Path,
+    interface_path: Path,
+    distance_data: dict[str, object],
+    clustering_settings: dict[str, object],
+    interface_filter_settings: dict[str, object] | None = None,
+) -> Path:
+    stat = interface_path.stat()
+    hdbscan_entries = distance_data.get("hdbscan_entries", distance_data.get("entries", []))
+    signature_hash = str(
+        distance_data.get("hdbscan_entries_signature_hash")
+        or distance_entries_signature(hdbscan_entries if isinstance(hdbscan_entries, list) else [])
+    )
+    sample_count = len(hdbscan_entries) if isinstance(hdbscan_entries, list) else 0
+    cache_key = {
+        "version": HDBSCAN_HIERARCHY_CACHE_VERSION,
+        "file": str(interface_path.resolve()),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "filter": interface_filter_settings_key(interface_filter_settings),
+        "distance": str(distance_data["distance"]),
+        "hdbscan_sample_scope": str(distance_data.get("hdbscan_sample_scope", "expanded")),
+        "effective_min_samples": hdbscan_effective_min_samples(clustering_settings, sample_count),
+        "sample_count": sample_count,
+        "signature_hash": signature_hash,
+    }
+    key = hashlib.sha1(
+        json.dumps(cache_key, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return cache_dir / "hdbscan_hierarchies" / f"{key}.npz"
+
+
+def load_cached_hdbscan_hierarchy(
+    cache_path: Path,
+    *,
+    expected_signature_hash: str,
+    expected_leaf_count: int,
+    expected_effective_min_samples: int,
+    expected_distance: str,
+    expected_sample_scope: str,
+) -> dict[str, object] | None:
+    if not cache_path.exists():
+        log_event("clustering", "HDBSCAN hierarchy cache missing", file=cache_path.name)
+        return None
+    try:
+        with timed_step("clustering", "load cached HDBSCAN hierarchy", file=cache_path.name) as timer:
+            with np.load(cache_path, allow_pickle=False) as data:
+                cached_signature_hash = str(np_scalar(data["signature_hash"]))
+                cached_leaf_count = int(np.asarray(data["leaf_count"]).reshape(-1)[0])
+                cached_effective_min_samples = int(
+                    np.asarray(data["effective_min_samples"]).reshape(-1)[0]
+                )
+                cached_distance = str(np_scalar(data["distance"]))
+                cached_sample_scope = str(np_scalar(data["hdbscan_sample_scope"]))
+                if (
+                    cached_signature_hash != expected_signature_hash
+                    or cached_leaf_count != expected_leaf_count
+                    or cached_effective_min_samples != expected_effective_min_samples
+                    or cached_distance != expected_distance
+                    or cached_sample_scope != expected_sample_scope
+                ):
+                    timer.set(matches=False)
+                    return None
+                single_linkage_tree = data["single_linkage_tree"].astype(np.float64, copy=False)
+                input_metric = str(np_scalar(data["input_metric"], ""))
+                hdbscan_metric = str(np_scalar(data["hdbscan_metric"], ""))
+            timer.set(matches=True, leaf_count=cached_leaf_count)
+    except (OSError, ValueError, KeyError):
+        log_event("clustering", "cached HDBSCAN hierarchy unreadable", file=cache_path.name)
+        return None
+    return {
+        "source": "hdbscan_cache",
+        "single_linkage_tree": single_linkage_tree,
+        "leaf_count": cached_leaf_count,
+        "signature_hash": cached_signature_hash,
+        "effective_min_samples": cached_effective_min_samples,
+        "input_metric": input_metric,
+        "hdbscan_metric": hdbscan_metric,
+    }
+
+
+def hdbscan_input_from_distance_data(distance_data: dict[str, object]) -> tuple[object, str, str]:
+    distance_metric = str(distance_data["distance"])
+    if distance_metric == "binary":
+        return (
+            np.asarray(distance_data["hdbscan_indicator_matrix"], dtype=np.float64),
+            "euclidean",
+            "binary_columns",
+        )
+    return (
+        np.asarray(distance_data["hdbscan_distance_matrix"], dtype=np.float64),
+        "precomputed",
+        "precomputed",
+    )
+
+
+def compute_hdbscan_hierarchy(
+    distance_data: dict[str, object],
+    settings: dict[str, object],
+) -> dict[str, object]:
     try:
         with timed_step("clustering", "import HDBSCAN"):
             from hdbscan import HDBSCAN
@@ -2664,35 +2899,197 @@ def compute_hdbscan_clustering_payload(distance_data: dict[str, object], setting
         raise RuntimeError(
             "Embedding clustering requires the standalone hdbscan package in the Python environment running the server."
         ) from exc
-    entries = distance_data["entries"]
-    distance_matrix = distance_data["distance_matrix"]
+    hdbscan_entries = distance_data.get("hdbscan_entries", distance_data["entries"])
     distance_metric = str(distance_data["distance"])
     min_cluster_size = int(settings["min_cluster_size"])
-    min_samples = settings["min_samples"]
-    cluster_selection_epsilon = float(settings["cluster_selection_epsilon"])
+    effective_min_samples = hdbscan_effective_min_samples(settings, len(hdbscan_entries))
+    hdbscan_input, hdbscan_metric, input_metric = hdbscan_input_from_distance_data(distance_data)
     clusterer = HDBSCAN(
-        metric="precomputed",
+        metric=hdbscan_metric,
         min_cluster_size=min_cluster_size,
-        min_samples=min_samples,
-        cluster_selection_epsilon=cluster_selection_epsilon,
+        min_samples=effective_min_samples,
+        cluster_selection_epsilon=float(settings["cluster_selection_epsilon"]),
         allow_single_cluster=True,
         core_dist_n_jobs=1,
     )
     try:
         with timed_step(
             "clustering",
-            "run HDBSCAN",
-            samples=len(entries),
+            "build HDBSCAN hierarchy",
+            samples=len(hdbscan_entries),
             metric=distance_metric,
-            min_cluster_size=min_cluster_size,
+            input_metric=input_metric,
+            hdbscan_metric=hdbscan_metric,
+            hdbscan_sample_scope=str(distance_data.get("hdbscan_sample_scope", "expanded")),
+            columns=int(hdbscan_input.shape[1]) if hdbscan_input.ndim == 2 else 0,
+            effective_min_samples=effective_min_samples,
         ):
-            labels = clusterer.fit_predict(distance_matrix)
+            clusterer.fit(hdbscan_input)
     except Exception as exc:
         raise RuntimeError(f"HDBSCAN failed unexpectedly: {exc}") from exc
-    labels_list = rank_non_negative_cluster_labels_by_size([int(label) for label in labels.tolist()])
+    tree = getattr(clusterer, "single_linkage_tree_", None)
+    if tree is None or not hasattr(tree, "to_numpy"):
+        raise RuntimeError("HDBSCAN did not expose a reusable single-linkage tree")
+    single_linkage_tree = np.asarray(tree.to_numpy(), dtype=np.float64)
+    return {
+        "source": "hdbscan_computed",
+        "single_linkage_tree": single_linkage_tree,
+        "leaf_count": len(hdbscan_entries),
+        "signature_hash": str(distance_data.get("hdbscan_entries_signature_hash") or ""),
+        "effective_min_samples": effective_min_samples,
+        "input_metric": input_metric,
+        "hdbscan_metric": hdbscan_metric,
+    }
+
+
+def load_or_compute_hdbscan_hierarchy(
+    cache_dir: Path,
+    interface_path: Path,
+    distance_data: dict[str, object],
+    clustering_settings: dict[str, object],
+    interface_filter_settings: dict[str, object] | None = None,
+) -> dict[str, object]:
+    hdbscan_entries = distance_data.get("hdbscan_entries", distance_data.get("entries", []))
+    leaf_count = len(hdbscan_entries) if isinstance(hdbscan_entries, list) else 0
+    signature_hash = str(
+        distance_data.get("hdbscan_entries_signature_hash")
+        or distance_entries_signature(hdbscan_entries if isinstance(hdbscan_entries, list) else [])
+    )
+    effective_min_samples = hdbscan_effective_min_samples(clustering_settings, leaf_count)
+    distance_metric = str(distance_data["distance"])
+    sample_scope = str(distance_data.get("hdbscan_sample_scope", "expanded") or "expanded")
+    cache_path = hdbscan_hierarchy_cache_path(
+        cache_dir,
+        interface_path,
+        distance_data,
+        clustering_settings,
+        interface_filter_settings,
+    )
+    cached_hierarchy = load_cached_hdbscan_hierarchy(
+        cache_path,
+        expected_signature_hash=signature_hash,
+        expected_leaf_count=leaf_count,
+        expected_effective_min_samples=effective_min_samples,
+        expected_distance=distance_metric,
+        expected_sample_scope=sample_scope,
+    )
+    if cached_hierarchy is not None:
+        log_event(
+            "clustering",
+            "reuse cached HDBSCAN hierarchy",
+            file=cache_path.name,
+            metric=distance_metric,
+            hdbscan_sample_scope=sample_scope,
+            effective_min_samples=effective_min_samples,
+        )
+        return cached_hierarchy
+    hierarchy = compute_hdbscan_hierarchy(distance_data, clustering_settings)
+    try:
+        with timed_step(
+            "clustering",
+            "write HDBSCAN hierarchy cache",
+            file=cache_path.name,
+            leaf_count=leaf_count,
+            metric=distance_metric,
+            hdbscan_sample_scope=sample_scope,
+            effective_min_samples=effective_min_samples,
+        ):
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(
+                cache_path,
+                format_version=np.array([1], dtype=np.uint16),
+                distance=np.array(distance_metric),
+                hdbscan_sample_scope=np.array(sample_scope),
+                pfam_id=np.array(interface_file_pfam_id(interface_path)),
+                leaf_count=np.array([leaf_count], dtype=np.uint32),
+                signature_hash=np.array(signature_hash),
+                effective_min_samples=np.array([effective_min_samples], dtype=np.uint32),
+                input_metric=np.array(str(hierarchy.get("input_metric", ""))),
+                hdbscan_metric=np.array(str(hierarchy.get("hdbscan_metric", ""))),
+                single_linkage_tree=np.asarray(hierarchy["single_linkage_tree"], dtype=np.float64),
+            )
+    except OSError:
+        log_event("clustering", "failed to write HDBSCAN hierarchy cache", file=cache_path.name)
+    return hierarchy
+
+
+def extract_hdbscan_sample_labels(
+    hdbscan_hierarchy: dict[str, object],
+    settings: dict[str, object],
+) -> tuple[object, object]:
+    try:
+        with timed_step("clustering", "import HDBSCAN extraction"):
+            from hdbscan.hdbscan_ import _tree_to_labels
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "Embedding clustering requires the standalone hdbscan package in the Python environment running the server."
+        ) from exc
+    single_linkage_tree = np.asarray(hdbscan_hierarchy["single_linkage_tree"], dtype=np.float64)
+    leaf_count = int(hdbscan_hierarchy.get("leaf_count", single_linkage_tree.shape[0] + 1))
+    min_cluster_size = int(settings["min_cluster_size"])
+    cluster_selection_epsilon = float(settings["cluster_selection_epsilon"])
+    with timed_step(
+        "clustering",
+        "extract HDBSCAN clusters",
+        samples=leaf_count,
+        min_cluster_size=min_cluster_size,
+        cluster_selection_epsilon=cluster_selection_epsilon,
+        hierarchy_source=str(hdbscan_hierarchy.get("source", "hdbscan_hierarchy")),
+    ):
+        labels, probabilities, _stabilities, _condensed_tree, _single_linkage_tree = _tree_to_labels(
+            np.empty((leaf_count, 1), dtype=np.float64),
+            single_linkage_tree,
+            min_cluster_size=min_cluster_size,
+            cluster_selection_method="eom",
+            allow_single_cluster=True,
+            match_reference_implementation=False,
+            cluster_selection_epsilon=cluster_selection_epsilon,
+            cluster_selection_persistence=0.0,
+            max_cluster_size=0,
+            cluster_selection_epsilon_max=float("inf"),
+        )
+    return labels, probabilities
+
+
+def expand_hdbscan_sample_labels(
+    distance_data: dict[str, object],
+    sample_labels: list[int],
+) -> list[int]:
+    sample_scope = str(distance_data.get("hdbscan_sample_scope", "expanded") or "expanded")
+    if sample_scope != "unique":
+        return sample_labels
+    group_index_by_entry = distance_data.get("group_index_by_entry")
+    if not isinstance(group_index_by_entry, list):
+        raise ValueError("HDBSCAN unique-interface labels need a group mapping")
+    expanded_labels: list[int] = []
+    for raw_group_index in group_index_by_entry:
+        group_index = int(raw_group_index)
+        if group_index < 0 or group_index >= len(sample_labels):
+            raise ValueError("HDBSCAN unique-interface group mapping is inconsistent")
+        expanded_labels.append(int(sample_labels[group_index]))
+    return expanded_labels
+
+
+def compute_hdbscan_clustering_payload(
+    distance_data: dict[str, object],
+    settings: dict[str, object],
+    hdbscan_hierarchy: dict[str, object],
+) -> dict[str, object]:
+    entries = distance_data["entries"]
+    distance_metric = str(distance_data["distance"])
+    min_cluster_size = int(settings["min_cluster_size"])
+    min_samples = settings["min_samples"]
+    effective_min_samples = int(hdbscan_hierarchy.get("effective_min_samples", min_samples or min_cluster_size))
+    cluster_selection_epsilon = float(settings["cluster_selection_epsilon"])
+    labels, _probabilities = extract_hdbscan_sample_labels(hdbscan_hierarchy, settings)
+    sample_labels_list = rank_non_negative_cluster_labels_by_size([int(label) for label in labels.tolist()])
+    labels_list = expand_hdbscan_sample_labels(distance_data, sample_labels_list)
     unique_cluster_labels = sorted({label for label in labels_list if label >= 0})
     cluster_count = len(unique_cluster_labels)
     noise_count = int(sum(1 for label in labels_list if label < 0))
+    sample_scope = str(distance_data.get("hdbscan_sample_scope", "expanded") or "expanded")
+    input_metric = str(hdbscan_hierarchy.get("input_metric", ""))
+    hdbscan_metric = str(hdbscan_hierarchy.get("hdbscan_metric", ""))
     with timed_step(
         "clustering",
         "serialize HDBSCAN labels",
@@ -2711,18 +3108,28 @@ def compute_hdbscan_clustering_payload(distance_data: dict[str, object], setting
     return {
         "clustering": "hdbscan",
         "distance": distance_metric,
+        "input_metric": input_metric,
+        "hdbscan_metric": hdbscan_metric,
+        "hdbscan_sample_scope": sample_scope,
+        "hdbscan_hierarchy_source": str(hdbscan_hierarchy.get("source", "hdbscan_hierarchy")),
+        "hdbscan_effective_min_samples": effective_min_samples,
+        "cluster_input_count": len(sample_labels_list),
         "sample_count": len(points),
         "cluster_count": cluster_count,
         "noise_count": noise_count,
         "settings": {
             "distance": distance_metric,
+            "input_metric": input_metric,
+            "hdbscan_metric": hdbscan_metric,
+            "hdbscan_sample_scope": sample_scope,
+            "hdbscan_hierarchy_source": str(hdbscan_hierarchy.get("source", "hdbscan_hierarchy")),
             "min_cluster_size": min_cluster_size,
             "min_samples": min_samples,
+            "effective_min_samples": effective_min_samples,
             "cluster_selection_epsilon": cluster_selection_epsilon,
         },
         "points": points,
     }
-
 
 def compute_hierarchical_clustering_payload(distance_data: dict[str, object], settings: dict[str, object]) -> dict[str, object]:
     distance_metric = str(distance_data["distance"])
@@ -4015,7 +4422,7 @@ def load_hierarchical_context(
     hierarchy_dir: Path | None = None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[int], dict[str, object]]:
     if clustering_settings["method"] != "hierarchical":
-        raise ValueError("dendrogram view requires hierarchical clustering")
+        raise ValueError("hierarchical context requires hierarchical clustering")
     clustering_settings = normalize_hierarchical_clustering_settings_for_payload(
         clustering_settings,
         interface_payload,
@@ -4080,6 +4487,63 @@ def load_hierarchical_context(
             pfam_row_coverage_filter,
         )
     return entries, compressed_entries, group_index_by_entry, hierarchy
+
+
+def hdbscan_single_linkage_hierarchy(
+    single_linkage_tree: object,
+    leaf_count: int,
+    source: str = "hdbscan_single_linkage",
+) -> dict[str, object]:
+    linkage = np.asarray(single_linkage_tree, dtype=np.float64)
+    expected_merges = max(0, int(leaf_count) - 1)
+    if linkage.ndim != 2 or linkage.shape[0] != expected_merges or linkage.shape[1] < 3:
+        raise ValueError("HDBSCAN single-linkage tree has an unexpected shape")
+    children = linkage[:, :2].astype(np.int64, copy=False)
+    distances = linkage[:, 2].astype(np.float64, copy=False)
+    for merge_index, (left_child, right_child) in enumerate(children.tolist()):
+        node_id = leaf_count + merge_index
+        if left_child >= node_id or right_child >= node_id or left_child < 0 or right_child < 0:
+            raise ValueError("HDBSCAN single-linkage tree is not ordered like a scipy linkage matrix")
+    return {
+        "source": source,
+        "leaf_count": int(leaf_count),
+        "children": children,
+        "distances": distances,
+        "leaf_to_group_indices": [[leaf_index] for leaf_index in range(int(leaf_count))],
+    }
+
+
+def load_hdbscan_context(
+    cache_dir: Path,
+    interface_path: Path,
+    interface_payload: dict[str, dict[str, dict]],
+    clustering_settings: dict[str, object],
+    interface_filter_settings: dict[str, object] | None = None,
+    cache_workers: int = DEFAULT_CACHE_WORKERS,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], dict[str, object]]:
+    distance_data = load_hdbscan_distance_data(
+        cache_dir,
+        interface_path,
+        interface_payload,
+        clustering_settings,
+        interface_filter_settings,
+        cache_workers=cache_workers,
+    )
+    hdbscan_hierarchy = load_or_compute_hdbscan_hierarchy(
+        cache_dir,
+        interface_path,
+        distance_data,
+        clustering_settings,
+        interface_filter_settings,
+    )
+    entries = distance_data["entries"]
+    hdbscan_entries = distance_data.get("hdbscan_entries", entries)
+    hierarchy = hdbscan_single_linkage_hierarchy(
+        hdbscan_hierarchy["single_linkage_tree"],
+        len(hdbscan_entries),
+        source=str(hdbscan_hierarchy.get("source", "hdbscan_single_linkage")),
+    )
+    return entries, hdbscan_entries, hierarchy
 
 
 def dendrogram_cluster_label_for_counts(
@@ -4259,7 +4723,12 @@ def compute_radial_dendrogram_payload(
     max_merge_distance = max(visible_merge_distances) if visible_merge_distances else 0.0
     requested_depth = int(merge_depth or 5)
     normalized_depth = max(1, min(requested_depth, max_merge_depth))
-    cutoff_distance = clustering_settings.get("distance_threshold")
+    clustering_method = str(clustering_settings.get("method", "hierarchical"))
+    cutoff_distance = (
+        clustering_settings.get("distance_threshold")
+        if clustering_method == "hierarchical"
+        else None
+    )
     cutoff_radius_distance: float | None = None
     if cutoff_distance is not None:
         cutoff_distance_float = float(cutoff_distance)
@@ -4397,14 +4866,25 @@ def compute_radial_dendrogram_payload(
     return {
         "file": interface_path.name,
         "pfam_id": interface_file_pfam_id(interface_path),
-        "method": "hierarchical",
+        "method": clustering_method,
         "distance": distance_metric,
-        "linkage": str(clustering_settings["linkage"]),
-        "hierarchical_target": str(clustering_settings.get("hierarchical_target", "")),
+        "linkage": (
+            "hdbscan_single_linkage"
+            if clustering_method == "hdbscan"
+            else str(clustering_settings.get("linkage", ""))
+        ),
+        "hierarchical_target": str(clustering_settings.get("hierarchical_target", ""))
+        if clustering_method == "hierarchical"
+        else "",
         "hierarchy_source": str(hierarchy.get("source", "local_computed")),
         "leaf_count": leaf_count,
         "current_interface_count": len(entries),
         "compressed_sample_count": len(compressed_entries),
+        "hdbscan_sample_scope": (
+            str(clustering_settings.get("hdbscan_sample_scope", "expanded") or "expanded")
+            if clustering_method == "hdbscan"
+            else ""
+        ),
         "merge_depth": normalized_depth,
         "requested_merge_depth": requested_depth,
         "max_merge_depth": max_merge_depth,
@@ -4431,8 +4911,6 @@ def load_or_compute_dendrogram_payload(
     hierarchy_dir: Path | None = None,
     merge_depth: int = 5,
 ) -> dict[str, object]:
-    if clustering_settings["method"] != "hierarchical":
-        raise ValueError("dendrogram view requires hierarchical clustering")
     clustering_payload = load_or_compute_clustering_payload(
         cache_dir,
         interface_path,
@@ -4442,15 +4920,27 @@ def load_or_compute_dendrogram_payload(
         cache_workers=cache_workers,
         hierarchy_dir=hierarchy_dir,
     )
-    entries, compressed_entries, _group_index_by_entry, hierarchy = load_hierarchical_context(
-        cache_dir,
-        interface_path,
-        interface_payload,
-        clustering_settings,
-        interface_filter_settings,
-        cache_workers=cache_workers,
-        hierarchy_dir=hierarchy_dir,
-    )
+    if clustering_settings["method"] == "hierarchical":
+        entries, compressed_entries, _group_index_by_entry, hierarchy = load_hierarchical_context(
+            cache_dir,
+            interface_path,
+            interface_payload,
+            clustering_settings,
+            interface_filter_settings,
+            cache_workers=cache_workers,
+            hierarchy_dir=hierarchy_dir,
+        )
+    elif clustering_settings["method"] == "hdbscan":
+        entries, compressed_entries, hierarchy = load_hdbscan_context(
+            cache_dir,
+            interface_path,
+            interface_payload,
+            clustering_settings,
+            interface_filter_settings,
+            cache_workers=cache_workers,
+        )
+    else:
+        raise ValueError("dendrogram view requires hierarchical or HDBSCAN clustering")
     return compute_radial_dendrogram_payload(
         interface_path,
         str(clustering_settings["distance"]),
@@ -4880,13 +5370,12 @@ def load_or_compute_clustering_payload(
             hierarchy,
         )
     else:
-        distance_data = load_interface_distance_data(
+        distance_data = load_hdbscan_distance_data(
             cache_dir,
             interface_path,
             interface_payload,
-            str(clustering_settings["distance"]),
+            clustering_settings,
             interface_filter_settings,
-            distance_scope="expanded",
             cache_workers=cache_workers,
         )
         if cache_path.exists():
@@ -4902,7 +5391,18 @@ def load_or_compute_clustering_payload(
                 )
                 return normalize_clustering_payload_cluster_labels(cached_payload)
             log_event("clustering", "cached clustering invalid", file=cache_path.name)
-        clustering_payload = compute_hdbscan_clustering_payload(distance_data, clustering_settings)
+        hdbscan_hierarchy = load_or_compute_hdbscan_hierarchy(
+            cache_dir,
+            interface_path,
+            distance_data,
+            clustering_settings,
+            interface_filter_settings,
+        )
+        clustering_payload = compute_hdbscan_clustering_payload(
+            distance_data,
+            clustering_settings,
+            hdbscan_hierarchy,
+        )
     response_payload = {
         "file": interface_path.name,
         "pfam_id": interface_file_pfam_id(interface_path),
@@ -4970,6 +5470,8 @@ def cluster_compare_column_distance(
     if distance_metric == "overlap":
         denominator = min(len(left_set), len(right_set))
         return 0.0 if denominator == 0 else 1.0 - (intersection / denominator)
+    if distance_metric == "binary":
+        return math.sqrt(float(len(left_set ^ right_set)))
     return 0.0
 
 

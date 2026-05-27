@@ -72,7 +72,15 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
         const height = Math.max(1, Math.round(elements.dendrogramRoot.clientHeight));
         return dendrogramLayoutForSize(width, height);
     }
+    function dendrogramMethod() {
+        return String(state.dendrogram?.method ||
+            state.embeddingClusteringSettings?.method ||
+            "");
+    }
     function currentHierarchicalTarget() {
+        if (dendrogramMethod() !== "hierarchical") {
+            return "";
+        }
         return String(state.embeddingClusteringSettings?.hierarchicalTarget ||
             state.dendrogram?.hierarchical_target ||
             "");
@@ -216,7 +224,7 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
         elements.dendrogramDepthSlider.min = "1";
         elements.dendrogramDepthSlider.max = String(maxDepth);
         elements.dendrogramDepthSlider.value = String(depth);
-        const controlsDisabled = !interfaceSelect.value || state.embeddingClusteringSettings.method !== "hierarchical";
+        const controlsDisabled = !interfaceSelect.value;
         if (controlsDisabled) {
             state.dendrogramSettingsOpen = false;
         }
@@ -327,7 +335,7 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
         requestDendrogramRender();
     }
     async function ensureDendrogramLoaded(options = {}) {
-        if (!interfaceSelect.value || state.embeddingClusteringSettings.method !== "hierarchical") {
+        if (!interfaceSelect.value) {
             clearDendrogram();
             return;
         }
@@ -745,11 +753,6 @@ export function createDendrogramViewController({ state, elements, interfaceSelec
         if (!interfaceSelect.value) {
             drawCenteredMessage(ctx, width, height, "Load an interface selection to view a dendrogram.");
             setDendrogramInfo("Radial hierarchy.");
-            return;
-        }
-        if (state.embeddingClusteringSettings.method !== "hierarchical") {
-            drawCenteredMessage(ctx, width, height, "Dendrogram requires hierarchical clustering.");
-            setDendrogramInfo("Switch clustering method to Hierarchical.");
             return;
         }
         if (state.dendrogram?.error) {

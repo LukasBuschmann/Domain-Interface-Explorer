@@ -86,14 +86,23 @@ function normalizeEmbeddingSettings(rawSettings = {}, fallback = DEFAULT_EMBEDDI
 }
 function normalizeClusteringSettings(rawSettings = {}, fallback = DEFAULT_CLUSTERING_SETTINGS) {
     const source = isRecord(rawSettings) ? rawSettings : {};
+    const method = enumValue(source.method, ["hierarchical", "hdbscan"], fallback.method);
+    const allowedDistances = method === "hdbscan"
+        ? ["binary", "jaccard", "dice", "overlap"]
+        : ["jaccard", "dice", "overlap"];
+    const fallbackDistance = allowedDistances.includes(fallback.distance)
+        ? fallback.distance
+        : DEFAULT_CLUSTERING_SETTINGS.distance;
     const hierarchicalTarget = enumValue(source.hierarchicalTarget, ["distance_threshold", "n_clusters", "persistence"], fallback.hierarchicalTarget);
     const nClustersFallback = positiveInteger(fallback.nClusters, 8);
     return {
-        method: enumValue(source.method, ["hierarchical", "hdbscan"], fallback.method),
-        distance: enumValue(source.distance, ["jaccard", "dice", "overlap"], fallback.distance),
+        method,
+        distance: enumValue(source.distance, allowedDistances, fallbackDistance),
         minClusterSize: positiveInteger(source.minClusterSize, fallback.minClusterSize),
         minSamples: optionalPositiveInteger(source.minSamples, fallback.minSamples),
+        hdbscanEffectiveMinSamples: optionalPositiveInteger(source.hdbscanEffectiveMinSamples, fallback.hdbscanEffectiveMinSamples || ""),
         clusterSelectionEpsilon: finiteNumber(source.clusterSelectionEpsilon, fallback.clusterSelectionEpsilon, { min: 0 }),
+        hdbscanSampleScope: enumValue(source.hdbscanSampleScope, ["expanded", "unique"], fallback.hdbscanSampleScope || DEFAULT_CLUSTERING_SETTINGS.hdbscanSampleScope),
         linkage: enumValue(source.linkage, ["single", "complete", "average", "average_deduplicated", "weighted"], fallback.linkage),
         hierarchicalTarget,
         nClusters: hierarchicalTarget === "n_clusters"

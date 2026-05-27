@@ -77,6 +77,7 @@ export const elements = {
     embeddingClusterMinSizeInput: document.getElementById("embedding-cluster-min-size"),
     embeddingClusterMinSamplesInput: document.getElementById("embedding-cluster-min-samples"),
     embeddingClusterEpsilonInput: document.getElementById("embedding-cluster-epsilon"),
+    embeddingClusterHdbscanScopeInput: document.getElementById("embedding-cluster-hdbscan-scope"),
     embeddingClusterLinkageInput: document.getElementById("embedding-cluster-linkage"),
     embeddingClusterNClustersInput: document.getElementById("embedding-cluster-n-clusters"),
     embeddingClusterDistanceThresholdInput: document.getElementById("embedding-cluster-distance-threshold"),

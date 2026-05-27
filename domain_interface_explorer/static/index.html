@@ -421,10 +421,11 @@
                         <span
                           class="embedding-settings-help"
                           tabindex="0"
-                          title="Distance matrix used by the clustering algorithm. This can differ from the point-layout distance, so the point layout and the cluster assignment may emphasize different structure."
+                          title="Distance input used by the clustering algorithm. Binary Columns feeds HDBSCAN the raw interface-label matrix; the other options use pairwise distance matrices."
                         >?</span>
                       </span>
                       <select id="embedding-cluster-distance" class="embedding-settings-input">
+                        <option value="binary">Binary Columns</option>
                         <option value="dice">Dice</option>
                         <option value="jaccard">Jaccard</option>
                         <option value="overlap">Overlap</option>
@@ -540,6 +541,20 @@
                     <h4 class="embedding-settings-subsection-title">Cutthrough</h4>
                     <label data-clustering-panel="hdbscan">
                       <span>
+                        HDBSCAN Samples
+                        <span
+                          class="embedding-settings-help"
+                          tabindex="0"
+                          title="Interface Rows fits HDBSCAN on every interface row. Unique Interfaces fits one sample per partner/domain/interface-column set, then expands labels back to all matching rows."
+                        >?</span>
+                      </span>
+                      <select id="embedding-cluster-hdbscan-scope" class="embedding-settings-input">
+                        <option value="expanded">Interface Rows</option>
+                        <option value="unique">Unique Interfaces</option>
+                      </select>
+                    </label>
+                    <label data-clustering-panel="hdbscan">
+                      <span>
                         Min Cluster Size
                         <span
                           class="embedding-settings-help"
@@ -552,7 +567,7 @@
                         class="embedding-settings-input"
                         type="number"
                         step="1"
-                        min="1"
+                        min="2"
                         value="25"
                       >
                     </label>

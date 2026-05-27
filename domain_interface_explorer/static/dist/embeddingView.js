@@ -36,6 +36,23 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
     function embeddingClusteringSettingsKey(settings = state.embeddingClusteringSettings) {
         return JSON.stringify(normalizedClusteringSettingsForRequest(settings));
     }
+    function hdbscanEffectiveMinSamplesForSettings(settings) {
+        const explicitMinSamples = String(settings?.minSamples ?? "").trim();
+        if (explicitMinSamples !== "") {
+            return explicitMinSamples;
+        }
+        const pinnedMinSamples = String(settings?.hdbscanEffectiveMinSamples ?? "").trim();
+        if (pinnedMinSamples !== "") {
+            return pinnedMinSamples;
+        }
+        return String(settings?.minClusterSize ?? DEFAULT_CLUSTERING_SETTINGS.minClusterSize).trim();
+    }
+    function appendHdbscanMinSamplesParam(params, settings) {
+        const minSamples = hdbscanEffectiveMinSamplesForSettings(settings);
+        if (minSamples !== "") {
+            params.set("min_samples", minSamples);
+        }
+    }
     function currentHierarchicalTarget(settings = state.embeddingClusteringSettingsDraft) {
         if (settings?.hierarchicalTarget === "distance_threshold") {
             return "distance_threshold";
@@ -421,9 +438,9 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         else {
             params.set("min_cluster_size", String(state.embeddingClusteringSettings.minClusterSize));
             params.set("cluster_selection_epsilon", String(state.embeddingClusteringSettings.clusterSelectionEpsilon));
-            if (String(state.embeddingClusteringSettings.minSamples).trim() !== "") {
-                params.set("min_samples", String(state.embeddingClusteringSettings.minSamples));
-            }
+            params.set("hdbscan_sample_scope", String(state.embeddingClusteringSettings.hdbscanSampleScope ||
+                DEFAULT_CLUSTERING_SETTINGS.hdbscanSampleScope));
+            appendHdbscanMinSamplesParam(params, state.embeddingClusteringSettings);
         }
         return `/api/clustering?${params.toString()}`;
     }
@@ -447,9 +464,9 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         else {
             params.set("min_cluster_size", String(state.embeddingClusteringSettings.minClusterSize));
             params.set("cluster_selection_epsilon", String(state.embeddingClusteringSettings.clusterSelectionEpsilon));
-            if (String(state.embeddingClusteringSettings.minSamples).trim() !== "") {
-                params.set("min_samples", String(state.embeddingClusteringSettings.minSamples));
-            }
+            params.set("hdbscan_sample_scope", String(state.embeddingClusteringSettings.hdbscanSampleScope ||
+                DEFAULT_CLUSTERING_SETTINGS.hdbscanSampleScope));
+            appendHdbscanMinSamplesParam(params, state.embeddingClusteringSettings);
         }
         appendRepresentativeDomainSizeFilterParams(params);
         return `/api/cluster-compare?${params.toString()}`;
@@ -723,6 +740,8 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             minClusterSize: elements.embeddingClusterMinSizeInput.value.trim(),
             minSamples: elements.embeddingClusterMinSamplesInput.value.trim(),
             clusterSelectionEpsilon: elements.embeddingClusterEpsilonInput.value.trim(),
+            hdbscanSampleScope: elements.embeddingClusterHdbscanScopeInput?.value ||
+                DEFAULT_CLUSTERING_SETTINGS.hdbscanSampleScope,
             linkage: elements.embeddingClusterLinkageInput.value.trim().toLowerCase() ||
                 DEFAULT_CLUSTERING_SETTINGS.linkage,
             nClusters: elements.embeddingClusterNClustersInput.value.trim(),
@@ -811,6 +830,26 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             element.classList.toggle("embedding-settings-section-hidden", !isHierarchical || element.dataset.hierarchicalTargetPanel !== hierarchicalTarget);
         });
     }
+    function allowedClusteringDistances(method = state.embeddingClusteringSettingsDraft.method) {
+        return method === "hdbscan"
+            ? ["binary", "jaccard", "dice", "overlap"]
+            : ["jaccard", "dice", "overlap"];
+    }
+    function syncClusteringDistanceOptions() {
+        const allowed = new Set(allowedClusteringDistances());
+        const fallbackDistance = allowed.has(DEFAULT_CLUSTERING_SETTINGS.distance)
+            ? DEFAULT_CLUSTERING_SETTINGS.distance
+            : "overlap";
+        [...elements.embeddingClusterDistanceInput.options].forEach((option) => {
+            option.disabled = !allowed.has(option.value);
+        });
+        if (!allowed.has(String(state.embeddingClusteringSettingsDraft.distance))) {
+            state.embeddingClusteringSettingsDraft = {
+                ...state.embeddingClusteringSettingsDraft,
+                distance: fallbackDistance,
+            };
+        }
+    }
     function syncEmbeddingSettingsUi() {
         if (elements.embeddingSettingsPanel && elements.msaPanelTabs && elements.embeddingRoot) {
             if (state.embeddingSettingsSection === "clustering") {
@@ -859,10 +898,15 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         [...elements.embeddingSettingsPanel.querySelectorAll("[data-points-method-panel]")].forEach((element) => {
             element.classList.toggle("embedding-settings-section-hidden", element.dataset.pointsMethodPanel !== state.embeddingSettingsDraft.method);
         });
+        syncClusteringDistanceOptions();
         elements.embeddingClusterDistanceInput.value = String(state.embeddingClusteringSettingsDraft.distance);
         elements.embeddingClusterMinSizeInput.value = String(state.embeddingClusteringSettingsDraft.minClusterSize);
         elements.embeddingClusterMinSamplesInput.value = String(state.embeddingClusteringSettingsDraft.minSamples);
         elements.embeddingClusterEpsilonInput.value = String(state.embeddingClusteringSettingsDraft.clusterSelectionEpsilon);
+        if (elements.embeddingClusterHdbscanScopeInput) {
+            elements.embeddingClusterHdbscanScopeInput.value = String(state.embeddingClusteringSettingsDraft.hdbscanSampleScope ||
+                DEFAULT_CLUSTERING_SETTINGS.hdbscanSampleScope);
+        }
         elements.embeddingClusterLinkageInput.value = String(state.embeddingClusteringSettingsDraft.linkage);
         elements.embeddingClusterNClustersInput.value = String(state.embeddingClusteringSettingsDraft.nClusters);
         elements.embeddingClusterDistanceThresholdInput.value = String(state.embeddingClusteringSettingsDraft.distanceThreshold ||
@@ -956,8 +1000,10 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         const method = state.embeddingClusteringSettingsDraft.method;
         const hierarchicalTarget = currentHierarchicalTarget();
         const distance = elements.embeddingClusterDistanceInput.value.trim().toLowerCase();
-        if (!["jaccard", "dice", "overlap"].includes(distance)) {
-            throw new Error("Clustering distance must be Jaccard, Dice, or Overlap.");
+        if (!allowedClusteringDistances(method).includes(distance)) {
+            throw new Error(method === "hdbscan"
+                ? "HDBSCAN distance must be Binary Columns, Jaccard, Dice, or Overlap."
+                : "Hierarchical clustering distance must be Jaccard, Dice, or Overlap.");
         }
         const linkage = elements.embeddingClusterLinkageInput.value.trim().toLowerCase();
         if (!["single", "complete", "average", "average_deduplicated", "weighted"].includes(linkage)) {
@@ -966,6 +1012,9 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         const minClusterSize = Number.parseInt(elements.embeddingClusterMinSizeInput.value.trim(), 10);
         if (!Number.isFinite(minClusterSize) || minClusterSize <= 0) {
             throw new Error("Min cluster size must be a positive integer.");
+        }
+        if (method === "hdbscan" && minClusterSize < 2) {
+            throw new Error("HDBSCAN min cluster size must be at least 2.");
         }
         const minSamplesRaw = elements.embeddingClusterMinSamplesInput.value.trim();
         let minSamples = "";
@@ -978,6 +1027,11 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         const clusterSelectionEpsilon = Number.parseFloat(elements.embeddingClusterEpsilonInput.value.trim());
         if (!Number.isFinite(clusterSelectionEpsilon) || clusterSelectionEpsilon < 0) {
             throw new Error("Cluster selection epsilon must be a non-negative number.");
+        }
+        const hdbscanSampleScope = (elements.embeddingClusterHdbscanScopeInput?.value ||
+            DEFAULT_CLUSTERING_SETTINGS.hdbscanSampleScope).trim().toLowerCase();
+        if (!["expanded", "unique"].includes(hdbscanSampleScope)) {
+            throw new Error("HDBSCAN samples must be Interface Rows or Unique Interfaces.");
         }
         let nClusters = elements.embeddingClusterNClustersInput.value.trim();
         let distanceThreshold = elements.embeddingClusterDistanceThresholdInput.value.trim();
@@ -1050,7 +1104,13 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             distance,
             minClusterSize,
             minSamples,
+            hdbscanEffectiveMinSamples: method === "hdbscan"
+                ? String(minSamples || minClusterSize)
+                : "",
             clusterSelectionEpsilon,
+            hdbscanSampleScope: method === "hdbscan"
+                ? hdbscanSampleScope
+                : DEFAULT_CLUSTERING_SETTINGS.hdbscanSampleScope,
             linkage,
             hierarchicalTarget,
             nClusters: hierarchicalTarget === "n_clusters" ? nClusters : "",
@@ -1068,6 +1128,17 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             parsedSettings.method = state.embeddingClusteringSettings.method;
             parsedSettings.distance = state.embeddingClusteringSettings.distance;
             parsedSettings.linkage = state.embeddingClusteringSettings.linkage;
+        }
+        if (options.preserveAppliedHdbscanHierarchy &&
+            state.embeddingClusteringSettings.method === "hdbscan" &&
+            parsedSettings.method === "hdbscan") {
+            parsedSettings.method = state.embeddingClusteringSettings.method;
+            parsedSettings.distance = state.embeddingClusteringSettings.distance;
+            parsedSettings.minSamples = state.embeddingClusteringSettings.minSamples;
+            parsedSettings.hdbscanEffectiveMinSamples = hdbscanEffectiveMinSamplesForSettings(state.embeddingClusteringSettings);
+            parsedSettings.hdbscanSampleScope =
+                state.embeddingClusteringSettings.hdbscanSampleScope ||
+                    DEFAULT_CLUSTERING_SETTINGS.hdbscanSampleScope;
         }
         return parsedSettings;
     }
