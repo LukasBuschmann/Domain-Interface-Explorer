@@ -1268,6 +1268,24 @@
               <path d="M16 12h4"></path>
             </svg>
           </button>
+          <button
+            id="structure-hmm-scores-button"
+            class="structure-hmm-scores-button"
+            type="button"
+            title="Calculate HMM bit scores"
+            aria-label="Calculate HMM bit scores"
+            disabled
+          >
+            HMM
+          </button>
+          <div id="structure-hmm-scores-panel" class="structure-hmm-scores-panel hidden" aria-live="polite">
+            <div class="structure-hmm-scores-header">
+              <strong>HMM Bit Scores</strong>
+              <button id="structure-hmm-scores-close" type="button" aria-label="Close HMM bit scores">x</button>
+            </div>
+            <p id="structure-hmm-scores-status" class="structure-hmm-scores-status">Click HMM to calculate scores.</p>
+            <div id="structure-hmm-scores-output" class="structure-hmm-scores-output"></div>
+          </div>
           <div id="structure-loading-overlay" class="structure-loading-overlay hidden" aria-hidden="true">
             <div class="structure-loading-overlay-copy">
               <span class="structure-loading-spinner" aria-hidden="true"></span>

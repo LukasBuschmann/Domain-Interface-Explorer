@@ -3288,6 +3288,315 @@ select,
   stroke-linejoin: round;
 }
 
+.structure-hmm-scores-button {
+  position: absolute;
+  top: 58px;
+  left: 14px;
+  z-index: 31;
+  width: 46px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid rgba(215, 204, 179, 0.92);
+  border-radius: 8px;
+  background: rgba(255, 252, 245, 0.92);
+  box-shadow: 0 10px 24px rgba(31, 23, 16, 0.1);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.structure-hmm-scores-button:hover:not(:disabled),
+.structure-hmm-scores-button.active {
+  background: rgba(255, 252, 245, 0.98);
+}
+
+.structure-hmm-scores-button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.structure-hmm-scores-button.loading::after {
+  content: "";
+  width: 10px;
+  height: 10px;
+  margin-left: 5px;
+  border: 2px solid rgba(122, 109, 91, 0.35);
+  border-top-color: currentColor;
+  border-radius: 999px;
+  animation: structure-loading-spin 0.8s linear infinite;
+}
+
+.structure-hmm-scores-panel {
+  position: absolute;
+  top: 102px;
+  left: 14px;
+  z-index: 34;
+  width: min(430px, calc(100% - 28px));
+  max-height: calc(100% - 126px);
+  display: grid;
+  gap: 10px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid rgba(215, 204, 179, 0.92);
+  border-radius: 12px;
+  background: rgba(255, 252, 245, 0.96);
+  box-shadow: 0 14px 30px rgba(31, 23, 16, 0.14);
+  color: var(--text);
+  backdrop-filter: blur(4px);
+}
+
+.structure-hmm-scores-panel.hidden {
+  display: none;
+}
+
+.structure-hmm-scores-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.structure-hmm-scores-header strong {
+  font-size: 13px;
+}
+
+.structure-hmm-scores-header button {
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgba(215, 204, 179, 0.92);
+  border-radius: 7px;
+  background: #fffaf0;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.structure-hmm-scores-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.structure-hmm-scores-output {
+  display: grid;
+  gap: 10px;
+}
+
+.structure-hmm-score-plots {
+  display: grid;
+  gap: 10px;
+}
+
+.structure-hmm-score-plot {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(215, 204, 179, 0.78);
+  border-radius: 8px;
+  background: rgba(255, 250, 240, 0.74);
+}
+
+.structure-hmm-score-plot-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+
+.structure-hmm-score-plot-header strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.structure-hmm-score-plot-header span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-family: "Iosevka Web", "IBM Plex Mono", monospace;
+  font-size: 11px;
+}
+
+.structure-hmm-score-plot-body {
+  display: grid;
+  gap: 8px;
+}
+
+.structure-hmm-score-bar-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.9fr) minmax(128px, 1.2fr) minmax(92px, max-content);
+  align-items: center;
+  gap: 8px;
+}
+
+.structure-hmm-score-bar-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.structure-hmm-score-bar-track {
+  position: relative;
+  height: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(215, 204, 179, 0.8);
+  border-radius: 7px;
+  background:
+    linear-gradient(90deg, rgba(225, 122, 45, 0.1), rgba(255, 255, 255, 0) 48%, rgba(255, 255, 255, 0) 52%, rgba(54, 101, 158, 0.08)),
+    rgba(255, 252, 245, 0.9);
+}
+
+.structure-hmm-score-zero-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  background: rgba(47, 39, 30, 0.6);
+  transform: translateX(-1px);
+}
+
+.structure-hmm-score-bar {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  min-width: 2px;
+  border-radius: 999px;
+  opacity: 0.9;
+}
+
+.structure-hmm-score-bar-row.main .structure-hmm-score-bar {
+  background: #e17a2d;
+}
+
+.structure-hmm-score-bar-row.partner .structure-hmm-score-bar {
+  background: #2f68b8;
+}
+
+.structure-hmm-score-bar.negative {
+  border-top-right-radius: 2px;
+  border-bottom-right-radius: 2px;
+}
+
+.structure-hmm-score-bar.positive {
+  border-top-left-radius: 2px;
+  border-bottom-left-radius: 2px;
+}
+
+.structure-hmm-score-bar-value {
+  color: var(--text);
+  font-family: "Iosevka Web", "IBM Plex Mono", monospace;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.structure-hmm-coverage-bars {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(215, 204, 179, 0.78);
+  border-radius: 8px;
+  background: rgba(255, 250, 240, 0.74);
+}
+
+.structure-hmm-coverage-row {
+  display: grid;
+  grid-template-columns: minmax(112px, 0.9fr) minmax(128px, 1.2fr) minmax(54px, max-content);
+  align-items: center;
+  gap: 8px;
+}
+
+.structure-hmm-coverage-label {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.structure-hmm-coverage-label strong,
+.structure-hmm-coverage-label span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.structure-hmm-coverage-label strong {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.structure-hmm-coverage-label span {
+  color: var(--muted);
+  font-family: "Iosevka Web", "IBM Plex Mono", monospace;
+  font-size: 10px;
+}
+
+.structure-hmm-coverage-track {
+  position: relative;
+  height: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(215, 204, 179, 0.8);
+  border-radius: 7px;
+  background: rgba(255, 252, 245, 0.92);
+}
+
+.structure-hmm-coverage-fill {
+  position: absolute;
+  inset: 3px auto 3px 3px;
+  max-width: calc(100% - 6px);
+  border-radius: 999px;
+}
+
+.structure-hmm-coverage-row.main .structure-hmm-coverage-fill {
+  background: #e17a2d;
+}
+
+.structure-hmm-coverage-row.partner .structure-hmm-coverage-fill {
+  background: #2f68b8;
+}
+
+.structure-hmm-coverage-value {
+  color: var(--text);
+  font-family: "Iosevka Web", "IBM Plex Mono", monospace;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: right;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .structure-hmm-scores-panel {
+    right: 14px;
+    width: auto;
+  }
+
+  .structure-hmm-score-bar-row {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .structure-hmm-score-bar-value {
+    text-align: left;
+  }
+
+  .structure-hmm-coverage-row {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .structure-hmm-coverage-value {
+    text-align: left;
+  }
+}
+
 .structure-loading-overlay {
   position: absolute;
   inset: 1px;

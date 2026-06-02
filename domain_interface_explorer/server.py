@@ -17,8 +17,11 @@ from urllib.parse import parse_qs, urlparse
 from domain_interface_explorer.serverlib.config import (
     DEFAULT_CACHE_DIR,
     DEFAULT_CACHE_WORKERS,
+    DEFAULT_HMMER_BIN_DIR,
     DEFAULT_HOST,
     DEFAULT_INTERFACE_DIR,
+    DEFAULT_PFAM_HMM_PATH,
+    DEFAULT_SEQUENCE_BY_DOMAIN_DIR,
     STATIC_DIR,
 )
 from domain_interface_explorer.serverlib.interface_files import (
@@ -27,6 +30,7 @@ from domain_interface_explorer.serverlib.interface_files import (
     is_interface_json_path,
     load_interface_json,
 )
+from domain_interface_explorer.serverlib.hmmer_service import compute_domain_hmm_bit_scores
 from domain_interface_explorer.serverlib.interface_store import InterfaceStore
 from domain_interface_explorer.serverlib.interface_embedding import (
     build_interface_alignment_rows_from_metadata,
@@ -81,6 +85,7 @@ from domain_interface_explorer.serverlib.structure_service import (
     fragment_bounds,
     fragment_key_to_ranges,
     model_file_is_usable,
+    parse_interface_row_key,
     parse_row_key,
     render_aligned_model,
     structure_cache_key,
@@ -566,6 +571,9 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/structure-preview":
             self._handle_structure_preview(parse_qs(parsed.query))
+            return
+        if parsed.path == "/api/hmm-bit-scores":
+            self._handle_hmm_bit_scores(parse_qs(parsed.query))
             return
         if parsed.path.startswith("/api/alphafold-model/"):
             self._handle_alphafold_model(parsed.path.removeprefix("/api/alphafold-model/"))
@@ -2139,6 +2147,78 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 REPRESENTATIVE_CACHE.popitem(last=False)
         write_disk_json_cache(self.cache_dir, "representative", cache_key, response_payload)
         self._send_json(response_payload)
+
+    def _handle_hmm_bit_scores(self, query: dict[str, list[str]]) -> None:
+        interface_filename = query.get("interface_file", query.get("file", [""]))[0]
+        row_key = query.get("row_key", [""])[0]
+        partner = query.get("partner", ["__all__"])[0].strip() or "__all__"
+        if not interface_filename or not row_key:
+            self._send_json(
+                {"error": "interface_file and row_key are required"},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        if partner == "__all__":
+            self._send_json(
+                {"error": "choose a single partner before calculating HMM bit scores"},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        interface_path = safe_file_path(self.interface_dir, interface_filename)
+        if interface_path is None:
+            self._send_json(
+                {"error": f"missing interface file {interface_filename}"},
+                status=HTTPStatus.NOT_FOUND,
+            )
+            return
+
+        try:
+            uniprot_id, fragment_key_name, partner_fragment_key = parse_interface_row_key(row_key)
+            if not uniprot_id or not fragment_key_name:
+                raise ValueError(f"invalid row_key {row_key}")
+            if not partner_fragment_key:
+                raise ValueError("could not determine the interacting domain fragment range")
+            main_pfam_id = interface_file_pfam_id(interface_path)
+            partner_pfam_id = partner
+            payload = compute_domain_hmm_bit_scores(
+                cache_dir=self.cache_dir,
+                accession=uniprot_id,
+                main_fragment_key=fragment_key_name,
+                partner_fragment_key=partner_fragment_key,
+                main_pfam_id=main_pfam_id,
+                partner_pfam_id=partner_pfam_id,
+                sequence_dir=DEFAULT_SEQUENCE_BY_DOMAIN_DIR,
+                pfam_hmm_path=DEFAULT_PFAM_HMM_PATH,
+                hmmer_bin_dir=DEFAULT_HMMER_BIN_DIR,
+            )
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except (FileNotFoundError, KeyError) as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+            return
+        except RuntimeError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
+            return
+        except Exception as exc:  # pragma: no cover
+            self._send_json(
+                {"error": f"Unexpected HMM bit-score error: {exc}"},
+                status=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+            return
+
+        self._send_json(
+            {
+                **payload,
+                "row_key": row_key,
+                "uniprot_id": uniprot_id,
+                "main_pfam_id": main_pfam_id,
+                "partner_pfam_id": partner_pfam_id,
+                "main_fragment_key": fragment_key_name,
+                "partner_fragment_key": partner_fragment_key,
+            }
+        )
 
     def _handle_structure_preview(self, query: dict[str, list[str]]) -> None:
         interface_filename = query.get("interface_file", [""])[0]

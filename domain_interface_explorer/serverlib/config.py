@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -12,6 +13,24 @@ DEFAULT_INTERFACE_DIR = PROJECT_ROOT / "data"
 DEFAULT_CACHE_DIR = PROJECT_ROOT / "cache"
 DEFAULT_CACHE_WORKERS = 4
 STATIC_DIR = PROJECT_ROOT / "domain_interface_explorer" / "static"
+DEFAULT_PFAM_HMM_PATH = Path(
+    os.environ.get(
+        "DIE_PFAM_HMM_PATH",
+        PROJECT_ROOT.parent / "data" / "pfam_a" / "Pfam-A.hmm",
+    )
+)
+DEFAULT_HMMER_BIN_DIR = Path(
+    os.environ.get(
+        "DIE_HMMER_BIN_DIR",
+        PROJECT_ROOT.parent / ".conda_env" / "bin",
+    )
+)
+DEFAULT_SEQUENCE_BY_DOMAIN_DIR = Path(
+    os.environ.get(
+        "DIE_SEQUENCE_BY_DOMAIN_DIR",
+        PROJECT_ROOT.parent / "data" / "interfaces" / "sequences_by_domain",
+    )
+)
 ALPHAFOLD_API = "https://alphafold.ebi.ac.uk/api/prediction/{accession}"
 SELECTOR_STATS_CACHE_VERSION = "8"
 PFAM_METADATA_CACHE_VERSION = "1"

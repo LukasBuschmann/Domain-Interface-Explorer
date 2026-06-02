@@ -159,6 +159,8 @@ const {
   structureHoverDistributionChart,
   structureHoverDistributionLegend,
   structureHoverHistogram,
+  structureHmmScoresButton,
+  structureHmmScoresClose,
   structureModal,
   structureMemberNext,
   structureMemberPrev,
@@ -1869,6 +1871,7 @@ function representativeClusterSummaries() {
         label: embeddingClusterLabel(clusterLabel),
         color: embeddingClusterColor(clusterLabel),
         memberCount: 0,
+        columnSupportDenominator: 0,
         columnCounts: new Map(),
         partnerCounts: new Map(),
       };
@@ -1887,6 +1890,7 @@ function representativeClusterSummaries() {
       if (!interfaceColumns) {
         continue;
       }
+      summary.columnSupportDenominator += 1;
       for (const columnIndex of interfaceColumns) {
         summary.columnCounts.set(columnIndex, (summary.columnCounts.get(columnIndex) || 0) + 1);
       }
@@ -1958,10 +1962,13 @@ function representativeClusterLensData(row) {
   const minSupportFraction = 0.04;
 
   for (const summary of clusterSummaries) {
+    const supportDenominator = Number(
+      summary.columnSupportDenominator || summary.memberCount || 0
+    );
     for (const [columnIndex, columnCount] of summary.columnCounts.entries()) {
       const supportFraction =
-        summary.memberCount > 0
-          ? columnCount / summary.memberCount
+        supportDenominator > 0
+          ? columnCount / supportDenominator
           : 0;
       if (supportFraction < minSupportFraction) {
         continue;
@@ -1984,6 +1991,7 @@ function representativeClusterLensData(row) {
           clusterLabel: summary.clusterLabel,
           columnCount,
           memberCount: summary.memberCount,
+          supportDenominator,
           supportFraction,
         });
       }
@@ -2012,8 +2020,8 @@ function representativeClusterLensData(row) {
     }
 
     const supportFraction =
-      clusterAssignment.memberCount > 0
-        ? clusterAssignment.columnCount / clusterAssignment.memberCount
+      clusterAssignment.supportDenominator > 0
+        ? clusterAssignment.columnCount / clusterAssignment.supportDenominator
         : 0;
     const residueCluster = {
       clusterLabel: clusterSummary.clusterLabel,
@@ -2368,8 +2376,10 @@ const {
   getStructureViewer,
   handleStructureLoadFailure,
   loadInteractiveStructure,
+  loadStructureHmmScores,
   openStructureModal,
   recenterStructureDomain,
+  closeStructureHmmScoresPanel,
   renderLoadedStructure,
   renderInteractiveStructure,
   resetStructurePanel,
@@ -4713,6 +4723,18 @@ structureRecenterDomainButton?.addEventListener("click", (event) => {
   event.preventDefault();
   event.stopPropagation();
   recenterStructureDomain();
+});
+
+structureHmmScoresButton?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  await loadStructureHmmScores();
+});
+
+structureHmmScoresClose?.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  closeStructureHmmScoresPanel();
 });
 
 structurePartnerSelect?.addEventListener("change", async (event) => {

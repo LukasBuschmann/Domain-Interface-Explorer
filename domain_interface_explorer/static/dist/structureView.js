@@ -5,11 +5,13 @@ import { createDomainMolstarViewer } from "./molstarView.js";
 export function createStructureViewController({ state, elements, THREE_TO_ONE, interfaceSelect, setLoading, hideLoading, buildStructureResidueLookup, columnResidueStyles, structureMarkerResidueStyles = () => [], msaColumnMaxIndex, topResiduesForColumn, columnStateDistribution, syncColumnLegends, getSelectedRow, getStructurePreloadRows, clearEmbeddingMemberSelection, partnerColor = () => "#817a71", onResidueClick = null, structureDisplaySettingsForView = () => state.structureDisplaySettings, }) {
     const STRUCTURE_PREVIEW_CACHE_LIMIT = 40;
     const STRUCTURE_MODEL_TEXT_CACHE_LIMIT = 24;
+    const STRUCTURE_HMM_SCORE_CACHE_LIMIT = 24;
     const STRUCTURE_PRELOAD_CONCURRENCY = 1;
     const STRUCTURE_PRELOAD_LIMIT = 2;
     const STRUCTURE_PRELOAD_DELAY_MS = 750;
     const structurePreviewInFlight = new Map();
     const structureModelTextInFlight = new Map();
+    const structureHmmScoresInFlight = new Map();
     let structurePreloadAbortController = null;
     let structurePreloadTimer = 0;
     function uniprotEntryUrl(accession) {
@@ -138,6 +140,15 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             params.set("align_to_row_key", alignmentReferenceRowKey);
         }
         return `/api/structure-preview?${params.toString()}`;
+    }
+    function structureHmmScoresUrlForRow(row) {
+        const params = new URLSearchParams({
+            interface_file: interfaceSelect.value,
+            row_key: structureRowKey(row),
+            partner: String(structurePartnerForRow(row)),
+        });
+        appendSelectionSettingsToParams(params, state.selectionSettings);
+        return `/api/hmm-bit-scores?${params.toString()}`;
     }
     function structureModelKey(row, payload) {
         return [
@@ -400,7 +411,327 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             }
         }
     }
+    function syncStructureHmmScoresButton(isLoading = false) {
+        const button = elements.structureHmmScoresButton;
+        if (!button) {
+            return;
+        }
+        button.disabled = Boolean(isLoading) || !state.structureData;
+        button.classList.toggle("loading", Boolean(isLoading));
+        button.classList.toggle("active", !elements.structureHmmScoresPanel?.classList.contains("hidden"));
+    }
+    function closeStructureHmmScoresPanel() {
+        elements.structureHmmScoresPanel?.classList.add("hidden");
+        syncStructureHmmScoresButton(false);
+    }
+    function resetStructureHmmScoresPanel(options = {}) {
+        state.structureHmmScoresRequestId += 1;
+        state.structureHmmScoresPayload = null;
+        elements.structureHmmScoresOutput?.replaceChildren();
+        if (elements.structureHmmScoresStatus) {
+            elements.structureHmmScoresStatus.textContent = options.message || "";
+        }
+        if (options.hide !== false) {
+            elements.structureHmmScoresPanel?.classList.add("hidden");
+        }
+        syncStructureHmmScoresButton(false);
+    }
+    function setStructureHmmScoresStatus(message) {
+        if (elements.structureHmmScoresStatus) {
+            elements.structureHmmScoresStatus.textContent = message;
+        }
+    }
+    function formatScoreValue(value) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+            return "-";
+        }
+        return numeric >= 100 ? numeric.toFixed(1) : numeric.toFixed(2);
+    }
+    function formatEValue(value) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+            return "-";
+        }
+        if (numeric === 0) {
+            return "0";
+        }
+        if (numeric < 0.001 || numeric >= 1000) {
+            return numeric.toExponential(1);
+        }
+        return numeric.toPrecision(3);
+    }
+    function hmmHeaderLabel(hmm) {
+        const pfamId = String(hmm?.pfam_id || "");
+        const name = String(hmm?.name || "");
+        return name && name !== pfamId ? `${pfamId} ${name}` : pfamId;
+    }
+    function thresholdForPlot(hmm) {
+        const thresholds = hmm?.thresholds || {};
+        for (const [key, label] of [["ga", "GA"], ["tc", "TC"], ["nc", "NC"]]) {
+            const threshold = thresholds[key];
+            const sequence = Number(threshold?.sequence);
+            if (Number.isFinite(sequence)) {
+                return { key, label, value: sequence };
+            }
+        }
+        return null;
+    }
+    function domainPlotClass(domain, index) {
+        const key = String(domain?.key || "");
+        if (key === "main") {
+            return "main";
+        }
+        if (key === "partner") {
+            return "partner";
+        }
+        return index % 2 === 0 ? "main" : "partner";
+    }
+    function domainPlotLabel(domain) {
+        const label = String(domain?.label || domain?.key || "Domain");
+        const pfamId = String(domain?.pfam_id || "");
+        return pfamId ? `${label} (${pfamId})` : label;
+    }
+    function formatDeltaValue(value) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+            return "-";
+        }
+        const formatted = formatScoreValue(Math.abs(numeric));
+        return numeric >= 0 ? `+${formatted}` : `-${formatted}`;
+    }
+    function renderStructureHmmScorePlots(domains, hmms, scores) {
+        const plotsRoot = document.createElement("div");
+        plotsRoot.className = "structure-hmm-score-plots";
+        for (const hmm of hmms) {
+            const pfamId = String(hmm?.pfam_id || "");
+            const threshold = thresholdForPlot(hmm);
+            const plotScores = domains.map((domain, index) => {
+                const score = scores?.[domain.key]?.[pfamId];
+                const fullScore = Number(score?.full_score);
+                const delta = threshold && Number.isFinite(fullScore) ? fullScore - threshold.value : NaN;
+                return { domain, index, score, fullScore, delta };
+            });
+            const finiteDeltas = plotScores
+                .map((item) => Math.abs(item.delta))
+                .filter((value) => Number.isFinite(value));
+            const maxAbsDelta = Math.max(1, ...finiteDeltas);
+            const plot = document.createElement("section");
+            plot.className = "structure-hmm-score-plot";
+            const header = document.createElement("div");
+            header.className = "structure-hmm-score-plot-header";
+            const title = document.createElement("strong");
+            title.textContent = hmmHeaderLabel(hmm);
+            const baseline = document.createElement("span");
+            baseline.textContent = threshold
+                ? `${threshold.label} seq ${formatScoreValue(threshold.value)} = 0`
+                : "threshold unavailable";
+            header.append(title, baseline);
+            plot.appendChild(header);
+            const body = document.createElement("div");
+            body.className = "structure-hmm-score-plot-body";
+            for (const item of plotScores) {
+                const row = document.createElement("div");
+                row.className = `structure-hmm-score-bar-row ${domainPlotClass(item.domain, item.index)}`;
+                const label = document.createElement("span");
+                label.className = "structure-hmm-score-bar-label";
+                label.textContent = domainPlotLabel(item.domain);
+                const track = document.createElement("div");
+                track.className = "structure-hmm-score-bar-track";
+                const zero = document.createElement("span");
+                zero.className = "structure-hmm-score-zero-line";
+                track.appendChild(zero);
+                if (threshold && Number.isFinite(item.delta)) {
+                    const width = Math.min(50, Math.max(2, (Math.abs(item.delta) / maxAbsDelta) * 50));
+                    const bar = document.createElement("span");
+                    bar.className = `structure-hmm-score-bar ${item.delta < 0 ? "negative" : "positive"}`;
+                    bar.style.width = `${width}%`;
+                    bar.style.left = item.delta < 0 ? `${50 - width}%` : "50%";
+                    track.appendChild(bar);
+                }
+                const value = document.createElement("span");
+                value.className = "structure-hmm-score-bar-value";
+                value.textContent = threshold && Number.isFinite(item.delta)
+                    ? `${formatDeltaValue(item.delta)} (${formatScoreValue(item.fullScore)})`
+                    : "No score";
+                row.append(label, track, value);
+                body.appendChild(row);
+            }
+            plot.appendChild(body);
+            plotsRoot.appendChild(plot);
+        }
+        return plotsRoot;
+    }
+    function coveragePercentForItem(item) {
+        const explicitPercent = Number(item?.coverage_percent);
+        if (Number.isFinite(explicitPercent)) {
+            return Math.max(0, Math.min(100, explicitPercent));
+        }
+        const fraction = Number(item?.coverage_fraction ?? item?.hmm_coverage);
+        if (Number.isFinite(fraction)) {
+            return Math.max(0, Math.min(100, fraction * 100));
+        }
+        const hmmFrom = Number(item?.hmm_from);
+        const hmmTo = Number(item?.hmm_to);
+        const hmmLength = Number(item?.hmm_length);
+        if (Number.isFinite(hmmFrom) && Number.isFinite(hmmTo) && Number.isFinite(hmmLength) && hmmLength > 0) {
+            return Math.max(0, Math.min(100, ((hmmTo - hmmFrom + 1) / hmmLength) * 100));
+        }
+        return 0;
+    }
+    function formatCoveragePercent(value) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+            return "0.0%";
+        }
+        return `${numeric.toFixed(1)}%`;
+    }
+    function hmmForPfamId(hmms, pfamId) {
+        return hmms.find((hmm) => String(hmm?.pfam_id || "") === String(pfamId || "")) || null;
+    }
+    function coverageItemsForPayload(payload, domains, hmms, scores) {
+        const coverage = Array.isArray(payload?.coverage) ? payload.coverage : [];
+        if (coverage.length > 0) {
+            return coverage;
+        }
+        return domains.map((domain) => {
+            const pfamId = String(domain?.pfam_id || "");
+            const score = scores?.[domain.key]?.[pfamId] || {};
+            const hmm = hmmForPfamId(hmms, pfamId);
+            return {
+                key: domain.key,
+                label: domain.label || domain.key,
+                domain_pfam_id: pfamId,
+                hmm_pfam_id: pfamId,
+                hmm_from: score.hmm_from,
+                hmm_to: score.hmm_to,
+                hmm_length: score.hmm_length ?? hmm?.length,
+                hmm_covered: score.hmm_covered,
+                coverage_fraction: score.hmm_coverage,
+                coverage_percent: score.hmm_coverage_percent,
+                reported: score.reported,
+                full_score: score.full_score,
+            };
+        });
+    }
+    function coverageCoordinateLabel(item) {
+        const pfamId = String(item?.hmm_pfam_id || item?.domain_pfam_id || "");
+        const hmmFrom = Number(item?.hmm_from);
+        const hmmTo = Number(item?.hmm_to);
+        const hmmLength = Number(item?.hmm_length);
+        if (Number.isFinite(hmmFrom) && Number.isFinite(hmmTo) && Number.isFinite(hmmLength) && hmmLength > 0) {
+            return `${pfamId} ${hmmFrom}-${hmmTo} / ${hmmLength}`;
+        }
+        return pfamId ? `${pfamId} no reported span` : "No reported span";
+    }
+    function renderStructureHmmCoverageBars(payload, domains, hmms, scores) {
+        const coverageItems = coverageItemsForPayload(payload, domains, hmms, scores);
+        const root = document.createElement("div");
+        root.className = "structure-hmm-coverage-bars";
+        for (const [index, item] of coverageItems.entries()) {
+            const percent = coveragePercentForItem(item);
+            const row = document.createElement("div");
+            row.className = `structure-hmm-coverage-row ${domainPlotClass(item, index)}`;
+            const label = document.createElement("span");
+            label.className = "structure-hmm-coverage-label";
+            const title = document.createElement("strong");
+            const domainPfamId = String(item?.domain_pfam_id || "");
+            title.textContent = `${item?.label || item?.key || "Domain"}${domainPfamId ? ` (${domainPfamId})` : ""}`;
+            const detail = document.createElement("span");
+            detail.textContent = coverageCoordinateLabel(item);
+            label.append(title, detail);
+            const track = document.createElement("div");
+            track.className = "structure-hmm-coverage-track";
+            const fill = document.createElement("span");
+            fill.className = "structure-hmm-coverage-fill";
+            fill.style.width = `${percent}%`;
+            track.appendChild(fill);
+            const value = document.createElement("span");
+            value.className = "structure-hmm-coverage-value";
+            value.textContent = formatCoveragePercent(percent);
+            row.append(label, track, value);
+            root.appendChild(row);
+        }
+        return root;
+    }
+    function renderStructureHmmScores(payload) {
+        const output = elements.structureHmmScoresOutput;
+        if (!output) {
+            return;
+        }
+        output.replaceChildren();
+        const domains = Array.isArray(payload?.domains) ? payload.domains : [];
+        const hmms = Array.isArray(payload?.hmms) ? payload.hmms : [];
+        const scores = payload?.scores || {};
+        if (domains.length === 0 || hmms.length === 0) {
+            setStructureHmmScoresStatus("No HMM score data returned.");
+            return;
+        }
+        output.appendChild(renderStructureHmmScorePlots(domains, hmms, scores));
+        output.appendChild(renderStructureHmmCoverageBars(payload, domains, hmms, scores));
+        setStructureHmmScoresStatus("");
+    }
+    async function loadStructureHmmScores() {
+        const structure = state.structureData;
+        if (!structure?.row || !interfaceSelect.value) {
+            resetStructureHmmScoresPanel({ hide: false, message: "Open a concrete structure before calculating HMM scores." });
+            elements.structureHmmScoresPanel?.classList.remove("hidden");
+            syncStructureHmmScoresButton(false);
+            return;
+        }
+        const url = structureHmmScoresUrlForRow(structure.row);
+        const requestId = state.structureHmmScoresRequestId + 1;
+        state.structureHmmScoresRequestId = requestId;
+        elements.structureHmmScoresPanel?.classList.remove("hidden");
+        elements.structureHmmScoresOutput?.replaceChildren();
+        setStructureHmmScoresStatus("Calculating HMM bit scores...");
+        syncStructureHmmScoresButton(true);
+        try {
+            const cachedScores = readCacheValue(state.structureHmmScoresCache, url);
+            if (cachedScores) {
+                if (requestId === state.structureHmmScoresRequestId) {
+                    state.structureHmmScoresPayload = cachedScores;
+                    renderStructureHmmScores(cachedScores);
+                }
+                return;
+            }
+            let request = structureHmmScoresInFlight.get(url);
+            if (!request) {
+                request = fetchJson(url)
+                    .then((payload) => {
+                    writeCacheValue(state.structureHmmScoresCache, url, payload, STRUCTURE_HMM_SCORE_CACHE_LIMIT);
+                    return payload;
+                })
+                    .finally(() => {
+                    structureHmmScoresInFlight.delete(url);
+                });
+                structureHmmScoresInFlight.set(url, request);
+            }
+            const payload = await request;
+            if (requestId !== state.structureHmmScoresRequestId) {
+                return;
+            }
+            state.structureHmmScoresPayload = payload;
+            renderStructureHmmScores(payload);
+        }
+        catch (error) {
+            if (requestId !== state.structureHmmScoresRequestId) {
+                return;
+            }
+            elements.structureHmmScoresOutput?.replaceChildren();
+            setStructureHmmScoresStatus(error.message || "HMM bit-score calculation failed.");
+            if (elements.structureModalStatus) {
+                elements.structureModalStatus.textContent = error.message || "HMM bit-score calculation failed.";
+            }
+        }
+        finally {
+            if (requestId === state.structureHmmScoresRequestId) {
+                syncStructureHmmScoresButton(false);
+            }
+        }
+    }
     function renderStructureLoadingState(row, label, detail = "") {
+        resetStructureHmmScoresPanel();
         renderStructurePartnerControl(null);
         renderStructureHeader(row, {
             uniprot_id: row?.protein_id || "",
@@ -526,6 +857,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         state.structureRenderedModelKey = null;
         state.structureRenderedModelIdentityKey = null;
         state.structurePartnerRows = [];
+        resetStructureHmmScoresPanel();
         renderStructurePartnerControl(null);
         elements.structureHoverCard.classList.add("hidden");
         setStructureHoverDetails(null);
@@ -624,6 +956,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         stopForegroundStructureLoad();
         elements.structureModal.classList.add("hidden");
         elements.structureModal.setAttribute("aria-hidden", "true");
+        closeStructureHmmScoresPanel();
         setStructureLoadingUi(false);
         clearEmbeddingMemberSelection?.();
     }
@@ -847,6 +1180,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
                 `Partner surface: ${payload.partner_surface_residue_ids.length} | ` +
                 `Contacts: ${residueContactPairs(payload).length} | ` +
                 `AlphaFold: ${payload.model_source || "unknown"}${markerNote}`;
+        syncStructureHmmScoresButton(false);
         syncColumnLegends();
     }
     async function renderLoadedStructure(row, payload, modelText, options = {}) {
@@ -959,6 +1293,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             elements.structurePartnerSelect.value = rowKey;
         }
         applyStructurePartnerControlColor(targetRow);
+        resetStructureHmmScoresPanel();
         stopStructurePreloading();
         const requestId = state.structureRequestId + 1;
         state.structureRequestId = requestId;
@@ -1010,8 +1345,10 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         getStructureViewer,
         handleStructureLoadFailure,
         loadInteractiveStructure,
+        loadStructureHmmScores,
         openStructureModal,
         recenterStructureDomain,
+        closeStructureHmmScoresPanel,
         renderLoadedStructure,
         renderInteractiveStructure,
         resetStructurePanel,
