@@ -3555,12 +3555,31 @@ select,
   border-radius: 999px;
 }
 
-.structure-hmm-coverage-row.main .structure-hmm-coverage-fill {
+.structure-hmm-coverage-fill-span {
+  opacity: 0.34;
+}
+
+.structure-hmm-coverage-fill-matched {
+  inset: 6px auto 6px 3px;
+  z-index: 1;
+  opacity: 0.96;
+  box-shadow: 0 0 0 1px rgba(255, 252, 245, 0.42);
+}
+
+.structure-hmm-coverage-row.main .structure-hmm-coverage-fill-span {
   background: #e17a2d;
 }
 
-.structure-hmm-coverage-row.partner .structure-hmm-coverage-fill {
+.structure-hmm-coverage-row.main .structure-hmm-coverage-fill-matched {
+  background: #b85a1f;
+}
+
+.structure-hmm-coverage-row.partner .structure-hmm-coverage-fill-span {
   background: #2f68b8;
+}
+
+.structure-hmm-coverage-row.partner .structure-hmm-coverage-fill-matched {
+  background: #1d528f;
 }
 
 .structure-hmm-coverage-value {

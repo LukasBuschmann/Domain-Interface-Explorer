@@ -273,7 +273,16 @@ def hmm_domain_coverage_payload(
     hmm_from: int | None,
     hmm_to: int | None,
     hmm_length: int | None,
+    matched_hmm_covered: int | None = None,
+    deleted_hmm_columns: int | None = None,
 ) -> dict[str, object]:
+    matched_covered = max(0, int(matched_hmm_covered or 0))
+    deleted_columns = max(0, int(deleted_hmm_columns or 0))
+    matched_coverage = (
+        min(1.0, matched_covered / hmm_length)
+        if hmm_length is not None and hmm_length > 0
+        else 0.0
+    )
     if hmm_from is None or hmm_to is None or hmm_length is None or hmm_length <= 0:
         return {
             "hmm_from": hmm_from,
@@ -282,6 +291,10 @@ def hmm_domain_coverage_payload(
             "hmm_covered": 0,
             "hmm_coverage": 0.0,
             "hmm_coverage_percent": 0.0,
+            "matched_hmm_covered": matched_covered,
+            "matched_hmm_coverage": matched_coverage,
+            "matched_hmm_coverage_percent": matched_coverage * 100.0,
+            "deleted_hmm_columns": deleted_columns,
         }
     covered = max(0, hmm_to - hmm_from + 1)
     coverage = min(1.0, covered / hmm_length)
@@ -292,7 +305,83 @@ def hmm_domain_coverage_payload(
         "hmm_covered": covered,
         "hmm_coverage": coverage,
         "hmm_coverage_percent": coverage * 100.0,
+        "matched_hmm_covered": matched_covered,
+        "matched_hmm_coverage": matched_coverage,
+        "matched_hmm_coverage_percent": matched_coverage * 100.0,
+        "deleted_hmm_columns": deleted_columns,
     }
+
+
+HMMER_ALIGNMENT_ROW_RE = re.compile(r"^\s*(\S+)\s+\d+\s+([A-Za-z.\-]+)\s+\d+\s*$")
+
+
+def parse_hmmsearch_alignment_coverages(
+    output: str,
+    hmm_name: str,
+    hmm_length: int | None,
+) -> dict[tuple[str, int], dict[str, object]]:
+    coverages: dict[tuple[str, int], dict[str, object]] = {}
+    if not output or not hmm_name:
+        return coverages
+    current_target: str | None = None
+    current_domain: int | None = None
+    pending_model_alignment: str | None = None
+    for line in output.splitlines():
+        if line.startswith(">> "):
+            current_target = line[3:].strip()
+            current_domain = None
+            pending_model_alignment = None
+            continue
+        domain_match = re.match(r"^\s*== domain (\d+)\s+score:", line)
+        if domain_match:
+            current_domain = int(domain_match.group(1))
+            pending_model_alignment = None
+            if current_target is not None:
+                coverages[(current_target, current_domain)] = {
+                    "matched_hmm_covered": 0,
+                    "matched_hmm_coverage": 0.0,
+                    "matched_hmm_coverage_percent": 0.0,
+                    "deleted_hmm_columns": 0,
+                    "aligned_hmm_columns": 0,
+                }
+            continue
+        if current_target is None or current_domain is None:
+            continue
+        row_match = HMMER_ALIGNMENT_ROW_RE.match(line)
+        if row_match is None:
+            continue
+        row_name, alignment = row_match.groups()
+        if row_name == hmm_name:
+            pending_model_alignment = alignment
+            continue
+        if row_name != current_target or pending_model_alignment is None:
+            continue
+        coverage = coverages.setdefault(
+            (current_target, current_domain),
+            {
+                "matched_hmm_covered": 0,
+                "matched_hmm_coverage": 0.0,
+                "matched_hmm_coverage_percent": 0.0,
+                "deleted_hmm_columns": 0,
+                "aligned_hmm_columns": 0,
+            },
+        )
+        for hmm_char, query_char in zip(pending_model_alignment, alignment):
+            if hmm_char == ".":
+                continue
+            coverage["aligned_hmm_columns"] = int(coverage["aligned_hmm_columns"]) + 1
+            if query_char.isalpha():
+                coverage["matched_hmm_covered"] = int(coverage["matched_hmm_covered"]) + 1
+            else:
+                coverage["deleted_hmm_columns"] = int(coverage["deleted_hmm_columns"]) + 1
+        pending_model_alignment = None
+    normalized_length = optional_int(hmm_length)
+    for coverage in coverages.values():
+        matched = int(coverage.get("matched_hmm_covered") or 0)
+        fraction = (min(1.0, matched / normalized_length) if normalized_length else 0.0)
+        coverage["matched_hmm_coverage"] = fraction
+        coverage["matched_hmm_coverage_percent"] = fraction * 100.0
+    return coverages
 
 
 def parse_hmmsearch_domtblout(path: Path) -> dict[str, dict[str, object]]:
@@ -309,6 +398,7 @@ def parse_hmmsearch_domtblout(path: Path) -> dict[str, dict[str, object]]:
             target_name = fields[0]
             try:
                 hmm_length = int(fields[5])
+                domain_index = int(fields[9])
                 domain_score = float(fields[13])
                 domain_bias = float(fields[14])
                 hmm_from = int(fields[15])
@@ -321,6 +411,7 @@ def parse_hmmsearch_domtblout(path: Path) -> dict[str, dict[str, object]]:
             except ValueError:
                 continue
             payload = {
+                "domain_index": domain_index,
                 "domain_score": domain_score,
                 "domain_bias": domain_bias,
                 "ali_from": ali_from,
@@ -384,6 +475,7 @@ def score_sequences_against_hmm(
     cache_dir: Path,
     timeout_seconds: int = 120,
     hmm_length: int | None = None,
+    hmm_name: str = "",
 ) -> dict[str, dict[str, object]]:
     tmp_root = cache_dir / "hmmer" / "tmp"
     tmp_root.mkdir(parents=True, exist_ok=True)
@@ -397,7 +489,6 @@ def score_sequences_against_hmm(
             [
                 hmmsearch_path,
                 "--max",
-                "--noali",
                 "--cpu",
                 "1",
                 "-T",
@@ -423,11 +514,24 @@ def score_sequences_against_hmm(
         scores = parse_hmmsearch_tblout(tblout_path)
         domain_hits = parse_hmmsearch_domtblout(domtblout_path)
         fallback_hmm_length = optional_int(hmm_length)
+        alignment_coverages = parse_hmmsearch_alignment_coverages(
+            completed.stdout,
+            hmm_name,
+            fallback_hmm_length,
+        )
         for target_name, score in scores.items():
             domain_hit = domain_hits.get(target_name)
             if domain_hit is None:
                 score.update(hmm_domain_coverage_payload(None, None, fallback_hmm_length))
             else:
+                domain_index = optional_int(domain_hit.get("domain_index"))
+                alignment_coverage = (
+                    alignment_coverages.get((target_name, domain_index))
+                    if domain_index is not None
+                    else None
+                )
+                if alignment_coverage is not None:
+                    domain_hit = {**domain_hit, **alignment_coverage}
                 score.update(domain_hit)
         return scores
 
@@ -446,7 +550,7 @@ def score_cache_key(payload: dict[str, object], pfam_hmm_path: Path) -> str:
     cache_payload = {
         **payload,
         **stat_payload,
-        "version": 4,
+        "version": 5,
     }
     return hashlib.sha1(
         json.dumps(cache_payload, sort_keys=True).encode("utf-8")
@@ -579,6 +683,7 @@ def compute_domain_hmm_bit_scores(
             sequences=sequences,
             cache_dir=cache_dir,
             hmm_length=hmm_length,
+            hmm_name=str(hmm_metadata.get("name") or ""),
         )
         for sequence in sequences:
             sequence_key = str(sequence["key"])
@@ -601,6 +706,10 @@ def compute_domain_hmm_bit_scores(
                 "hmm_covered": score.get("hmm_covered"),
                 "coverage_fraction": score.get("hmm_coverage"),
                 "coverage_percent": score.get("hmm_coverage_percent"),
+                "matched_hmm_covered": score.get("matched_hmm_covered"),
+                "matched_coverage_fraction": score.get("matched_hmm_coverage"),
+                "matched_coverage_percent": score.get("matched_hmm_coverage_percent"),
+                "deleted_hmm_columns": score.get("deleted_hmm_columns"),
                 "reported": score.get("reported"),
                 "full_score": score.get("full_score"),
             }

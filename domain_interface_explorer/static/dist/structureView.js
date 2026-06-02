@@ -562,22 +562,37 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         }
         return plotsRoot;
     }
+    function clampCoveragePercent(value) {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? Math.max(0, Math.min(100, numeric)) : NaN;
+    }
     function coveragePercentForItem(item) {
-        const explicitPercent = Number(item?.coverage_percent);
+        const explicitPercent = clampCoveragePercent(item?.coverage_percent);
         if (Number.isFinite(explicitPercent)) {
-            return Math.max(0, Math.min(100, explicitPercent));
+            return explicitPercent;
         }
         const fraction = Number(item?.coverage_fraction ?? item?.hmm_coverage);
         if (Number.isFinite(fraction)) {
-            return Math.max(0, Math.min(100, fraction * 100));
+            return clampCoveragePercent(fraction * 100);
         }
         const hmmFrom = Number(item?.hmm_from);
         const hmmTo = Number(item?.hmm_to);
         const hmmLength = Number(item?.hmm_length);
         if (Number.isFinite(hmmFrom) && Number.isFinite(hmmTo) && Number.isFinite(hmmLength) && hmmLength > 0) {
-            return Math.max(0, Math.min(100, ((hmmTo - hmmFrom + 1) / hmmLength) * 100));
+            return clampCoveragePercent(((hmmTo - hmmFrom + 1) / hmmLength) * 100);
         }
         return 0;
+    }
+    function matchedCoveragePercentForItem(item) {
+        const explicitPercent = clampCoveragePercent(item?.matched_coverage_percent ?? item?.matched_hmm_coverage_percent);
+        if (Number.isFinite(explicitPercent)) {
+            return explicitPercent;
+        }
+        const fraction = Number(item?.matched_coverage_fraction ?? item?.matched_hmm_coverage);
+        if (Number.isFinite(fraction)) {
+            return clampCoveragePercent(fraction * 100);
+        }
+        return NaN;
     }
     function formatCoveragePercent(value) {
         const numeric = Number(value);
@@ -609,6 +624,10 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
                 hmm_covered: score.hmm_covered,
                 coverage_fraction: score.hmm_coverage,
                 coverage_percent: score.hmm_coverage_percent,
+                matched_hmm_covered: score.matched_hmm_covered,
+                matched_coverage_fraction: score.matched_hmm_coverage,
+                matched_coverage_percent: score.matched_hmm_coverage_percent,
+                deleted_hmm_columns: score.deleted_hmm_columns,
                 reported: score.reported,
                 full_score: score.full_score,
             };
@@ -624,12 +643,40 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         }
         return pfamId ? `${pfamId} no reported span` : "No reported span";
     }
+    function coverageValueLabel(spanPercent, matchedPercent) {
+        if (Number.isFinite(matchedPercent)) {
+            return `${formatCoveragePercent(spanPercent)} / ${formatCoveragePercent(matchedPercent)}`;
+        }
+        return formatCoveragePercent(spanPercent);
+    }
+    function coverageTrackTitle(item, spanPercent, matchedPercent) {
+        const hmmLength = Number(item?.hmm_length);
+        const spanCovered = Number(item?.hmm_covered);
+        const matchedCovered = Number(item?.matched_hmm_covered);
+        const deletedColumns = Number(item?.deleted_hmm_columns);
+        const parts = [`span ${formatCoveragePercent(spanPercent)}`];
+        if (Number.isFinite(spanCovered) && Number.isFinite(hmmLength) && hmmLength > 0) {
+            parts[0] += ` (${spanCovered}/${hmmLength})`;
+        }
+        if (Number.isFinite(matchedPercent)) {
+            let matchedLabel = `matched ${formatCoveragePercent(matchedPercent)}`;
+            if (Number.isFinite(matchedCovered) && Number.isFinite(hmmLength) && hmmLength > 0) {
+                matchedLabel += ` (${matchedCovered}/${hmmLength})`;
+            }
+            parts.push(matchedLabel);
+        }
+        if (Number.isFinite(deletedColumns) && deletedColumns > 0) {
+            parts.push(`${deletedColumns} deleted model columns`);
+        }
+        return parts.join(" | ");
+    }
     function renderStructureHmmCoverageBars(payload, domains, hmms, scores) {
         const coverageItems = coverageItemsForPayload(payload, domains, hmms, scores);
         const root = document.createElement("div");
         root.className = "structure-hmm-coverage-bars";
         for (const [index, item] of coverageItems.entries()) {
             const percent = coveragePercentForItem(item);
+            const matchedPercent = matchedCoveragePercentForItem(item);
             const row = document.createElement("div");
             row.className = `structure-hmm-coverage-row ${domainPlotClass(item, index)}`;
             const label = document.createElement("span");
@@ -642,13 +689,20 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             label.append(title, detail);
             const track = document.createElement("div");
             track.className = "structure-hmm-coverage-track";
+            track.title = coverageTrackTitle(item, percent, matchedPercent);
             const fill = document.createElement("span");
-            fill.className = "structure-hmm-coverage-fill";
+            fill.className = "structure-hmm-coverage-fill structure-hmm-coverage-fill-span";
             fill.style.width = `${percent}%`;
             track.appendChild(fill);
+            if (Number.isFinite(matchedPercent)) {
+                const matchedFill = document.createElement("span");
+                matchedFill.className = "structure-hmm-coverage-fill structure-hmm-coverage-fill-matched";
+                matchedFill.style.width = `${matchedPercent}%`;
+                track.appendChild(matchedFill);
+            }
             const value = document.createElement("span");
             value.className = "structure-hmm-coverage-value";
-            value.textContent = formatCoveragePercent(percent);
+            value.textContent = coverageValueLabel(percent, matchedPercent);
             row.append(label, track, value);
             root.appendChild(row);
         }

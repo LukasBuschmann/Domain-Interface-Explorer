@@ -112,6 +112,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--hierarchy-dir", type=Path, default=None)
     parser.add_argument(
+        "--pfam-hmm",
+        "--pfam-hmm-path",
+        dest="pfam_hmm_path",
+        type=Path,
+        default=DEFAULT_PFAM_HMM_PATH,
+    )
+    parser.add_argument(
+        "--sequence-dir",
+        "--sequence-by-domain-dir",
+        dest="sequence_dir",
+        type=Path,
+        default=DEFAULT_SEQUENCE_BY_DOMAIN_DIR,
+    )
+    parser.add_argument(
         "--workers",
         "--cache-workers",
         dest="cache_workers",
@@ -516,6 +530,8 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
     interface_dir: Path
     cache_dir: Path
     hierarchy_dir: Path | None
+    pfam_hmm_path: Path
+    sequence_dir: Path
     interface_store: InterfaceStore | None
     cache_workers: int
     pfam_option_stats: dict[str, dict[str, object]]
@@ -2210,8 +2226,8 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 partner_fragment_key=partner_fragment_key,
                 main_pfam_id=main_pfam_id,
                 partner_pfam_id=partner_pfam_id,
-                sequence_dir=DEFAULT_SEQUENCE_BY_DOMAIN_DIR,
-                pfam_hmm_path=DEFAULT_PFAM_HMM_PATH,
+                sequence_dir=self.sequence_dir,
+                pfam_hmm_path=self.pfam_hmm_path,
                 hmmer_bin_dir=DEFAULT_HMMER_BIN_DIR,
             )
         except ValueError as exc:
@@ -2570,6 +2586,8 @@ def build_handler(
     interface_dir: Path,
     cache_dir: Path,
     hierarchy_dir: Path | None,
+    pfam_hmm_path: Path,
+    sequence_dir: Path,
     interface_store: InterfaceStore | None,
     cache_workers: int,
     pfam_option_stats: dict[str, dict[str, object]],
@@ -2582,6 +2600,8 @@ def build_handler(
     ConfiguredHandler.interface_dir = interface_dir
     ConfiguredHandler.cache_dir = cache_dir
     ConfiguredHandler.hierarchy_dir = hierarchy_dir
+    ConfiguredHandler.pfam_hmm_path = pfam_hmm_path
+    ConfiguredHandler.sequence_dir = sequence_dir
     ConfiguredHandler.interface_store = interface_store
     ConfiguredHandler.cache_workers = max(1, int(cache_workers))
     ConfiguredHandler.pfam_option_stats = pfam_option_stats
@@ -2659,6 +2679,8 @@ def main() -> None:
     interface_dir = args.interface_dir.resolve()
     cache_dir = args.cache_dir.resolve()
     hierarchy_dir = args.hierarchy_dir.resolve() if args.hierarchy_dir is not None else None
+    pfam_hmm_path = args.pfam_hmm_path.resolve()
+    sequence_dir = args.sequence_dir.resolve()
     interface_store = InterfaceStore(cache_dir / "interface_store.sqlite", interface_dir)
     pymol_status = validate_pymol_api()
     if not pymol_status.available:
@@ -2692,6 +2714,8 @@ def main() -> None:
         interface_dir,
         cache_dir,
         hierarchy_dir,
+        pfam_hmm_path,
+        sequence_dir,
         interface_store,
         cache_workers,
         pfam_option_stats,
@@ -2702,6 +2726,8 @@ def main() -> None:
     print(
         f"Serving Domain Interface Explorer at http://{args.host}:{args.port} "
         f"(interface-dir={args.interface_dir}, cache-dir={args.cache_dir}, "
+        f"pfam-hmm={pfam_hmm_path}, "
+        f"sequence-dir={sequence_dir}, "
         f"interface-store={interface_store.db_path}, "
         f"hierarchy-dir={hierarchy_dir or 'none'}, "
         f"workers={cache_workers}, "
