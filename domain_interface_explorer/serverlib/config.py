@@ -19,10 +19,11 @@ DEFAULT_PFAM_HMM_PATH = Path(
         PROJECT_ROOT.parent / "data" / "pfam_a" / "Pfam-A.hmm",
     )
 )
+PROJECT_HMMER_BIN_DIR = PROJECT_ROOT.parent / ".conda_env" / "bin"
 DEFAULT_HMMER_BIN_DIR = Path(
     os.environ.get(
         "DIE_HMMER_BIN_DIR",
-        PROJECT_ROOT.parent / ".conda_env" / "bin",
+        PROJECT_HMMER_BIN_DIR,
     )
 )
 DEFAULT_SEQUENCE_BY_DOMAIN_DIR = Path(

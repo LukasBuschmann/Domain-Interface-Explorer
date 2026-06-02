@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from .config import (
     DEFAULT_HMMER_BIN_DIR,
     DEFAULT_PFAM_HMM_PATH,
     DEFAULT_SEQUENCE_BY_DOMAIN_DIR,
+    PROJECT_HMMER_BIN_DIR,
 )
 from .structure_service import fragment_ranges
 
@@ -157,16 +159,62 @@ def extract_pfam_hmms(
     return records
 
 
+def _candidate_path_key(path: Path) -> str:
+    return str(path.expanduser().resolve(strict=False))
+
+
+def _executable_in_dir(directory: Path, command: str) -> str | None:
+    candidate = directory.expanduser() / command
+    if candidate.exists() and os.access(candidate, os.X_OK):
+        return str(candidate)
+    return None
+
+
 def hmmer_command(command: str, hmmer_bin_dir: Path = DEFAULT_HMMER_BIN_DIR) -> str:
-    configured_path = hmmer_bin_dir / command
-    if configured_path.exists() and os.access(configured_path, os.X_OK):
-        return str(configured_path)
+    candidates: list[tuple[Path, str]] = []
+    seen: set[str] = set()
+
+    def add_candidate(directory: Path | str | None, label: str) -> None:
+        if directory is None:
+            return
+        path = Path(directory)
+        key = _candidate_path_key(path)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append((path, label))
+
+    explicit_hmmer_bin_dir = os.environ.get("DIE_HMMER_BIN_DIR")
+    add_candidate(explicit_hmmer_bin_dir, "DIE_HMMER_BIN_DIR")
+
+    configured_bin_dir = Path(hmmer_bin_dir)
+    configured_key = _candidate_path_key(configured_bin_dir)
+    project_fallback_key = _candidate_path_key(PROJECT_HMMER_BIN_DIR)
+    if configured_key != project_fallback_key:
+        add_candidate(configured_bin_dir, "configured HMMER bin dir")
+
+    add_candidate(Path(sys.executable).resolve().parent, "current Python environment")
+
+    for directory, _label in candidates:
+        executable = _executable_in_dir(directory, command)
+        if executable is not None:
+            return executable
+
     discovered = shutil.which(command)
     if discovered:
         return discovered
+
+    fallback = _executable_in_dir(PROJECT_HMMER_BIN_DIR, command)
+    if fallback is not None:
+        return fallback
+
+    searched = [f"{label}: {directory}" for directory, label in candidates]
+    searched.append(f"PATH: {os.environ.get('PATH', '')}")
+    searched.append(f"project fallback: {PROJECT_HMMER_BIN_DIR}")
     raise RuntimeError(
         f"HMMER command {command!r} was not found. Install the 'hmmer' conda package "
-        f"in {hmmer_bin_dir.parent}."
+        "in the Python environment running this server, or set DIE_HMMER_BIN_DIR. "
+        "Searched " + "; ".join(searched)
     )
 
 
