@@ -1221,7 +1221,10 @@ function appendClusteringSettingsToParams(params) {
 }
 
 async function representativeSelectionUrl() {
-  if (state.representativeScope === "cluster") {
+  const includeClusterSummaries = representativeLens() === "cluster";
+  const representativeNeedsClustering =
+    state.representativeScope === "cluster" || includeClusterSummaries;
+  if (representativeNeedsClustering) {
     await ensureEmbeddingClusteringLoaded();
     syncRepresentativeScopeControls();
   }
@@ -1232,11 +1235,17 @@ async function representativeSelectionUrl() {
     representative_method: String(state.representativeMethod || "balanced"),
   });
   appendSelectionSettingsToParams(params, state.selectionSettings);
+  if (includeClusterSummaries) {
+    params.set("include_cluster_summaries", "1");
+    appendClusteringSettingsToParams(params);
+  }
   if (state.representativeScope === "cluster") {
     const clusterLabel = activeRepresentativeClusterLabel();
     if (clusterLabel !== null) {
       params.set("cluster_label", String(clusterLabel));
-      appendClusteringSettingsToParams(params);
+      if (!includeClusterSummaries) {
+        appendClusteringSettingsToParams(params);
+      }
     } else {
       params.set("representative_scope", "overall");
       state.representativeScope = "overall";

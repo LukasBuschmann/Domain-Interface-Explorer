@@ -1971,6 +1971,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             [""],
         )[0].strip().lower() or REPRESENTATIVE_METHOD_BALANCED
         partner_filter = query.get("partner", ["__all__"])[0].strip() or "__all__"
+        include_cluster_summaries = query_flag(query, "include_cluster_summaries", False)
         if scope not in {"overall", "cluster"}:
             self._send_json(
                 {"error": "representative_scope must be either 'overall' or 'cluster'"},
@@ -1989,6 +1990,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
         cluster_label: int | None = None
+        clustering_settings: dict[str, object] | None = None
         if scope == "cluster":
             cluster_label_raw = query.get("cluster_label", [""])[0].strip()
             if cluster_label_raw == "":
@@ -1996,12 +1998,15 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 return
             try:
                 cluster_label = int(cluster_label_raw)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+        if scope == "cluster" or include_cluster_summaries:
+            try:
                 clustering_settings = parse_clustering_settings(query)
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
-        else:
-            clustering_settings = None
         cache_key = representative_cache_key(
             path,
             interface_filter_settings,
@@ -2049,6 +2054,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             source_candidate_count: int | None = None
+            summary_candidates: list[dict[str, object]] | None = None
             if scope == "overall" and not domain_size_filter_is_active(representative_domain_size_filter):
                 candidate_keys, alignment_length = self._load_representative_candidate_keys(
                     path,
@@ -2067,6 +2073,17 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                     sampled_candidate_keys,
                 )
                 source_candidate_count = len(candidate_keys)
+                if include_cluster_summaries:
+                    summary_candidates, _summary_alignment_length = self._load_representative_candidates(
+                        path,
+                        interface_filter_settings,
+                    )
+                    if partner_filter != "__all__":
+                        summary_candidates = [
+                            candidate
+                            for candidate in summary_candidates
+                            if str(candidate.get("partner_domain") or "") == partner_filter
+                        ]
             else:
                 candidates, alignment_length = self._load_representative_candidates(
                     path,
@@ -2078,6 +2095,8 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                         for candidate in candidates
                         if str(candidate.get("partner_domain") or "") == partner_filter
                     ]
+                if include_cluster_summaries or scope == "cluster":
+                    summary_candidates = candidates
                 if scope == "overall" and domain_size_filter_is_active(representative_domain_size_filter):
                     candidates = [
                         candidate
@@ -2086,35 +2105,38 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                     ]
                     source_candidate_count = len(candidates)
             cluster_summaries: list[dict[str, object]] | None = None
-            if scope == "cluster" and clustering_settings is not None and cluster_label is not None:
+            if (include_cluster_summaries or scope == "cluster") and clustering_settings is not None:
+                if summary_candidates is None:
+                    summary_candidates = candidates
                 clustering_payload = self._load_clustering_payload(
                     path,
                     interface_filter_settings,
                     clustering_settings,
                 )
                 cluster_summaries = compute_cluster_summary_payload(
-                    candidates,
+                    summary_candidates,
                     clustering_payload,
                 )
-                member_keys = self._cluster_member_interaction_keys(
-                    clustering_payload,
-                    cluster_label,
-                )
-                candidates = [
-                    candidate
-                    for candidate in candidates
-                    if representative_interaction_row_key(
-                        candidate.get("interface_row_key"),
-                        candidate.get("partner_domain"),
+                if scope == "cluster" and cluster_label is not None:
+                    member_keys = self._cluster_member_interaction_keys(
+                        clustering_payload,
+                        cluster_label,
                     )
-                    in member_keys
-                ]
-                if domain_size_filter_is_active(representative_domain_size_filter):
                     candidates = [
                         candidate
                         for candidate in candidates
-                        if candidate_matches_domain_size_filter(candidate, representative_domain_size_filter)
+                        if representative_interaction_row_key(
+                            candidate.get("interface_row_key"),
+                            candidate.get("partner_domain"),
+                        )
+                        in member_keys
                     ]
+                    if domain_size_filter_is_active(representative_domain_size_filter):
+                        candidates = [
+                            candidate
+                            for candidate in candidates
+                            if candidate_matches_domain_size_filter(candidate, representative_domain_size_filter)
+                        ]
             response_payload = {
                 "file": path.name,
                 "pfam_id": interface_file_pfam_id(path),
