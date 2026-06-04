@@ -98,6 +98,10 @@ Current options:
   Default: not set
   Optional directory containing precalculated hierarchical clustering data. For a single dataset, this can point directly at a hierarchy directory organized as `distance/linkage/linkage/*.linkage.npz` and `distance/linkage/resolver/*.leaves.json`. For multiple datasets, place matching hierarchy directories under this root, using either the same dataset name or the `h_<dataset>` prefix.
 
+- `--default-dataset DATASET` / `--preferred-dataset DATASET`
+  Default: first discovered dataset
+  Dataset key/name to use when the browser has not selected a dataset yet.
+
 - `--workers WORKERS` / `--cache-workers CACHE_WORKERS`
   Default: `4`
   Maximum worker count for cache-building jobs, numba distance calculations, and openTSNE point layouts.
@@ -111,6 +115,7 @@ python -m domain_interface_explorer.server \
   --interface-dir /path/to/interface-json-dir-or-dataset-root \
   --cache-dir /path/to/cache \
   --hierarchy-dir /path/to/hierarchy-dir-or-dataset-root \
+  --default-dataset die_v4_1 \
   --workers 4
 ```
 

@@ -113,6 +113,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--hierarchy-dir", type=Path, default=None)
     parser.add_argument(
+        "--default-dataset",
+        "--preferred-dataset",
+        dest="default_dataset",
+        default="",
+        help="Dataset key/name to use when no dataset is specified in the request.",
+    )
+    parser.add_argument(
         "--pfam-hmm",
         "--pfam-hmm-path",
         dest="pfam_hmm_path",
@@ -303,6 +310,25 @@ def discover_dataset_configs(interface_root: Path, hierarchy_root: Path | None) 
             )
         )
     return datasets
+
+
+def default_dataset_key_from_configs(
+    dataset_configs: list[DatasetConfig],
+    requested_dataset: str | None,
+) -> str:
+    if not dataset_configs:
+        raise SystemExit("No datasets were discovered.")
+    requested = str(requested_dataset or "").strip()
+    if not requested:
+        return dataset_configs[0].key
+    for dataset in dataset_configs:
+        if requested in {dataset.key, dataset.label, dataset.interface_dir.name}:
+            return dataset.key
+    available = ", ".join(dataset.key for dataset in dataset_configs)
+    raise SystemExit(
+        f"--default-dataset {requested!r} was not found. "
+        f"Available datasets: {available or 'none'}"
+    )
 
 
 def dataset_payload(runtime: DatasetRuntime) -> dict[str, object]:
@@ -3014,7 +3040,11 @@ def main() -> None:
             hierarchy_dir=dataset_config.hierarchy_dir,
             interface_store=interface_store,
         )
-    default_runtime = next(iter(dataset_runtimes.values()))
+    default_dataset_key = default_dataset_key_from_configs(
+        dataset_configs,
+        args.default_dataset,
+    )
+    default_runtime = dataset_runtimes[default_dataset_key]
     pfam_option_stats_lock = threading.Lock()
     pfam_option_stats, pfam_option_stats_current, pfam_option_stats_signature = (
         load_available_pfam_option_stats(
