@@ -566,14 +566,26 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         const numeric = Number(value);
         return Number.isFinite(numeric) ? Math.max(0, Math.min(100, numeric)) : NaN;
     }
-    function coveragePercentForItem(item) {
-        const explicitPercent = clampCoveragePercent(item?.coverage_percent);
-        if (Number.isFinite(explicitPercent)) {
-            return explicitPercent;
+    function percentFromItem(item, percentKeys, fractionKeys, { clamp = true } = {}) {
+        for (const key of percentKeys) {
+            const percent = Number(item?.[key]);
+            if (Number.isFinite(percent)) {
+                return clamp ? clampCoveragePercent(percent) : percent;
+            }
         }
-        const fraction = Number(item?.coverage_fraction ?? item?.hmm_coverage);
-        if (Number.isFinite(fraction)) {
-            return clampCoveragePercent(fraction * 100);
+        for (const key of fractionKeys) {
+            const fraction = Number(item?.[key]);
+            if (Number.isFinite(fraction)) {
+                const percent = fraction * 100;
+                return clamp ? clampCoveragePercent(percent) : percent;
+            }
+        }
+        return NaN;
+    }
+    function coveragePercentForItem(item) {
+        const explicit = percentFromItem(item, ["coverage_percent"], ["coverage_fraction", "hmm_coverage"]);
+        if (Number.isFinite(explicit)) {
+            return explicit;
         }
         const hmmFrom = Number(item?.hmm_from);
         const hmmTo = Number(item?.hmm_to);
@@ -584,15 +596,19 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         return 0;
     }
     function matchedCoveragePercentForItem(item) {
-        const explicitPercent = clampCoveragePercent(item?.matched_coverage_percent ?? item?.matched_hmm_coverage_percent);
-        if (Number.isFinite(explicitPercent)) {
-            return explicitPercent;
-        }
-        const fraction = Number(item?.matched_coverage_fraction ?? item?.matched_hmm_coverage);
-        if (Number.isFinite(fraction)) {
-            return clampCoveragePercent(fraction * 100);
-        }
-        return NaN;
+        return percentFromItem(item, ["matched_coverage_percent", "matched_hmm_coverage_percent"], ["matched_coverage_fraction", "matched_hmm_coverage"]);
+    }
+    function combinedCoveragePercentForItem(item) {
+        return percentFromItem(item, ["combined_coverage_percent", "combined_hmm_coverage_percent"], ["combined_coverage_fraction", "combined_hmm_coverage"]);
+    }
+    function combinedMatchedCoveragePercentForItem(item) {
+        return percentFromItem(item, ["combined_matched_coverage_percent", "combined_matched_hmm_coverage_percent"], ["combined_matched_coverage_fraction", "combined_matched_hmm_coverage"]);
+    }
+    function coverageGainPercentForItem(item) {
+        return percentFromItem(item, ["coverage_gain_percent", "hmm_coverage_gain_percent"], ["coverage_gain_fraction", "hmm_coverage_gain"], { clamp: false });
+    }
+    function matchedCoverageGainPercentForItem(item) {
+        return percentFromItem(item, ["matched_coverage_gain_percent", "matched_hmm_coverage_gain_percent"], ["matched_coverage_gain_fraction", "matched_hmm_coverage_gain"], { clamp: false });
     }
     function formatCoveragePercent(value) {
         const numeric = Number(value);
@@ -600,6 +616,32 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             return "0.0%";
         }
         return `${numeric.toFixed(1)}%`;
+    }
+    function formatCoverageGainPercent(value) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+            return "";
+        }
+        const magnitude = `${Math.abs(numeric).toFixed(1)}pp`;
+        return numeric >= 0 ? `+${magnitude}` : `-${magnitude}`;
+    }
+    function scoreGainForItem(item) {
+        const explicit = Number(item?.domain_score_gain ?? item?.score_gain ?? item?.bit_score_gain);
+        if (Number.isFinite(explicit)) {
+            return explicit;
+        }
+        const domainScore = Number(item?.domain_score);
+        const combinedDomainScore = Number(item?.combined_domain_score);
+        return Number.isFinite(domainScore) && Number.isFinite(combinedDomainScore)
+            ? combinedDomainScore - domainScore
+            : NaN;
+    }
+    function scoreGainValueLabel(value) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+            return "-";
+        }
+        return `${formatDeltaValue(numeric)} bits`;
     }
     function hmmForPfamId(hmms, pfamId) {
         return hmms.find((hmm) => String(hmm?.pfam_id || "") === String(pfamId || "")) || null;
@@ -628,6 +670,27 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
                 matched_coverage_fraction: score.matched_hmm_coverage,
                 matched_coverage_percent: score.matched_hmm_coverage_percent,
                 deleted_hmm_columns: score.deleted_hmm_columns,
+                combined_hmm_from: score.combined_hmm_from,
+                combined_hmm_to: score.combined_hmm_to,
+                combined_hmm_length: score.combined_hmm_length,
+                combined_hmm_covered: score.combined_hmm_covered,
+                combined_coverage_fraction: score.combined_hmm_coverage,
+                combined_coverage_percent: score.combined_hmm_coverage_percent,
+                combined_matched_hmm_covered: score.combined_matched_hmm_covered,
+                combined_matched_coverage_fraction: score.combined_matched_hmm_coverage,
+                combined_matched_coverage_percent: score.combined_matched_hmm_coverage_percent,
+                combined_deleted_hmm_columns: score.combined_deleted_hmm_columns,
+                domain_score: score.domain_score,
+                combined_domain_score: score.combined_domain_score,
+                domain_score_gain: score.domain_score_gain,
+                combined_full_score: score.combined_full_score,
+                score_gain: score.score_gain,
+                bit_score_gain: score.bit_score_gain,
+                full_score_gain: score.full_score_gain,
+                coverage_gain_fraction: score.coverage_gain_fraction ?? score.hmm_coverage_gain,
+                coverage_gain_percent: score.coverage_gain_percent ?? score.hmm_coverage_gain_percent,
+                matched_coverage_gain_fraction: score.matched_coverage_gain_fraction ?? score.matched_hmm_coverage_gain,
+                matched_coverage_gain_percent: score.matched_coverage_gain_percent ?? score.matched_hmm_coverage_gain_percent,
                 reported: score.reported,
                 full_score: score.full_score,
             };
@@ -644,20 +707,19 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         return pfamId ? `${pfamId} no reported span` : "No reported span";
     }
     function coverageValueLabel(spanPercent, matchedPercent) {
-        if (Number.isFinite(matchedPercent)) {
-            return `${formatCoveragePercent(spanPercent)} / ${formatCoveragePercent(matchedPercent)}`;
-        }
-        return formatCoveragePercent(spanPercent);
+        return Number.isFinite(matchedPercent)
+            ? `${formatCoveragePercent(matchedPercent)} / ${formatCoveragePercent(spanPercent)}`
+            : formatCoveragePercent(spanPercent);
     }
-    function coverageTrackTitle(item, spanPercent, matchedPercent) {
+    function coverageTrackTitle(item, spanPercent, matchedPercent, combinedSpanPercent, combinedMatchedPercent) {
         const hmmLength = Number(item?.hmm_length);
         const spanCovered = Number(item?.hmm_covered);
         const matchedCovered = Number(item?.matched_hmm_covered);
         const deletedColumns = Number(item?.deleted_hmm_columns);
-        const parts = [`span ${formatCoveragePercent(spanPercent)}`];
-        if (Number.isFinite(spanCovered) && Number.isFinite(hmmLength) && hmmLength > 0) {
-            parts[0] += ` (${spanCovered}/${hmmLength})`;
-        }
+        const combinedCovered = Number(item?.combined_hmm_covered);
+        const combinedMatchedCovered = Number(item?.combined_matched_hmm_covered);
+        const combinedDeletedColumns = Number(item?.combined_deleted_hmm_columns);
+        const parts = [];
         if (Number.isFinite(matchedPercent)) {
             let matchedLabel = `matched ${formatCoveragePercent(matchedPercent)}`;
             if (Number.isFinite(matchedCovered) && Number.isFinite(hmmLength) && hmmLength > 0) {
@@ -665,10 +727,152 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             }
             parts.push(matchedLabel);
         }
+        let spanLabel = `span ${formatCoveragePercent(spanPercent)}`;
+        if (Number.isFinite(spanCovered) && Number.isFinite(hmmLength) && hmmLength > 0) {
+            spanLabel += ` (${spanCovered}/${hmmLength})`;
+        }
+        parts.push(spanLabel);
+        if (Number.isFinite(combinedMatchedPercent)) {
+            let combinedMatchedLabel = `combined matched ${formatCoveragePercent(combinedMatchedPercent)}`;
+            if (Number.isFinite(combinedMatchedCovered) && Number.isFinite(hmmLength) && hmmLength > 0) {
+                combinedMatchedLabel += ` (${combinedMatchedCovered}/${hmmLength})`;
+            }
+            parts.push(combinedMatchedLabel);
+        }
+        if (Number.isFinite(combinedSpanPercent)) {
+            let combinedLabel = `combined span ${formatCoveragePercent(combinedSpanPercent)}`;
+            if (Number.isFinite(combinedCovered) && Number.isFinite(hmmLength) && hmmLength > 0) {
+                combinedLabel += ` (${combinedCovered}/${hmmLength})`;
+            }
+            parts.push(combinedLabel);
+        }
         if (Number.isFinite(deletedColumns) && deletedColumns > 0) {
             parts.push(`${deletedColumns} deleted model columns`);
         }
+        if (Number.isFinite(combinedDeletedColumns) && combinedDeletedColumns > 0) {
+            parts.push(`${combinedDeletedColumns} combined deleted model columns`);
+        }
         return parts.join(" | ");
+    }
+    function appendZeroCenteredGainBar(track, value, maxAbsValue, className) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+            return;
+        }
+        const scale = Math.max(1, Number(maxAbsValue) || 1);
+        const width = Math.min(50, Math.max(2, (Math.abs(numeric) / scale) * 50));
+        const bar = document.createElement("span");
+        bar.className = `structure-hmm-gain-bar ${className} ${numeric < 0 ? "negative" : "positive"}`;
+        bar.style.width = `${width}%`;
+        bar.style.left = numeric < 0 ? `${50 - width}%` : "50%";
+        track.appendChild(bar);
+    }
+    function createGainPlot(titleText, baselineText) {
+        const plot = document.createElement("section");
+        plot.className = "structure-hmm-gain-plot";
+        const header = document.createElement("div");
+        header.className = "structure-hmm-gain-plot-header";
+        const title = document.createElement("strong");
+        title.textContent = titleText;
+        const baseline = document.createElement("span");
+        baseline.textContent = baselineText;
+        header.append(title, baseline);
+        const body = document.createElement("div");
+        body.className = "structure-hmm-gain-plot-body";
+        plot.append(header, body);
+        return { plot, body };
+    }
+    function createGainRow(item, index, valueText, titleText) {
+        const row = document.createElement("div");
+        row.className = `structure-hmm-gain-row ${domainPlotClass(item, index)}`;
+        const label = document.createElement("span");
+        label.className = "structure-hmm-gain-label";
+        label.textContent = `${item?.label || item?.key || "Domain"}${item?.domain_pfam_id ? ` (${item.domain_pfam_id})` : ""}`;
+        const track = document.createElement("div");
+        track.className = "structure-hmm-gain-track";
+        track.title = titleText;
+        const zero = document.createElement("span");
+        zero.className = "structure-hmm-gain-zero-line";
+        track.appendChild(zero);
+        const value = document.createElement("span");
+        value.className = "structure-hmm-gain-value";
+        value.textContent = valueText;
+        row.append(label, track, value);
+        return { row, track };
+    }
+    function renderStructureHmmGainBars(payload, domains, hmms, scores) {
+        const coverageItems = coverageItemsForPayload(payload, domains, hmms, scores);
+        const scoreGainItems = coverageItems
+            .map((item, index) => ({ item, index, scoreGain: scoreGainForItem(item) }))
+            .filter((entry) => Number.isFinite(entry.scoreGain));
+        const coverageGainItems = coverageItems
+            .map((item, index) => ({
+            item,
+            index,
+            spanGain: coverageGainPercentForItem(item),
+            matchedGain: matchedCoverageGainPercentForItem(item),
+        }))
+            .filter((entry) => Number.isFinite(entry.spanGain) || Number.isFinite(entry.matchedGain));
+        if (scoreGainItems.length === 0 && coverageGainItems.length === 0) {
+            return null;
+        }
+        const root = document.createElement("div");
+        root.className = "structure-hmm-gain-plots";
+        if (scoreGainItems.length > 0) {
+            const maxAbsScoreGain = Math.max(1, ...scoreGainItems.map((entry) => Math.abs(entry.scoreGain)));
+            const { plot, body } = createGainPlot("Score Gain", "selected domain combined - fragment bits = 0");
+            for (const entry of scoreGainItems) {
+                const domainScore = Number(entry.item?.domain_score);
+                const combinedDomainScore = Number(entry.item?.combined_domain_score);
+                const combinedFullScore = Number(entry.item?.combined_full_score);
+                const fullScore = Number(entry.item?.full_score);
+                const fullScoreGain = Number(entry.item?.full_score_gain);
+                const titleParts = [`domain score gain ${scoreGainValueLabel(entry.scoreGain)}`];
+                if (Number.isFinite(combinedDomainScore) && Number.isFinite(domainScore)) {
+                    titleParts.push(`combined domain ${formatScoreValue(combinedDomainScore)}`);
+                    titleParts.push(`fragment domain ${formatScoreValue(domainScore)}`);
+                }
+                if (Number.isFinite(fullScoreGain)) {
+                    titleParts.push(`full score gain ${scoreGainValueLabel(fullScoreGain)}`);
+                }
+                else if (Number.isFinite(combinedFullScore) && Number.isFinite(fullScore)) {
+                    titleParts.push(`combined full ${formatScoreValue(combinedFullScore)}`);
+                    titleParts.push(`fragment full ${formatScoreValue(fullScore)}`);
+                }
+                const { row, track } = createGainRow(entry.item, entry.index, scoreGainValueLabel(entry.scoreGain), titleParts.join(" | "));
+                appendZeroCenteredGainBar(track, entry.scoreGain, maxAbsScoreGain, "structure-hmm-gain-bar-score");
+                body.appendChild(row);
+            }
+            root.appendChild(plot);
+        }
+        if (coverageGainItems.length > 0) {
+            const coverageValues = coverageGainItems
+                .flatMap((entry) => [entry.matchedGain, entry.spanGain])
+                .filter((value) => Number.isFinite(value))
+                .map((value) => Math.abs(value));
+            const maxAbsCoverageGain = Math.max(1, ...coverageValues);
+            const { plot, body } = createGainPlot("Coverage Gain", "combined - fragment pp = 0");
+            for (const entry of coverageGainItems) {
+                const valueText = Number.isFinite(entry.matchedGain) && Number.isFinite(entry.spanGain)
+                    ? `${formatCoverageGainPercent(entry.matchedGain)} / ${formatCoverageGainPercent(entry.spanGain)}`
+                    : Number.isFinite(entry.matchedGain)
+                        ? formatCoverageGainPercent(entry.matchedGain)
+                        : formatCoverageGainPercent(entry.spanGain);
+                const titleParts = [];
+                if (Number.isFinite(entry.matchedGain)) {
+                    titleParts.push(`matched gain ${formatCoverageGainPercent(entry.matchedGain)}`);
+                }
+                if (Number.isFinite(entry.spanGain)) {
+                    titleParts.push(`span gain ${formatCoverageGainPercent(entry.spanGain)}`);
+                }
+                const { row, track } = createGainRow(entry.item, entry.index, valueText, titleParts.join(" | "));
+                appendZeroCenteredGainBar(track, entry.spanGain, maxAbsCoverageGain, "structure-hmm-gain-bar-span");
+                appendZeroCenteredGainBar(track, entry.matchedGain, maxAbsCoverageGain, "structure-hmm-gain-bar-matched");
+                body.appendChild(row);
+            }
+            root.appendChild(plot);
+        }
+        return root;
     }
     function renderStructureHmmCoverageBars(payload, domains, hmms, scores) {
         const coverageItems = coverageItemsForPayload(payload, domains, hmms, scores);
@@ -677,6 +881,8 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
         for (const [index, item] of coverageItems.entries()) {
             const percent = coveragePercentForItem(item);
             const matchedPercent = matchedCoveragePercentForItem(item);
+            const combinedPercent = combinedCoveragePercentForItem(item);
+            const combinedMatchedPercent = combinedMatchedCoveragePercentForItem(item);
             const row = document.createElement("div");
             row.className = `structure-hmm-coverage-row ${domainPlotClass(item, index)}`;
             const label = document.createElement("span");
@@ -689,7 +895,7 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             label.append(title, detail);
             const track = document.createElement("div");
             track.className = "structure-hmm-coverage-track";
-            track.title = coverageTrackTitle(item, percent, matchedPercent);
+            track.title = coverageTrackTitle(item, percent, matchedPercent, combinedPercent, combinedMatchedPercent);
             const fill = document.createElement("span");
             fill.className = "structure-hmm-coverage-fill structure-hmm-coverage-fill-span";
             fill.style.width = `${percent}%`;
@@ -702,7 +908,11 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             }
             const value = document.createElement("span");
             value.className = "structure-hmm-coverage-value";
-            value.textContent = coverageValueLabel(percent, matchedPercent);
+            const coverageValue = document.createElement("span");
+            coverageValue.className = "structure-hmm-coverage-value-cell";
+            coverageValue.title = "Matched coverage / span coverage";
+            coverageValue.textContent = coverageValueLabel(percent, matchedPercent);
+            value.appendChild(coverageValue);
             row.append(label, track, value);
             root.appendChild(row);
         }
@@ -722,6 +932,10 @@ export function createStructureViewController({ state, elements, THREE_TO_ONE, i
             return;
         }
         output.appendChild(renderStructureHmmScorePlots(domains, hmms, scores));
+        const gainBars = renderStructureHmmGainBars(payload, domains, hmms, scores);
+        if (gainBars) {
+            output.appendChild(gainBars);
+        }
         output.appendChild(renderStructureHmmCoverageBars(payload, domains, hmms, scores));
         setStructureHmmScoresStatus("");
     }

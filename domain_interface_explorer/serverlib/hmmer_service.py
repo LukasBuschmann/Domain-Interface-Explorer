@@ -515,6 +515,127 @@ def unreported_hmmer_score(hmm_length: int | None = None) -> dict[str, object]:
     }
 
 
+def residue_span_for_sequence(sequence: dict[str, object]) -> tuple[int | None, int | None]:
+    residue_ids = sequence.get("residue_ids")
+    if not isinstance(residue_ids, list):
+        return None, None
+    normalized_ids: list[int] = []
+    for residue_id in residue_ids:
+        try:
+            normalized_ids.append(int(residue_id))
+        except (TypeError, ValueError):
+            continue
+    if not normalized_ids:
+        return None, None
+    return min(normalized_ids), max(normalized_ids)
+
+
+def _residue_order_value(value: int | None) -> int:
+    return value if value is not None else 10**12
+
+
+def combined_sequence_record(sequences: list[dict[str, object]]) -> dict[str, object]:
+    ordered_sequences = sorted(
+        enumerate(sequences),
+        key=lambda item: (
+            _residue_order_value(residue_span_for_sequence(item[1])[0]),
+            _residue_order_value(residue_span_for_sequence(item[1])[1]),
+            item[0],
+        ),
+    )
+    sequence_parts: list[str] = []
+    residue_ids: list[int] = []
+    sources: list[dict[str, object]] = []
+    for _index, sequence in ordered_sequences:
+        sequence_text = str(sequence.get("sequence") or "")
+        start, end = residue_span_for_sequence(sequence)
+        sequence_parts.append(sequence_text)
+        raw_residue_ids = sequence.get("residue_ids")
+        if isinstance(raw_residue_ids, list):
+            for residue_id in raw_residue_ids:
+                try:
+                    residue_ids.append(int(residue_id))
+                except (TypeError, ValueError):
+                    continue
+        sources.append(
+            {
+                "key": str(sequence.get("key") or ""),
+                "fragment_key": str(sequence.get("fragment_key") or ""),
+                "residue_start": start,
+                "residue_end": end,
+                "length": len(sequence_text),
+            }
+        )
+    combined_sequence = "".join(sequence_parts)
+    return {
+        "key": "combined",
+        "label": "Combined fragments",
+        "sequence": combined_sequence,
+        "length": len(combined_sequence),
+        "residue_ids": residue_ids,
+        "sequence_order": [str(source["key"]) for source in sources],
+        "sources": sources,
+    }
+
+
+def optional_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def add_combined_coverage_gain(
+    score: dict[str, object],
+    combined_score: dict[str, object],
+) -> None:
+    full_score = optional_float(score.get("full_score"))
+    combined_full_score = optional_float(combined_score.get("full_score"))
+    full_score_gain = combined_full_score - full_score
+    domain_score = optional_float(score.get("domain_score"))
+    combined_domain_score = optional_float(combined_score.get("domain_score"))
+    domain_score_gain = combined_domain_score - domain_score
+    coverage = optional_float(score.get("hmm_coverage"))
+    matched_coverage = optional_float(score.get("matched_hmm_coverage"))
+    combined_coverage = optional_float(combined_score.get("hmm_coverage"))
+    combined_matched_coverage = optional_float(
+        combined_score.get("matched_hmm_coverage")
+    )
+    coverage_gain = combined_coverage - coverage
+    matched_coverage_gain = combined_matched_coverage - matched_coverage
+    score.update(
+        {
+            "combined_hmm_from": combined_score.get("hmm_from"),
+            "combined_hmm_to": combined_score.get("hmm_to"),
+            "combined_hmm_length": combined_score.get("hmm_length"),
+            "combined_hmm_covered": combined_score.get("hmm_covered"),
+            "combined_hmm_coverage": combined_coverage,
+            "combined_hmm_coverage_percent": combined_coverage * 100.0,
+            "combined_matched_hmm_covered": combined_score.get(
+                "matched_hmm_covered"
+            ),
+            "combined_matched_hmm_coverage": combined_matched_coverage,
+            "combined_matched_hmm_coverage_percent": (
+                combined_matched_coverage * 100.0
+            ),
+            "combined_deleted_hmm_columns": combined_score.get(
+                "deleted_hmm_columns"
+            ),
+            "combined_reported": combined_score.get("reported"),
+            "combined_full_score": combined_score.get("full_score"),
+            "combined_domain_score": combined_score.get("domain_score"),
+            "domain_score_gain": domain_score_gain,
+            "bit_score_gain": domain_score_gain,
+            "score_gain": domain_score_gain,
+            "full_score_gain": full_score_gain,
+            "hmm_coverage_gain": coverage_gain,
+            "hmm_coverage_gain_percent": coverage_gain * 100.0,
+            "matched_hmm_coverage_gain": matched_coverage_gain,
+            "matched_hmm_coverage_gain_percent": matched_coverage_gain * 100.0,
+        }
+    )
+
+
 def score_sequences_against_hmm(
     *,
     hmmsearch_path: str,
@@ -598,7 +719,7 @@ def score_cache_key(payload: dict[str, object], pfam_hmm_path: Path) -> str:
     cache_payload = {
         **payload,
         **stat_payload,
-        "version": 5,
+        "version": 8,
     }
     return hashlib.sha1(
         json.dumps(cache_payload, sort_keys=True).encode("utf-8")
@@ -673,6 +794,8 @@ def compute_domain_hmm_bit_scores(
             "residue_ids": partner_residue_ids,
         },
     ]
+    combined_sequence = combined_sequence_record(sequences)
+    scoring_sequences = sequences + [combined_sequence]
     cache_payload = {
         "accession": accession,
         "sequence_dir": str(sequence_dir.resolve()),
@@ -685,6 +808,8 @@ def compute_domain_hmm_bit_scores(
             }
             for sequence in sequences
         ],
+        "combined_sequence_order": combined_sequence["sequence_order"],
+        "combined_sequence_sources": combined_sequence["sources"],
         "hmms": [main_pfam_id, partner_pfam_id],
     }
     cache_key = score_cache_key(cache_payload, pfam_hmm_path)
@@ -728,14 +853,17 @@ def compute_domain_hmm_bit_scores(
         scores = score_sequences_against_hmm(
             hmmsearch_path=hmmsearch_path,
             hmm_path=Path(str(hmm_record["path"])),
-            sequences=sequences,
+            sequences=scoring_sequences,
             cache_dir=cache_dir,
             hmm_length=hmm_length,
             hmm_name=str(hmm_metadata.get("name") or ""),
         )
+        combined_score = scores.get("combined") or unreported_hmmer_score(hmm_length)
         for sequence in sequences:
             sequence_key = str(sequence["key"])
-            score_matrix[sequence_key][pfam_id] = scores.get(sequence_key) or unreported_hmmer_score(hmm_length)
+            score = scores.get(sequence_key) or unreported_hmmer_score(hmm_length)
+            add_combined_coverage_gain(score, combined_score)
+            score_matrix[sequence_key][pfam_id] = score
 
     coverage = []
     for sequence in sequences:
@@ -758,6 +886,52 @@ def compute_domain_hmm_bit_scores(
                 "matched_coverage_fraction": score.get("matched_hmm_coverage"),
                 "matched_coverage_percent": score.get("matched_hmm_coverage_percent"),
                 "deleted_hmm_columns": score.get("deleted_hmm_columns"),
+                "combined_hmm_from": score.get("combined_hmm_from"),
+                "combined_hmm_to": score.get("combined_hmm_to"),
+                "combined_hmm_length": score.get("combined_hmm_length"),
+                "combined_hmm_covered": score.get("combined_hmm_covered"),
+                "combined_coverage_fraction": score.get("combined_hmm_coverage"),
+                "combined_coverage_percent": score.get(
+                    "combined_hmm_coverage_percent"
+                ),
+                "combined_matched_hmm_covered": score.get(
+                    "combined_matched_hmm_covered"
+                ),
+                "combined_matched_coverage_fraction": score.get(
+                    "combined_matched_hmm_coverage"
+                ),
+                "combined_matched_coverage_percent": score.get(
+                    "combined_matched_hmm_coverage_percent"
+                ),
+                "combined_deleted_hmm_columns": score.get(
+                    "combined_deleted_hmm_columns"
+                ),
+                "combined_reported": score.get("combined_reported"),
+                "combined_full_score": score.get("combined_full_score"),
+                "domain_score": score.get("domain_score"),
+                "combined_domain_score": score.get("combined_domain_score"),
+                "domain_score_gain": score.get("domain_score_gain"),
+                "score_gain": score.get("score_gain"),
+                "bit_score_gain": score.get("bit_score_gain"),
+                "full_score_gain": score.get("full_score_gain"),
+                "coverage_gain_fraction": score.get("hmm_coverage_gain"),
+                "coverage_gain_percent": score.get("hmm_coverage_gain_percent"),
+                "hmm_coverage_gain": score.get("hmm_coverage_gain"),
+                "hmm_coverage_gain_percent": score.get(
+                    "hmm_coverage_gain_percent"
+                ),
+                "matched_coverage_gain_fraction": score.get(
+                    "matched_hmm_coverage_gain"
+                ),
+                "matched_coverage_gain_percent": score.get(
+                    "matched_hmm_coverage_gain_percent"
+                ),
+                "matched_hmm_coverage_gain": score.get(
+                    "matched_hmm_coverage_gain"
+                ),
+                "matched_hmm_coverage_gain_percent": score.get(
+                    "matched_hmm_coverage_gain_percent"
+                ),
                 "reported": score.get("reported"),
                 "full_score": score.get("full_score"),
             }
@@ -768,6 +942,11 @@ def compute_domain_hmm_bit_scores(
         "hmms": hmm_summaries,
         "scores": score_matrix,
         "coverage": coverage,
+        "combined_sequence": {
+            key: value
+            for key, value in combined_sequence.items()
+            if key not in {"sequence", "residue_ids"}
+        },
     }
     write_score_cache(cache_dir, cache_key, payload)
     return payload
