@@ -88,7 +88,7 @@ Current options:
 
 - `--interface-dir INTERFACE_DIR`
   Default: `./data`
-  Directory containing interface JSON files (`.json` or `.json.gz`).
+  Directory containing interface JSON files (`.json` or `.json.gz`) or dataset subdirectories that contain those files.
 
 - `--cache-dir CACHE_DIR`
   Default: `./cache`
@@ -96,7 +96,7 @@ Current options:
 
 - `--hierarchy-dir HIERARCHY_DIR`
   Default: not set
-  Optional directory containing precalculated hierarchical clustering data organized as `distance/linkage/linkage/*.linkage.npz` and `distance/linkage/resolver/*.leaves.json`.
+  Optional directory containing precalculated hierarchical clustering data. For a single dataset, this can point directly at a hierarchy directory organized as `distance/linkage/linkage/*.linkage.npz` and `distance/linkage/resolver/*.leaves.json`. For multiple datasets, place matching hierarchy directories under this root, using either the same dataset name or the `h_<dataset>` prefix.
 
 - `--workers WORKERS` / `--cache-workers CACHE_WORKERS`
   Default: `4`
@@ -108,21 +108,39 @@ Example with custom paths:
 python -m domain_interface_explorer.server \
   --host 0.0.0.0 \
   --port 8080 \
-  --interface-dir /path/to/interface-json-dir \
+  --interface-dir /path/to/interface-json-dir-or-dataset-root \
   --cache-dir /path/to/cache \
-  --hierarchy-dir /path/to/hierarchies \
+  --hierarchy-dir /path/to/hierarchy-dir-or-dataset-root \
   --workers 4
 ```
 
 ## Adding Data
 
-To add new interface datasets, place `.json` or `.json.gz` files into the default data directory:
+To add a single interface dataset, place `.json` or `.json.gz` files into the default data directory:
 
 ```text
 ./data
 ```
 
-You can also point the server at a different directory with `--interface-dir`.
+To offer multiple switchable datasets, make the interface directory a dataset root:
+
+```text
+./data
+  die_v4_1/
+    PF00004_....json.gz
+  die_v5_75/
+    PF00004_....json.gz
+```
+
+If hierarchy data is available, place matching hierarchy datasets under the hierarchy root. DIE checks `h_<dataset>` first, then the exact dataset name:
+
+```text
+./hierarchies
+  h_die_v4_1/
+  h_die_v5_75/
+```
+
+You can also point the server at different roots with `--interface-dir` and `--hierarchy-dir`.
 
 ## Quick Feature Tour
 

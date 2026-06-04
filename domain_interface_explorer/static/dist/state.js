@@ -1,6 +1,8 @@
 import { DEFAULT_CLUSTERING_SETTINGS, DEFAULT_EMBEDDING_SETTINGS, DEFAULT_SELECTION_SETTINGS, DEFAULT_STRUCTURE_DISPLAY_SETTINGS, DEFAULT_STRUCTURE_DISPLAY_VIEW_PRESETS, } from "./constants.js";
 export const state = {
     files: null,
+    datasets: [],
+    activeDataset: "",
     msa: null,
     msaRowsRequestId: 0,
     msaRowsLoading: false,

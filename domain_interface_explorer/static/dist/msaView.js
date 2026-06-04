@@ -1,9 +1,9 @@
 import { CELL_WIDTH, HEADER_HEIGHT, LABEL_WIDTH, ROW_HEIGHT, TEXT_FONT, } from "./constants.js";
-import { fetchJson } from "./api.js";
+import { fetchJson, setActiveDatasetKey } from "./api.js";
 import { interactionRowKey, interfaceFileStem, parseInteractionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams, normalizeSelectionSettings, } from "./selectionSettings.js";
 export function createMsaViewController({ state, elements, buildPairs, activeConservationVector, conservationColor, overlayStateForRow, representativeLens, embeddingDistanceLabel, syncColumnLegends, syncRepresentativeLensControls, syncRepresentativeScopeControls, syncEmbeddingLoadingUi, syncEmbeddingMemberControls, syncEmbeddingSettingsUi, resizeEmbeddingCanvas, resizeColumnsCanvas, resizeDendrogramCanvas, renderEmbeddingPlot, renderColumnsChart, renderDendrogram, renderDendrogramLegend, renderColumnsClusterLegend, setEmbeddingInfo, setColumnsInfo, ensureEmbeddingDataLoaded, ensureEmbeddingClusteringLoaded, ensureDendrogramLoaded, resetColumnsClusterSelection, resetDendrogramPartnerSelection, resetDendrogramClusterSelection, resetEmbeddingPartnerSelection, resetEmbeddingClusterSelection, resetEmbeddingMetricSelections, resetRepresentativePartnerSelection, resetRepresentativeClusterSelection, renderRepresentativePartnerFilter, renderEmbeddingLegend, refreshRepresentativeSelection, loadInteractiveStructure, handleStructureLoadFailure, resetRepresentativePanel, resetStructurePanel, closeClusterCompareModal, closeStructureModal, resizeClusterCompareViewers, buildOverlayMaps, buildPartnerColorMap, embeddingClusterColor, embeddingClusterLabel, allColumnsClusterLabels, visibleColumnsClusters, updatePartnerOptions, syncDendrogramControls, syncDomainSizeRangeForSelectedFamily, }) {
-    const { appStatus, cellDetailsPanel, columnCount, columnsClusterLegend, dendrogramRoot, detailsList, detailsBar, embeddingRoot, columnsRoot, gridCanvas, gridScroll, gridSpacer, headerCanvas, infoRoot, interfaceSelect, labelsCanvas, loadingDetail, loadingLabel, loadingPanel, loadStructureButton, msaLegend, msaPanelTabs, msaClusterLegend, msaPickerButton, msaPickerFilters, msaPickerMenu, msaPickerOptions, msaPickerSearch, msaPickerSelection, msaSelect, selectionSettingsPanel, selectionSettingsToggle, selectionMinInterfaceSizeInput, partnerSelect, progressBar, representativeShell, representativeViewerRoot, rowCount, selectedRowCopy, statsPanel, structureModal, viewerPanel, viewerRoot, } = elements;
+    const { appStatus, cellDetailsPanel, columnCount, columnsClusterLegend, dendrogramRoot, detailsList, detailsBar, embeddingRoot, columnsRoot, gridCanvas, gridScroll, gridSpacer, headerCanvas, infoRoot, datasetSelect, interfaceSelect, labelsCanvas, loadingDetail, loadingLabel, loadingPanel, loadStructureButton, msaLegend, msaPanelTabs, msaClusterLegend, msaPickerButton, msaPickerFilters, msaPickerMenu, msaPickerOptions, msaPickerSearch, msaPickerSelection, msaSelect, selectionSettingsPanel, selectionSettingsToggle, selectionMinInterfaceSizeInput, partnerSelect, progressBar, representativeShell, representativeViewerRoot, rowCount, selectedRowCopy, statsPanel, structureModal, viewerPanel, viewerRoot, } = elements;
     let layoutSyncScheduled = false;
     let cachedMsaClusterSource = null;
     let cachedMsaRowClusterAssignments = new Map();
@@ -14,7 +14,9 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
     let histogramClickTimer = 0;
     let currentMsaStreamFilename = "";
     let filesRequestPromise = null;
+    let filesRequestDatasetKey = "";
     let pfamSelectorMetadataRequestPromise = null;
+    let pfamSelectorMetadataRequestDatasetKey = "";
     const pfamInfoRequests = new Map();
     const INITIAL_MSA_ROW_LIMIT = 240;
     const MSA_ROW_CHUNK_SIZE = 1200;
@@ -1170,6 +1172,41 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
             };
         });
     }
+    function normalizeDatasetOptions(files) {
+        const datasets = Array.isArray(files?.datasets) ? files.datasets : [];
+        const normalized = datasets
+            .map((dataset) => {
+            const key = String(dataset?.key || dataset?.name || "").trim();
+            const label = String(dataset?.label || key).trim() || key;
+            return key
+                ? {
+                    ...dataset,
+                    key,
+                    value: key,
+                    label,
+                }
+                : null;
+        })
+            .filter(Boolean);
+        const selectedKey = String(files?.dataset || files?.dataset_key || "").trim();
+        if (normalized.length === 0 && selectedKey) {
+            normalized.push({ key: selectedKey, value: selectedKey, label: selectedKey });
+        }
+        return normalized;
+    }
+    function syncDatasetSelectOptions() {
+        if (!datasetSelect) {
+            return;
+        }
+        const datasetOptions = state.datasets || [];
+        setOptions(datasetSelect, datasetOptions.length
+            ? datasetOptions.map((dataset) => ({
+                value: dataset.key,
+                label: dataset.label || dataset.key,
+            }))
+            : [{ value: "", label: "Default" }], state.activeDataset || "");
+        datasetSelect.disabled = datasetOptions.length <= 1;
+    }
     function syncMsaSelectOptions(previousSelection = msaSelect.value) {
         setOptions(msaSelect, [{ value: "", label: "Select MSA" }].concat(state.msaOptions.map((option) => ({
             value: option.value,
@@ -1231,6 +1268,11 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
     function applyFilesPayload(files, { preserveSelection = true } = {}) {
         const previousSelection = preserveSelection ? msaSelect.value : "";
         state.files = files;
+        state.datasets = normalizeDatasetOptions(files);
+        const selectedDataset = String(files?.dataset || files?.dataset_key || state.activeDataset || "").trim();
+        state.activeDataset = selectedDataset || state.datasets?.[0]?.key || "";
+        setActiveDatasetKey(state.activeDataset);
+        syncDatasetSelectOptions();
         state.files.pairs = buildPairs(state.files);
         state.msaOptions = buildMsaOptionsFromFiles(state.files);
         syncMsaSelectOptions(previousSelection);
@@ -1244,24 +1286,42 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
     function shouldPollPfamSelectorMetadata() {
         return hasMissingPfamDisplayNames() || pfamOptionStatsRefreshing();
     }
-    function fetchFilesPayload() {
-        if (!filesRequestPromise) {
-            filesRequestPromise = fetchJson("/api/files").finally(() => {
+    function datasetScopedUrl(path, datasetKey = state.activeDataset) {
+        const key = String(datasetKey || "").trim();
+        if (!key) {
+            return path;
+        }
+        const separator = path.includes("?") ? "&" : "?";
+        return `${path}${separator}dataset=${encodeURIComponent(key)}`;
+    }
+    function fetchFilesPayload(datasetKey = state.activeDataset) {
+        const key = String(datasetKey || "").trim();
+        if (!filesRequestPromise || filesRequestDatasetKey !== key) {
+            filesRequestDatasetKey = key;
+            filesRequestPromise = fetchJson(datasetScopedUrl("/api/files", key)).finally(() => {
                 filesRequestPromise = null;
+                filesRequestDatasetKey = "";
             });
         }
         return filesRequestPromise;
     }
-    function fetchPfamSelectorMetadataPayload() {
-        if (!pfamSelectorMetadataRequestPromise) {
-            pfamSelectorMetadataRequestPromise = fetchJson("/api/pfam-selector-metadata").finally(() => {
+    function fetchPfamSelectorMetadataPayload(datasetKey = state.activeDataset) {
+        const key = String(datasetKey || "").trim();
+        if (!pfamSelectorMetadataRequestPromise || pfamSelectorMetadataRequestDatasetKey !== key) {
+            pfamSelectorMetadataRequestDatasetKey = key;
+            pfamSelectorMetadataRequestPromise = fetchJson(datasetScopedUrl("/api/pfam-selector-metadata", key)).finally(() => {
                 pfamSelectorMetadataRequestPromise = null;
+                pfamSelectorMetadataRequestDatasetKey = "";
             });
         }
         return pfamSelectorMetadataRequestPromise;
     }
     async function refreshFilesPayloadFromPoll() {
-        const files = await fetchFilesPayload();
+        const datasetKey = state.activeDataset;
+        const files = await fetchFilesPayload(datasetKey);
+        if (datasetKey !== state.activeDataset) {
+            return;
+        }
         files.pairs = buildPairs(files);
         const nextOptions = buildMsaOptionsFromFiles(files);
         const namesImproved = nextOptions.some((option) => String(option.displayName || "").trim() &&
@@ -1295,7 +1355,11 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
             return;
         }
         window.clearTimeout(pfamMetadataPollHandle);
+        const pollDatasetKey = state.activeDataset;
         pfamMetadataPollHandle = window.setTimeout(async () => {
+            if (pollDatasetKey !== state.activeDataset) {
+                return;
+            }
             const wasStatsRefreshing = pfamOptionStatsRefreshing();
             if (!wasStatsRefreshing) {
                 pfamMetadataPollAttempts += 1;
@@ -1303,7 +1367,10 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
             try {
                 let nextStatsStatus = null;
                 if (hasMissingPfamDisplayNames() || wasStatsRefreshing) {
-                    const metadataPayload = await fetchPfamSelectorMetadataPayload();
+                    const metadataPayload = await fetchPfamSelectorMetadataPayload(pollDatasetKey);
+                    if (pollDatasetKey !== state.activeDataset) {
+                        return;
+                    }
                     if (updatePfamOptionDisplayNames(metadataPayload?.pfam_metadata)) {
                         refreshPfamSelectorLabels();
                     }
@@ -1491,6 +1558,13 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
     function syncMsaSelectionInUrl(msaFile) {
         const url = new URL(window.location.href);
         const value = msaUrlValue(msaFile);
+        const datasetKey = String(state.activeDataset || "").trim();
+        if (datasetKey) {
+            url.searchParams.set("dataset", datasetKey);
+        }
+        else {
+            url.searchParams.delete("dataset");
+        }
         if (value) {
             url.searchParams.set("msa", value);
         }
@@ -1498,6 +1572,10 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
             url.searchParams.delete("msa");
         }
         window.history.replaceState({}, "", url);
+    }
+    function datasetKeyFromUrl() {
+        const url = new URL(window.location.href);
+        return String(url.searchParams.get("dataset") || "").trim();
     }
     function msaFileFromUrl() {
         const url = new URL(window.location.href);
@@ -2352,6 +2430,54 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
             progressBar.style.width = "100%";
         }
     }
+    async function loadDatasetSelection(datasetKey) {
+        const nextDataset = String(datasetKey || "").trim();
+        if (!nextDataset || nextDataset === state.activeDataset) {
+            return;
+        }
+        window.clearTimeout(pfamMetadataPollHandle);
+        pfamMetadataPollAttempts = 0;
+        filesRequestPromise = null;
+        filesRequestDatasetKey = "";
+        pfamSelectorMetadataRequestPromise = null;
+        pfamSelectorMetadataRequestDatasetKey = "";
+        setActiveDatasetKey(nextDataset);
+        state.activeDataset = nextDataset;
+        setLoading(8, "Loading dataset", `Fetching ${nextDataset}`);
+        const previousSelection = msaSelect.value;
+        clearViewer();
+        try {
+            const files = await fetchFilesPayload(nextDataset);
+            if (state.activeDataset !== nextDataset) {
+                return;
+            }
+            applyFilesPayload(files, { preserveSelection: true });
+            if (!msaSelect.value && previousSelection) {
+                msaSelect.value = "";
+            }
+            updatePairedOptions();
+            syncMsaPickerSelection();
+            renderMsaPickerOptions(msaPickerSearch.value || "");
+            syncMsaSelectionInUrl(msaSelect.value);
+            if (shouldPollPfamSelectorMetadata()) {
+                void pollPfamMetadataIfNeeded();
+            }
+            if (msaSelect.value && interfaceSelect.value) {
+                await loadCurrentSelection();
+            }
+            else {
+                clearPfamInfoState();
+                clearViewer();
+                hideLoading();
+            }
+        }
+        catch (error) {
+            loadingPanel.classList.remove("hidden");
+            loadingLabel.textContent = "Dataset load failed";
+            loadingDetail.textContent = error.message;
+            progressBar.style.width = "100%";
+        }
+    }
     function render() {
         updateFilteredRows();
         renderMsaClusterLegend();
@@ -2663,7 +2789,12 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         });
     }
     async function initialize() {
-        const files = await fetchFilesPayload();
+        const datasetFromUrl = datasetKeyFromUrl();
+        if (datasetFromUrl) {
+            state.activeDataset = datasetFromUrl;
+            setActiveDatasetKey(datasetFromUrl);
+        }
+        const files = await fetchFilesPayload(datasetFromUrl);
         applyFilesPayload(files, { preserveSelection: false });
         setOptions(partnerSelect, [{ value: "__all__", label: "All partners" }], "__all__");
         const msaFromUrl = msaFileFromUrl();
@@ -2689,6 +2820,9 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         if (msaFromUrl) {
             await loadCurrentSelection();
         }
+        datasetSelect?.addEventListener("change", () => {
+            void loadDatasetSelection(datasetSelect.value);
+        });
         msaClusterLegend?.addEventListener("click", (event) => {
             const button = event.target.closest("[data-msa-cluster-label]");
             if (!button || !state.msa) {

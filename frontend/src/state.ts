@@ -8,6 +8,8 @@ import {
 
 export const state = {
   files: null,
+  datasets: [],
+  activeDataset: "",
   msa: null,
   msaRowsRequestId: 0,
   msaRowsLoading: false,

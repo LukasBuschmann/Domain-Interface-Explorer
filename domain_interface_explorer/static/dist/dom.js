@@ -17,6 +17,7 @@ export const elements = {
     selectionSettingsPanel: document.getElementById("selection-settings-panel"),
     selectionMinInterfaceSizeInput: document.getElementById("selection-min-interface-size"),
     selectionSettingsApply: document.getElementById("selection-settings-apply"),
+    datasetSelect: document.getElementById("dataset-select"),
     interfaceSelect: document.getElementById("interface-select"),
     partnerSelect: document.getElementById("partner-select"),
     rowSearchInput: document.getElementById("row-search"),

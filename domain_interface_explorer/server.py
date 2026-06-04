@@ -8,6 +8,7 @@ import sys
 import threading
 from collections import OrderedDict
 from concurrent.futures import Future
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -139,6 +140,18 @@ def list_json_files(directory: Path) -> list[str]:
     return [path.name for path in directory_interface_json_paths(directory)]
 
 
+def directory_has_interface_json(directory: Path) -> bool:
+    if not directory.exists() or not directory.is_dir():
+        return False
+    try:
+        for path in directory.iterdir():
+            if path.is_file() and is_interface_json_path(path):
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def safe_file_path(directory: Path, filename: str) -> Path | None:
     candidate = directory / Path(filename).name
     if candidate.parent != directory:
@@ -146,6 +159,178 @@ def safe_file_path(directory: Path, filename: str) -> Path | None:
     if not candidate.exists() or not candidate.is_file() or not is_interface_json_path(candidate):
         return None
     return candidate
+
+
+@dataclass(frozen=True)
+class DatasetConfig:
+    key: str
+    label: str
+    interface_dir: Path
+    hierarchy_dir: Path | None
+
+
+@dataclass
+class DatasetRuntime:
+    key: str
+    label: str
+    interface_dir: Path
+    hierarchy_dir: Path | None
+    interface_store: InterfaceStore | None
+    pfam_option_stats: dict[str, dict[str, object]] = field(default_factory=dict)
+    pfam_option_stats_status: dict[str, object] = field(
+        default_factory=lambda: {
+            "state": "loading",
+            "cached": False,
+            "refreshing": False,
+            "message": "Loading PFAM selector stats cache",
+        }
+    )
+    pfam_option_stats_loaded: bool = False
+    pfam_option_stats_current: bool = False
+    pfam_option_stats_signature: str = ""
+    metadata_refresh_started: bool = False
+    stats_refresh_started: bool = False
+    store_sync_started: bool = False
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+def hierarchy_dir_for_dataset(
+    hierarchy_root: Path | None,
+    dataset_name: str,
+    *,
+    interface_dir: Path | None = None,
+    direct_dataset: bool = False,
+) -> Path | None:
+    if hierarchy_root is None:
+        return None
+    resolved_hierarchy_root = hierarchy_root.resolve()
+    resolved_interface_dir = interface_dir.resolve() if interface_dir is not None else None
+    candidates = [
+        hierarchy_root / f"h_{dataset_name}",
+        hierarchy_root / dataset_name,
+        hierarchy_root / f"{dataset_name}_hierarchy",
+    ]
+    if dataset_name.startswith("h_"):
+        candidates.append(hierarchy_root / dataset_name.removeprefix("h_"))
+    for candidate in candidates:
+        if not candidate.exists() or not candidate.is_dir():
+            continue
+        resolved_candidate = candidate.resolve()
+        if resolved_interface_dir is not None and resolved_candidate == resolved_interface_dir:
+            continue
+        return resolved_candidate
+    if (
+        direct_dataset
+        and hierarchy_root.exists()
+        and hierarchy_root.is_dir()
+        and resolved_hierarchy_root != resolved_interface_dir
+    ):
+        return resolved_hierarchy_root
+    return None
+
+
+def unique_dataset_key(name: str, existing_keys: set[str]) -> str:
+    base = str(name or "dataset").strip() or "dataset"
+    key = base
+    suffix = 2
+    while key in existing_keys:
+        key = f"{base}_{suffix}"
+        suffix += 1
+    existing_keys.add(key)
+    return key
+
+
+def discover_dataset_configs(interface_root: Path, hierarchy_root: Path | None) -> list[DatasetConfig]:
+    interface_root = interface_root.resolve()
+    hierarchy_root = hierarchy_root.resolve() if hierarchy_root is not None else None
+    datasets: list[DatasetConfig] = []
+    keys: set[str] = set()
+
+    if directory_has_interface_json(interface_root):
+        key = unique_dataset_key(interface_root.name or "default", keys)
+        datasets.append(
+            DatasetConfig(
+                key=key,
+                label=key,
+                interface_dir=interface_root,
+                hierarchy_dir=hierarchy_dir_for_dataset(
+                    hierarchy_root,
+                    interface_root.name,
+                    interface_dir=interface_root,
+                    direct_dataset=True,
+                ),
+            )
+        )
+
+    try:
+        candidate_dirs = sorted(
+            (path for path in interface_root.iterdir() if path.is_dir()),
+            key=lambda item: item.name,
+        )
+    except OSError:
+        candidate_dirs = []
+
+    for candidate_dir in candidate_dirs:
+        if not directory_has_interface_json(candidate_dir):
+            continue
+        key = unique_dataset_key(candidate_dir.name, keys)
+        datasets.append(
+            DatasetConfig(
+                key=key,
+                label=candidate_dir.name,
+                interface_dir=candidate_dir.resolve(),
+                hierarchy_dir=hierarchy_dir_for_dataset(
+                    hierarchy_root,
+                    candidate_dir.name,
+                    interface_dir=candidate_dir,
+                ),
+            )
+        )
+
+    if not datasets:
+        key = unique_dataset_key(interface_root.name or "default", keys)
+        datasets.append(
+            DatasetConfig(
+                key=key,
+                label=key,
+                interface_dir=interface_root,
+                hierarchy_dir=hierarchy_dir_for_dataset(
+                    hierarchy_root,
+                    interface_root.name,
+                    interface_dir=interface_root,
+                    direct_dataset=True,
+                ),
+            )
+        )
+    return datasets
+
+
+def dataset_payload(runtime: DatasetRuntime) -> dict[str, object]:
+    return {
+        "key": runtime.key,
+        "label": runtime.label,
+        "interface_dir": str(runtime.interface_dir),
+        "hierarchy_dir": str(runtime.hierarchy_dir) if runtime.hierarchy_dir is not None else None,
+        "has_hierarchy": runtime.hierarchy_dir is not None,
+    }
+
+
+def interface_store_db_path(
+    cache_dir: Path,
+    dataset: DatasetConfig,
+    *,
+    use_legacy_path: bool = False,
+) -> Path:
+    if use_legacy_path:
+        return cache_dir / "interface_store.sqlite"
+    safe_key = "".join(
+        char if char.isalnum() or char in ("-", "_", ".") else "_"
+        for char in dataset.key
+    ).strip("._") or "dataset"
+    digest = hashlib.sha1(
+        f"{dataset.key}|{dataset.interface_dir.resolve()}".encode("utf-8")
+    ).hexdigest()[:16]
+    return cache_dir / "interface_store" / f"{safe_key}-{digest}.sqlite"
 
 
 def optional_positive_int_query(
@@ -534,12 +719,37 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
     sequence_dir: Path
     interface_store: InterfaceStore | None
     cache_workers: int
+    dataset_runtimes: OrderedDict[str, DatasetRuntime]
+    default_dataset_key: str
     pfam_option_stats: dict[str, dict[str, object]]
     pfam_option_stats_lock: threading.Lock
     pfam_option_stats_status: dict[str, object]
+    dataset_start_lock: threading.Lock
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        dataset_scoped_paths = {
+            "/api/files",
+            "/api/pfam-selector-metadata",
+            "/api/msa",
+            "/api/interface",
+            "/api/interface-summary",
+            "/api/pfam-info",
+            "/api/histogram-targets",
+            "/api/embedding",
+            "/api/clustering",
+            "/api/columns-chart",
+            "/api/dendrogram",
+            "/api/hierarchy-status",
+            "/api/cluster-compare",
+            "/api/cluster-overview",
+            "/api/representative",
+            "/api/structure-preview",
+            "/api/hmm-bit-scores",
+        }
+        if parsed.path in dataset_scoped_paths and not self._apply_dataset_from_query(query):
+            return
         if parsed.path == "/api/files":
             self._handle_files()
             return
@@ -547,49 +757,49 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             self._handle_pfam_selector_metadata()
             return
         if parsed.path == "/api/msa":
-            self._handle_msa(parse_qs(parsed.query))
+            self._handle_msa(query)
             return
         if parsed.path == "/api/interface":
-            self._handle_interface(parse_qs(parsed.query))
+            self._handle_interface(query)
             return
         if parsed.path == "/api/interface-summary":
-            self._handle_interface_summary(parse_qs(parsed.query))
+            self._handle_interface_summary(query)
             return
         if parsed.path == "/api/pfam-info":
-            self._handle_pfam_info(parse_qs(parsed.query))
+            self._handle_pfam_info(query)
             return
         if parsed.path == "/api/histogram-targets":
-            self._handle_histogram_targets(parse_qs(parsed.query))
+            self._handle_histogram_targets(query)
             return
         if parsed.path == "/api/embedding":
-            self._handle_embedding(parse_qs(parsed.query))
+            self._handle_embedding(query)
             return
         if parsed.path == "/api/clustering":
-            self._handle_clustering(parse_qs(parsed.query))
+            self._handle_clustering(query)
             return
         if parsed.path == "/api/columns-chart":
-            self._handle_columns_chart(parse_qs(parsed.query))
+            self._handle_columns_chart(query)
             return
         if parsed.path == "/api/dendrogram":
-            self._handle_dendrogram(parse_qs(parsed.query))
+            self._handle_dendrogram(query)
             return
         if parsed.path == "/api/hierarchy-status":
-            self._handle_hierarchy_status(parse_qs(parsed.query))
+            self._handle_hierarchy_status(query)
             return
         if parsed.path == "/api/cluster-compare":
-            self._handle_cluster_compare(parse_qs(parsed.query))
+            self._handle_cluster_compare(query)
             return
         if parsed.path == "/api/cluster-overview":
-            self._handle_cluster_overview(parse_qs(parsed.query))
+            self._handle_cluster_overview(query)
             return
         if parsed.path == "/api/representative":
-            self._handle_representative(parse_qs(parsed.query))
+            self._handle_representative(query)
             return
         if parsed.path == "/api/structure-preview":
-            self._handle_structure_preview(parse_qs(parsed.query))
+            self._handle_structure_preview(query)
             return
         if parsed.path == "/api/hmm-bit-scores":
-            self._handle_hmm_bit_scores(parse_qs(parsed.query))
+            self._handle_hmm_bit_scores(query)
             return
         if parsed.path.startswith("/api/alphafold-model/"):
             self._handle_alphafold_model(parsed.path.removeprefix("/api/alphafold-model/"))
@@ -620,7 +830,93 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         suffix = f" ({details})" if details else ""
         print(f"[structure-preview] {message}{suffix}", flush=True)
 
+    def _runtime_from_query(self, query: dict[str, list[str]]) -> DatasetRuntime | None:
+        requested_key = str(query.get("dataset", [""])[0] or "").strip()
+        key = requested_key or self.default_dataset_key
+        runtime = self.dataset_runtimes.get(key)
+        if runtime is None:
+            self._send_json(
+                {"error": f"unknown dataset {requested_key or key}"},
+                status=HTTPStatus.NOT_FOUND,
+            )
+            return None
+        return runtime
+
+    def _load_dataset_stats(self, runtime: DatasetRuntime) -> None:
+        with runtime.lock:
+            if runtime.pfam_option_stats_loaded:
+                return
+            stats, current, signature = load_available_pfam_option_stats(
+                self.cache_dir,
+                runtime.interface_dir,
+            )
+            with self.pfam_option_stats_lock:
+                runtime.pfam_option_stats.clear()
+                runtime.pfam_option_stats.update(stats)
+                runtime.pfam_option_stats_status.clear()
+                runtime.pfam_option_stats_status.update(
+                    {
+                        "state": "ready" if current else "refreshing",
+                        "cached": bool(stats),
+                        "refreshing": not current,
+                        "message": "" if current else "Refreshing PFAM selector stats cache",
+                    }
+                )
+            runtime.pfam_option_stats_loaded = True
+            runtime.pfam_option_stats_current = current
+            runtime.pfam_option_stats_signature = signature
+            if not current:
+                cached_label = "stale cached stats" if stats else "no cached stats"
+                print(
+                    f"PFAM selector stats cache for dataset {runtime.key} is stale or missing "
+                    f"({cached_label}); serving available files while refreshing in the background.",
+                    flush=True,
+                )
+
+    def _start_dataset_background_tasks(self, runtime: DatasetRuntime) -> None:
+        with self.dataset_start_lock:
+            if runtime.interface_store is not None and not runtime.store_sync_started:
+                runtime.interface_store.start_background_sync()
+                runtime.store_sync_started = True
+            if runtime.pfam_option_stats_loaded and not runtime.metadata_refresh_started:
+                start_background_pfam_metadata_refresh(
+                    self.cache_dir,
+                    runtime.pfam_option_stats,
+                    self.pfam_option_stats_lock,
+                )
+                runtime.metadata_refresh_started = True
+            if (
+                runtime.pfam_option_stats_loaded
+                and not runtime.pfam_option_stats_current
+                and not runtime.stats_refresh_started
+            ):
+                start_background_pfam_option_stats_refresh(
+                    self.cache_dir,
+                    runtime.interface_dir,
+                    self.cache_workers,
+                    runtime.pfam_option_stats,
+                    self.pfam_option_stats_lock,
+                    runtime.pfam_option_stats_status,
+                    runtime.pfam_option_stats_signature,
+                )
+                runtime.stats_refresh_started = True
+
+    def _apply_dataset_from_query(self, query: dict[str, list[str]]) -> bool:
+        runtime = self._runtime_from_query(query)
+        if runtime is None:
+            return False
+        self._load_dataset_stats(runtime)
+        self._start_dataset_background_tasks(runtime)
+        self.active_dataset_runtime = runtime
+        self.interface_dir = runtime.interface_dir
+        self.hierarchy_dir = runtime.hierarchy_dir
+        self.interface_store = runtime.interface_store
+        self.pfam_option_stats = runtime.pfam_option_stats
+        self.pfam_option_stats_status = runtime.pfam_option_stats_status
+        return True
+
     def _handle_files(self) -> None:
+        runtime = getattr(self, "active_dataset_runtime", None)
         with self.pfam_option_stats_lock:
             pfam_option_stats = {
                 str(pfam_id): dict(stats)
@@ -630,7 +926,13 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             pfam_option_stats_status = dict(self.pfam_option_stats_status)
         self._send_json(
             {
+                "dataset": runtime.key if runtime is not None else self.default_dataset_key,
+                "datasets": [
+                    dataset_payload(candidate_runtime)
+                    for candidate_runtime in self.dataset_runtimes.values()
+                ],
                 "interface_dir": str(self.interface_dir),
+                "hierarchy_dir": str(self.hierarchy_dir) if self.hierarchy_dir is not None else None,
                 "interface_files": list_json_files(self.interface_dir),
                 "pfam_option_stats": pfam_option_stats,
                 "pfam_option_stats_status": pfam_option_stats_status,
@@ -2583,30 +2885,30 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
 
 
 def build_handler(
-    interface_dir: Path,
+    default_runtime: DatasetRuntime,
+    dataset_runtimes: OrderedDict[str, DatasetRuntime],
     cache_dir: Path,
-    hierarchy_dir: Path | None,
     pfam_hmm_path: Path,
     sequence_dir: Path,
-    interface_store: InterfaceStore | None,
     cache_workers: int,
-    pfam_option_stats: dict[str, dict[str, object]],
     pfam_option_stats_lock: threading.Lock,
-    pfam_option_stats_status: dict[str, object],
 ):
     class ConfiguredHandler(ViewerRequestHandler):
         pass
 
-    ConfiguredHandler.interface_dir = interface_dir
+    ConfiguredHandler.interface_dir = default_runtime.interface_dir
     ConfiguredHandler.cache_dir = cache_dir
-    ConfiguredHandler.hierarchy_dir = hierarchy_dir
+    ConfiguredHandler.hierarchy_dir = default_runtime.hierarchy_dir
     ConfiguredHandler.pfam_hmm_path = pfam_hmm_path
     ConfiguredHandler.sequence_dir = sequence_dir
-    ConfiguredHandler.interface_store = interface_store
+    ConfiguredHandler.interface_store = default_runtime.interface_store
     ConfiguredHandler.cache_workers = max(1, int(cache_workers))
-    ConfiguredHandler.pfam_option_stats = pfam_option_stats
+    ConfiguredHandler.dataset_runtimes = dataset_runtimes
+    ConfiguredHandler.default_dataset_key = default_runtime.key
+    ConfiguredHandler.pfam_option_stats = default_runtime.pfam_option_stats
     ConfiguredHandler.pfam_option_stats_lock = pfam_option_stats_lock
-    ConfiguredHandler.pfam_option_stats_status = pfam_option_stats_status
+    ConfiguredHandler.pfam_option_stats_status = default_runtime.pfam_option_stats_status
+    ConfiguredHandler.dataset_start_lock = threading.Lock()
     return ConfiguredHandler
 
 
@@ -2676,12 +2978,11 @@ def start_background_pfam_option_stats_refresh(
 def main() -> None:
     args = parse_args()
     cache_workers = max(1, int(args.cache_workers))
-    interface_dir = args.interface_dir.resolve()
+    interface_root = args.interface_dir.resolve()
     cache_dir = args.cache_dir.resolve()
-    hierarchy_dir = args.hierarchy_dir.resolve() if args.hierarchy_dir is not None else None
+    hierarchy_root = args.hierarchy_dir.resolve() if args.hierarchy_dir is not None else None
     pfam_hmm_path = args.pfam_hmm_path.resolve()
     sequence_dir = args.sequence_dir.resolve()
-    interface_store = InterfaceStore(cache_dir / "interface_store.sqlite", interface_dir)
     pymol_status = validate_pymol_api()
     if not pymol_status.available:
         print(
@@ -2690,67 +2991,84 @@ def main() -> None:
             file=sys.stderr,
             flush=True,
         )
+    dataset_configs = discover_dataset_configs(interface_root, hierarchy_root)
+    legacy_store_path = (
+        len(dataset_configs) == 1
+        and dataset_configs[0].interface_dir == interface_root
+        and directory_has_interface_json(interface_root)
+    )
+    dataset_runtimes: OrderedDict[str, DatasetRuntime] = OrderedDict()
+    for dataset_config in dataset_configs:
+        interface_store = InterfaceStore(
+            interface_store_db_path(
+                cache_dir,
+                dataset_config,
+                use_legacy_path=legacy_store_path,
+            ),
+            dataset_config.interface_dir,
+        )
+        dataset_runtimes[dataset_config.key] = DatasetRuntime(
+            key=dataset_config.key,
+            label=dataset_config.label,
+            interface_dir=dataset_config.interface_dir,
+            hierarchy_dir=dataset_config.hierarchy_dir,
+            interface_store=interface_store,
+        )
+    default_runtime = next(iter(dataset_runtimes.values()))
+    pfam_option_stats_lock = threading.Lock()
     pfam_option_stats, pfam_option_stats_current, pfam_option_stats_signature = (
         load_available_pfam_option_stats(
             cache_dir,
-            interface_dir,
+            default_runtime.interface_dir,
         )
     )
-    pfam_option_stats_lock = threading.Lock()
-    pfam_option_stats_status: dict[str, object] = {
-        "state": "ready" if pfam_option_stats_current else "refreshing",
-        "cached": bool(pfam_option_stats),
-        "refreshing": not pfam_option_stats_current,
-        "message": "" if pfam_option_stats_current else "Refreshing PFAM selector stats cache",
-    }
-    if not pfam_option_stats_current:
+    default_runtime.pfam_option_stats.update(pfam_option_stats)
+    default_runtime.pfam_option_stats_status.update(
+        {
+            "state": "ready" if pfam_option_stats_current else "refreshing",
+            "cached": bool(pfam_option_stats),
+            "refreshing": not pfam_option_stats_current,
+            "message": "" if pfam_option_stats_current else "Refreshing PFAM selector stats cache",
+        }
+    )
+    default_runtime.pfam_option_stats_loaded = True
+    default_runtime.pfam_option_stats_current = pfam_option_stats_current
+    default_runtime.pfam_option_stats_signature = pfam_option_stats_signature
+    if not default_runtime.pfam_option_stats_current:
         cached_label = "stale cached stats" if pfam_option_stats else "no cached stats"
         print(
-            f"PFAM selector stats cache is stale or missing ({cached_label}); "
+            f"PFAM selector stats cache for dataset {default_runtime.key} is stale or missing ({cached_label}); "
             "serving available files while refreshing in the background.",
             flush=True,
         )
     handler = build_handler(
-        interface_dir,
+        default_runtime,
+        dataset_runtimes,
         cache_dir,
-        hierarchy_dir,
         pfam_hmm_path,
         sequence_dir,
-        interface_store,
         cache_workers,
-        pfam_option_stats,
         pfam_option_stats_lock,
-        pfam_option_stats_status,
     )
     server = ThreadingHTTPServer((args.host, args.port), handler)
+    dataset_summary = ", ".join(
+        f"{runtime.key}={runtime.interface_dir}"
+        for runtime in dataset_runtimes.values()
+    )
     print(
         f"Serving Domain Interface Explorer at http://{args.host}:{args.port} "
         f"(interface-dir={args.interface_dir}, cache-dir={args.cache_dir}, "
+        f"datasets=[{dataset_summary}], "
         f"pfam-hmm={pfam_hmm_path}, "
         f"sequence-dir={sequence_dir}, "
-        f"interface-store={interface_store.db_path}, "
-        f"hierarchy-dir={hierarchy_dir or 'none'}, "
+        f"default-dataset={default_runtime.key}, "
+        f"hierarchy-root={hierarchy_root or 'none'}, "
         f"workers={cache_workers}, "
         f"pymol-api={'available' if pymol_status.available else 'unavailable'})"
     )
-    interface_store.start_background_sync()
 
     def start_background_refreshes() -> None:
-        start_background_pfam_metadata_refresh(
-            cache_dir,
-            pfam_option_stats,
-            pfam_option_stats_lock,
-        )
-        if not pfam_option_stats_current:
-            start_background_pfam_option_stats_refresh(
-                cache_dir,
-                interface_dir,
-                cache_workers,
-                pfam_option_stats,
-                pfam_option_stats_lock,
-                pfam_option_stats_status,
-                pfam_option_stats_signature,
-            )
+        handler._start_dataset_background_tasks(handler, default_runtime)
 
     background_refresh_timer = threading.Timer(0.5, start_background_refreshes)
     background_refresh_timer.daemon = True
