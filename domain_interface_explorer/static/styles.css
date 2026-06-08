@@ -64,12 +64,19 @@ body {
 
 .title-block h1 {
   margin: 0 0 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-size: 28px;
   letter-spacing: 0.04em;
 }
 
-.title-emoji {
-  font-size: 0.9em;
+.title-icon {
+  width: 1.2em;
+  height: 1.2em;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  object-fit: cover;
 }
 
 .title-subtitle {
