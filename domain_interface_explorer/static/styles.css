@@ -62,27 +62,37 @@ body {
   align-items: flex-start;
 }
 
+.title-block {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0 10px;
+}
+
+.title-copy {
+  min-width: 0;
+}
+
 .title-block h1 {
   margin: 0 0 4px;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
   font-size: 28px;
+  line-height: 1;
   letter-spacing: 0.04em;
 }
 
 .title-icon {
-  width: 1.2em;
-  height: 1.2em;
+  width: 46px;
+  height: 46px;
   flex: 0 0 auto;
-  border-radius: 6px;
+  border-radius: 8px;
   object-fit: cover;
 }
 
-.title-subtitle {
+.title-block .title-subtitle {
   margin: 0;
   color: var(--muted);
   font-size: 12px;
+  line-height: 1.2;
   letter-spacing: 0.12em;
   text-transform: lowercase;
 }
