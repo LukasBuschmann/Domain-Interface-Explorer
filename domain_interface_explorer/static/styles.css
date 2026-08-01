@@ -4158,6 +4158,14 @@ select,
   color: var(--muted);
 }
 
+.structure-display-value {
+  margin-left: auto;
+  color: var(--text);
+  font-family: "Iosevka Web", "IBM Plex Mono", monospace;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .structure-display-fieldset {
   display: grid;
   gap: 8px;

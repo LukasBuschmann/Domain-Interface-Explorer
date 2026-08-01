@@ -1579,6 +1579,17 @@ function clusterHoverColor(clusterLabel) {
   return clusterHoverColorForLabel(clusterLabel);
 }
 
+function structureDisplayPercentSetting(settings, key) {
+  const fallback = Number(DEFAULT_STRUCTURE_DISPLAY_SETTINGS[key] ?? 0);
+  const value = Number(settings?.[key] ?? fallback);
+  const normalized = Number.isFinite(value) ? value : fallback;
+  return Math.max(0, Math.min(100, normalized));
+}
+
+function structureDisplaySupportThresholdFraction(viewKey, key) {
+  return structureDisplayPercentSetting(structureDisplaySettingsForView(viewKey), key) / 100;
+}
+
 function representativeClusterCompareSummaries() {
   const allowedLabels = new Set(representativeScopeClusterLabels().map(String));
   const summaries = representativeClusterSummaries()
@@ -1693,6 +1704,10 @@ function representativeClusterCompareTileStyles(row, clusterSummary, structurePa
   const clusterByResidueId = new Map();
   const residueIds = [];
   const residueStyles = [];
+  const minSupportFraction = structureDisplaySupportThresholdFraction(
+    "clusterOverview",
+    "clusterOverviewClusterSupportMin"
+  );
   for (const entry of residueLookup.values()) {
     const isInterfaceResidue = interfaceResidueIds.has(Number(entry.residueId));
     const isInterfaceColumn =
@@ -1705,7 +1720,10 @@ function representativeClusterCompareTileStyles(row, clusterSummary, structurePa
       continue;
     }
     const columnCount = Number(clusterSummary.columnCounts?.get?.(entry.columnIndex) || 0);
-    const supportFraction = memberCount > 0 && columnCount > 0 ? columnCount / memberCount : 1;
+    const supportFraction = memberCount > 0 ? columnCount / memberCount : 0;
+    if (supportFraction < minSupportFraction) {
+      continue;
+    }
     const residueCluster = {
       clusterLabel,
       label: clusterSummary.label,
@@ -1726,7 +1744,7 @@ function representativeClusterCompareTileStyles(row, clusterSummary, structurePa
       intensity: 1,
     });
   }
-  if (residueStyles.length === 0 && interfaceResidueIds.size > 0) {
+  if (residueStyles.length === 0 && interfaceResidueIds.size > 0 && minSupportFraction <= 0) {
     for (const residueId of [...interfaceResidueIds].sort((left, right) => left - right)) {
       const residueCluster = {
         clusterLabel,
@@ -1968,7 +1986,10 @@ function representativeClusterLensData(row) {
     visibleClusterLabels.has(String(summary.clusterLabel))
   );
   const dominantClusterByColumn = new Map();
-  const minSupportFraction = 0.04;
+  const minSupportFraction = structureDisplaySupportThresholdFraction(
+    "representative",
+    "representativeClusterSupportMin"
+  );
 
   for (const summary of clusterSummaries) {
     const supportDenominator = Number(
@@ -2762,6 +2783,8 @@ const STRUCTURE_REGION_SETTING_KEYS = new Set(
 const STRUCTURE_REPRESENTATION_SETTINGS = new Set([
   ...STRUCTURE_REGION_SETTING_KEYS,
   "contextAlpha",
+  "representativeClusterSupportMin",
+  "clusterOverviewClusterSupportMin",
   "combineSameStyleRegions",
   "contactLinesVisible",
   "contactColor",
@@ -2883,6 +2906,16 @@ function syncStructureRegionReadouts() {
     const color = settings[region.colorKey] || DEFAULT_STRUCTURE_DISPLAY_SETTINGS[region.colorKey];
     const alpha = alphaSettingValue(settings, region.alphaKey, region.colorKey);
     output.value = rgbaString(color, alpha);
+    output.textContent = output.value;
+  }
+}
+
+function syncStructureDisplayPercentReadouts() {
+  const settings = state.structureDisplaySettings || {};
+  for (const output of structureDisplaySettingsPanel?.querySelectorAll("[data-structure-display-percent-value]") || []) {
+    const key = output.dataset.structureDisplayPercentValue;
+    const value = Math.round(structureDisplayPercentSetting(settings, key));
+    output.value = `${value}%`;
     output.textContent = output.value;
   }
 }
@@ -3062,6 +3095,7 @@ function syncStructureDisplaySettingsUi() {
     }
   }
   syncStructureRegionReadouts();
+  syncStructureDisplayPercentReadouts();
   syncStructureViewPresetControls();
   syncStructureEffectPanels();
   syncStructureDofFocusPickerUi();
@@ -3081,6 +3115,18 @@ function controlValue(control) {
     return Number.isFinite(value) ? value : control.value;
   }
   return control.value;
+}
+
+function normalizedStructureDisplayControlValue(control) {
+  const key = control?.dataset?.structureDisplaySetting;
+  const value = controlValue(control);
+  if (
+    key === "representativeClusterSupportMin" ||
+    key === "clusterOverviewClusterSupportMin"
+  ) {
+    return structureDisplayPercentSetting({ [key]: value }, key);
+  }
+  return value;
 }
 
 function applyStructureDisplaySettingsToViewers() {
@@ -3106,6 +3152,16 @@ function normalizeStructureDisplayRefreshTargets(targets) {
   }
   const source = Array.isArray(targets) ? targets : [targets];
   return source.filter((target) => STRUCTURE_VIEW_PRESET_KEYS.includes(target));
+}
+
+function structureDisplayRefreshTargetsForSetting(key) {
+  if (key === "representativeClusterSupportMin") {
+    return ["representative"];
+  }
+  if (key === "clusterOverviewClusterSupportMin") {
+    return ["clusterOverview"];
+  }
+  return undefined;
 }
 
 function scheduleStructureDisplayRepresentationRefresh(targets) {
@@ -3161,7 +3217,7 @@ function updateStructureDisplaySetting(control, options = {}) {
     scheduleUiPreferencesSave();
     return;
   }
-  const nextValue = controlValue(control);
+  const nextValue = normalizedStructureDisplayControlValue(control);
   const previousValue = state.structureDisplaySettings?.[key];
   const isRepresentationSetting =
     control.dataset.representationSetting === "true" ||
@@ -3189,13 +3245,14 @@ function updateStructureDisplaySetting(control, options = {}) {
     return;
   }
   syncStructureDisplayColorVariables();
+  const refreshTargets = structureDisplayRefreshTargetsForSetting(key);
   const shouldCommitRepresentation = Boolean(options.commitRepresentation);
   if (changed && !shouldCommitRepresentation) {
     structureDisplayRepresentationDirty = true;
     return;
   }
   if (changed || structureDisplayRepresentationDirty || shouldCommitRepresentation) {
-    scheduleStructureDisplayRepresentationRefresh();
+    scheduleStructureDisplayRepresentationRefresh(refreshTargets);
   }
 }
 

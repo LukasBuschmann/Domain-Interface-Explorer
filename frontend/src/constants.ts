@@ -115,6 +115,8 @@ export const DEFAULT_STRUCTURE_DISPLAY_SETTINGS = {
   highlightStrength: 0.42,
   highlightColor: "#f3c14f",
   contextAlpha: 0.24,
+  representativeClusterSupportMin: 4,
+  clusterOverviewClusterSupportMin: 0,
   combineSameStyleRegions: false,
   restProteinStyle: "cartoon",
   restProteinColor: "#c7c3bc",

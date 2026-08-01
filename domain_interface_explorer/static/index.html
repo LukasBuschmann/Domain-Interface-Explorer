@@ -1329,6 +1329,17 @@
                   <label><input id="structure-display-combine-regions" type="checkbox" data-structure-display-setting="combineSameStyleRegions" data-representation-setting="true"> Merge same-style regions</label>
                 </div>
               </div>
+              <div class="structure-display-fieldset">
+                <span class="structure-display-fieldset-title">Cluster support</span>
+                <label>
+                  <span>Representative <output class="structure-display-value" data-structure-display-percent-value="representativeClusterSupportMin">4%</output></span>
+                  <input id="structure-display-representative-cluster-support" class="structure-display-input" type="range" min="0" max="100" step="1" data-structure-display-setting="representativeClusterSupportMin" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>Cluster overview <output class="structure-display-value" data-structure-display-percent-value="clusterOverviewClusterSupportMin">0%</output></span>
+                  <input id="structure-display-cluster-overview-support" class="structure-display-input" type="range" min="0" max="100" step="1" data-structure-display-setting="clusterOverviewClusterSupportMin" data-representation-setting="true">
+                </label>
+              </div>
               <div id="structure-region-settings" class="structure-region-settings"></div>
             </div>
             <div class="structure-display-section hidden" data-structure-display-panel="scene" role="tabpanel">
