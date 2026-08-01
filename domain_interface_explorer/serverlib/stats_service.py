@@ -605,6 +605,8 @@ def interface_summary_from_payload(interface_payload: object) -> dict[str, objec
     unique_interfaces: set[tuple[str, tuple[int, ...]]] = set()
     interface_size_histogram: dict[int, int] = {}
     pfam_row_coverage_histogram: dict[int, int] = {}
+    plip_interaction_count_histogram: dict[int, int] = {}
+    plip_type_counts = {bit: 0 for bit in (1, 2, 4, 8, 16, 32, 64, 128)}
     dataset_interfaces = 0
     if not isinstance(interface_payload, dict):
         return {
@@ -644,6 +646,19 @@ def interface_summary_from_payload(interface_payload: object) -> dict[str, objec
             interface_size_histogram[interface_size] = (
                 interface_size_histogram.get(interface_size, 0) + 1
             )
+            plip_interactions = row_payload.get("plip_interactions")
+            plip_interactions = plip_interactions if isinstance(plip_interactions, list) else []
+            plip_count = len(plip_interactions)
+            plip_interaction_count_histogram[plip_count] = (
+                plip_interaction_count_histogram.get(plip_count, 0) + 1
+            )
+            for interaction in plip_interactions:
+                if not isinstance(interaction, (list, tuple)) or len(interaction) < 3:
+                    continue
+                mask = int(interaction[2])
+                for bit in plip_type_counts:
+                    if mask & bit:
+                        plip_type_counts[bit] += 1
     domain_length_histogram: dict[int, int] = {}
     for domain_length in domain_lengths_by_domain.values():
         domain_length_histogram[domain_length] = domain_length_histogram.get(domain_length, 0) + 1
@@ -654,6 +669,12 @@ def interface_summary_from_payload(interface_payload: object) -> dict[str, objec
         "interface_size_histogram": histogram_entries_from_counts(interface_size_histogram),
         "domain_length_histogram": histogram_entries_from_counts(domain_length_histogram),
         "pfam_row_coverage_histogram": histogram_entries_from_counts(pfam_row_coverage_histogram),
+        "plip_interaction_count_histogram": histogram_entries_from_counts(
+            plip_interaction_count_histogram
+        ),
+        "plip_type_counts": {
+            str(bit): count for bit, count in plip_type_counts.items() if count > 0
+        },
     }
 
 

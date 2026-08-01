@@ -4,6 +4,7 @@ import json
 import sqlite3
 import threading
 import time
+import zlib
 from array import array
 from concurrent.futures import Future
 from pathlib import Path
@@ -26,7 +27,8 @@ from .stats_service import (
 from .timing import log_event, timed_step
 
 
-INTERFACE_STORE_SCHEMA_VERSION = 1
+INTERFACE_STORE_SCHEMA_VERSION = 2
+COLUMN_STATS_CACHE_VERSION = 2
 
 
 def pack_uints(values: object) -> bytes:
@@ -72,6 +74,32 @@ def pack_uint_pairs(values: object) -> bytes:
 def unpack_uint_pairs(blob: object) -> list[list[int]]:
     values = unpack_uints(blob)
     return [[values[index], values[index + 1]] for index in range(0, len(values) - 1, 2)]
+
+
+def pack_uint_triples(values: object) -> bytes:
+    if not isinstance(values, list):
+        return b""
+    packed = array("I")
+    for item in values:
+        if not isinstance(item, (list, tuple)) or len(item) < 3:
+            continue
+        try:
+            left = int(item[0])
+            right = int(item[1])
+            mask = int(item[2])
+        except (TypeError, ValueError):
+            continue
+        if left >= 0 and right >= 0 and 1 <= mask <= 255:
+            packed.extend((left, right, mask))
+    return packed.tobytes()
+
+
+def unpack_uint_triples(blob: object) -> list[list[int]]:
+    values = unpack_uints(blob)
+    return [
+        [values[index], values[index + 1], values[index + 2]]
+        for index in range(0, len(values) - 2, 3)
+    ]
 
 
 def pack_uint16(values: list[int]) -> bytes:
@@ -154,6 +182,7 @@ class InterfaceStore:
                     interface_msa_columns_a BLOB NOT NULL,
                     surface_msa_columns_a BLOB NOT NULL,
                     residue_contacts BLOB NOT NULL,
+                    plip_interactions BLOB NOT NULL,
                     fragments_b BLOB NOT NULL,
                     UNIQUE(source_id, partner_domain, interface_row_key)
                 );
@@ -174,8 +203,51 @@ class InterfaceStore:
                     alignment_length INTEGER NOT NULL,
                     computed_at REAL NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS column_stats_cache (
+                    source_id INTEGER NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+                    min_interface_size INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    alignment_length INTEGER NOT NULL DEFAULT 0,
+                    unique_rows INTEGER NOT NULL DEFAULT 0,
+                    conservation BLOB,
+                    claimed_at REAL NOT NULL,
+                    computed_at REAL,
+                    cache_version INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY(source_id, min_interface_size)
+                );
+
+                CREATE TABLE IF NOT EXISTS column_stats_scope (
+                    source_id INTEGER NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+                    min_interface_size INTEGER NOT NULL,
+                    partner_domain TEXT NOT NULL,
+                    row_count INTEGER NOT NULL,
+                    residue_counts BLOB NOT NULL,
+                    interface_counts BLOB NOT NULL,
+                    surface_counts BLOB NOT NULL,
+                    plip_counts BLOB NOT NULL,
+                    PRIMARY KEY(source_id, min_interface_size, partner_domain)
+                );
                 """
             )
+            interface_row_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(interface_rows)")
+            }
+            if "plip_interactions" not in interface_row_columns:
+                connection.execute(
+                    "ALTER TABLE interface_rows "
+                    "ADD COLUMN plip_interactions BLOB NOT NULL DEFAULT X''"
+                )
+            column_stats_cache_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(column_stats_cache)")
+            }
+            if "cache_version" not in column_stats_cache_columns:
+                connection.execute(
+                    "ALTER TABLE column_stats_cache "
+                    "ADD COLUMN cache_version INTEGER NOT NULL DEFAULT 1"
+                )
             connection.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
                 (str(INTERFACE_STORE_SCHEMA_VERSION),),
@@ -269,6 +341,8 @@ class InterfaceStore:
                     connection.commit()
                     return "ready"
                 connection.execute("DELETE FROM clean_column_identity WHERE source_id = ?", (source_id,))
+                connection.execute("DELETE FROM column_stats_scope WHERE source_id = ?", (source_id,))
+                connection.execute("DELETE FROM column_stats_cache WHERE source_id = ?", (source_id,))
                 connection.execute("DELETE FROM interface_rows WHERE source_id = ?", (source_id,))
                 connection.execute(
                     """
@@ -373,6 +447,7 @@ class InterfaceStore:
                             sqlite3.Binary(pack_uints(row_payload.get("interface_msa_columns_a"))),
                             sqlite3.Binary(pack_uints(row_payload.get("surface_msa_columns_a"))),
                             sqlite3.Binary(pack_uint_pairs(row_payload.get("residue_contacts"))),
+                            sqlite3.Binary(pack_uint_triples(row_payload.get("plip_interactions"))),
                             sqlite3.Binary(pack_uint_pairs(row_payload.get("fragments_b"))),
                         )
                     )
@@ -387,6 +462,8 @@ class InterfaceStore:
                 if existing:
                     source_id = int(existing[0])
                     connection.execute("DELETE FROM clean_column_identity WHERE source_id = ?", (source_id,))
+                    connection.execute("DELETE FROM column_stats_scope WHERE source_id = ?", (source_id,))
+                    connection.execute("DELETE FROM column_stats_cache WHERE source_id = ?", (source_id,))
                     connection.execute("DELETE FROM interface_rows WHERE source_id = ?", (source_id,))
                     connection.execute(
                         """
@@ -425,8 +502,8 @@ class InterfaceStore:
                         interface_size_a, interface_size_b, interface_residues_a,
                         interface_residues_b, surface_residue_ids_a, surface_residue_ids_b,
                         interface_msa_columns_a, surface_msa_columns_a,
-                        residue_contacts, fragments_b
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        residue_contacts, plip_interactions, fragments_b
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     ((source_id, *row) for row in row_values),
                 )
@@ -527,10 +604,12 @@ class InterfaceStore:
         unique_interfaces: set[tuple[str, tuple[int, ...]]] = set()
         interface_size_histogram: dict[int, int] = {}
         pfam_row_coverage_histogram: dict[int, int] = {}
+        plip_interaction_count_histogram: dict[int, int] = {}
+        plip_type_counts = {bit: 0 for bit in (1, 2, 4, 8, 16, 32, 64, 128)}
         for row in connection.execute(
             f"""
             SELECT partner_domain, interface_msa_columns_a, interface_residues_a,
-                   fragment_key, aligned_seq
+                   fragment_key, aligned_seq, plip_interactions
             FROM interface_rows
             WHERE source_id = ? AND {where_sql}
             """,
@@ -550,6 +629,15 @@ class InterfaceStore:
             interface_size_histogram[interface_size] = (
                 interface_size_histogram.get(interface_size, 0) + 1
             )
+            plip_interactions = unpack_uint_triples(row[5])
+            plip_count = len(plip_interactions)
+            plip_interaction_count_histogram[plip_count] = (
+                plip_interaction_count_histogram.get(plip_count, 0) + 1
+            )
+            for _main_residue, _partner_residue, mask in plip_interactions:
+                for bit in plip_type_counts:
+                    if int(mask) & bit:
+                        plip_type_counts[bit] += 1
         return {
             "dataset_domains": dataset_domains,
             "dataset_interfaces": total_rows,
@@ -557,6 +645,12 @@ class InterfaceStore:
             "interface_size_histogram": histogram_entries_from_counts(interface_size_histogram),
             "domain_length_histogram": histogram_entries_from_counts(domain_length_histogram),
             "pfam_row_coverage_histogram": histogram_entries_from_counts(pfam_row_coverage_histogram),
+            "plip_interaction_count_histogram": histogram_entries_from_counts(
+                plip_interaction_count_histogram
+            ),
+            "plip_type_counts": {
+                str(bit): count for bit, count in plip_type_counts.items() if count > 0
+            },
         }
 
     def get_interface_summary_payload(
@@ -742,7 +836,13 @@ class InterfaceStore:
             if interface_summary is not None:
                 response["interface_summary"] = interface_summary
             if include_clean_column_identity:
-                response["clean_column_identity"] = self.get_clean_column_identity(path)
+                column_statistics = self.get_column_statistics(path, filter_settings)
+                response["clean_column_identity"] = column_statistics["conservation"]
+                response["column_statistics"] = {
+                    "cached": True,
+                    "unique_rows": column_statistics["unique_rows"],
+                    "alignment_length": column_statistics["alignment_length"],
+                }
             if overlay_payload is not None:
                 response.update(
                     {
@@ -935,9 +1035,31 @@ class InterfaceStore:
                                 "value": value,
                             }
                         )
+                elif histogram_type == "plip_interaction_count":
+                    rows = connection.execute(
+                        f"""
+                        SELECT partner_domain, interface_row_key, plip_interactions
+                        FROM interface_rows
+                        WHERE source_id = ? AND {where_sql}{partner_sql}
+                        ORDER BY row_order
+                        """,
+                        args,
+                    )
+                    for row in rows:
+                        value = len(unpack_uint_triples(row[2]))
+                        if value < bin_start or value > bin_end:
+                            continue
+                        targets.append(
+                            {
+                                "row_key": str(row[1]),
+                                "partner_domain": str(row[0]),
+                                "value": value,
+                            }
+                        )
                 else:
                     raise ValueError(
-                        "histogram type must be 'interface_size', 'domain_length', or 'pfam_row_coverage'"
+                        "histogram type must be 'interface_size', 'domain_length', "
+                        "'pfam_row_coverage', or 'plip_interaction_count'"
                     )
             timer.set(targets=len(targets))
         return targets
@@ -1179,7 +1301,7 @@ class InterfaceStore:
                     SELECT partner_domain, interface_row_key,
                            interface_residues_a, surface_residue_ids_a,
                            interface_residues_b, surface_residue_ids_b,
-                           residue_contacts, fragments_b, aligned_seq,
+                           residue_contacts, plip_interactions, fragments_b, aligned_seq,
                            interface_msa_columns_a, surface_msa_columns_a
                     FROM interface_rows
                     WHERE source_id = ? AND {where_sql}
@@ -1197,13 +1319,368 @@ class InterfaceStore:
                         "interface_residues_b": unpack_uints(row[4]),
                         "surface_residue_ids_b": unpack_uints(row[5]),
                         "residue_contacts": unpack_uint_pairs(row[6]),
-                        "fragments_b": unpack_uint_pairs(row[7]),
-                        "aligned_sequence": str(row[8] or ""),
-                        "interface_msa_columns_a": unpack_uints(row[9]),
-                        "surface_msa_columns_a": unpack_uints(row[10]),
+                        "plip_interactions": unpack_uint_triples(row[7]),
+                        "fragments_b": unpack_uint_pairs(row[8]),
+                        "aligned_sequence": str(row[9] or ""),
+                        "interface_msa_columns_a": unpack_uints(row[10]),
+                        "surface_msa_columns_a": unpack_uints(row[11]),
                     }
             timer.set(rows=sum(len(rows) for rows in payload.values()))
             return payload
+
+    def get_plip_column_distribution(
+        self,
+        path: Path,
+        filter_settings: dict[str, object],
+        column_index: int,
+        partner_filter: str = "__all__",
+    ) -> dict[str, object]:
+        min_size = filter_min_interface_size(filter_settings)
+        cache = self.get_column_statistics(path, filter_settings)
+        source_id = int(cache["source_id"])
+        alignment_length = int(cache["alignment_length"])
+        if column_index >= alignment_length:
+            raise ValueError(f"column {column_index} is outside alignment length {alignment_length}")
+        with self.connect() as connection:
+            scope = connection.execute(
+                """
+                SELECT row_count, residue_counts, interface_counts, surface_counts, plip_counts
+                FROM column_stats_scope
+                WHERE source_id = ? AND min_interface_size = ? AND partner_domain = ?
+                """,
+                (source_id, min_size, partner_filter),
+            ).fetchone()
+        if scope is None:
+            total_rows = 0
+            residue_counts = [0] * 26
+            interface_count = surface_count = 0
+            plip = {}
+        else:
+            total_rows = int(scope[0])
+            residue_counts = self._unpack_count_matrix_column(scope[1], alignment_length, column_index)
+            interface_count = self._unpack_count_vector_value(scope[2], column_index)
+            surface_count = self._unpack_count_vector_value(scope[3], column_index)
+            plip_payload = json.loads(zlib.decompress(bytes(scope[4])).decode("utf-8"))
+            plip = plip_payload.get(str(column_index), {})
+        letter_count = sum(residue_counts)
+        gap_count = max(0, total_rows - letter_count)
+        core_count = max(0, letter_count - interface_count - surface_count)
+        type_counts = plip.get("types", {})
+        row_mask_counts = plip.get("row_masks", {})
+        interaction_count = int(plip.get("interactions", 0))
+        interaction_row_count = int(plip.get("rows", 0))
+        return {
+            "file": path.name,
+            "filter_settings": filter_settings,
+            "column_index": int(column_index),
+            "partner": partner_filter,
+            "row_count": total_rows,
+            "interaction_row_count": interaction_row_count,
+            "interaction_count": interaction_count,
+            "type_counts": type_counts,
+            "row_mask_counts": row_mask_counts,
+            "residue_counts": {
+                chr(ord("A") + index): int(count)
+                for index, count in enumerate(residue_counts)
+                if count > 0
+            },
+            "state_counts": {
+                "interface": interface_count,
+                "surface": surface_count,
+                "core": core_count,
+                "gap": gap_count,
+            },
+        }
+
+    @staticmethod
+    def _pack_count_array(values: object) -> bytes:
+        import numpy as np
+
+        return zlib.compress(np.asarray(values, dtype=np.uint32).tobytes(), level=6)
+
+    @staticmethod
+    def _unpack_count_matrix_column(blob: object, alignment_length: int, column_index: int) -> list[int]:
+        import numpy as np
+
+        values = np.frombuffer(zlib.decompress(bytes(blob)), dtype=np.uint32)
+        matrix = values.reshape((alignment_length, 26))
+        return matrix[column_index].astype(int).tolist()
+
+    @staticmethod
+    def _unpack_count_vector_value(blob: object, column_index: int) -> int:
+        import numpy as np
+
+        values = np.frombuffer(zlib.decompress(bytes(blob)), dtype=np.uint32)
+        return int(values[column_index])
+
+    def get_column_statistics(
+        self,
+        path: Path,
+        filter_settings: dict[str, object],
+    ) -> dict[str, object]:
+        source_id = self.ensure_source_ready(path)
+        min_size = filter_min_interface_size(filter_settings)
+        while True:
+            with self.connect() as connection:
+                cached = connection.execute(
+                    """
+                    SELECT status, alignment_length, unique_rows, conservation, claimed_at,
+                           cache_version
+                    FROM column_stats_cache
+                    WHERE source_id = ? AND min_interface_size = ?
+                    """,
+                    (source_id, min_size),
+                ).fetchone()
+                if (
+                    cached is not None
+                    and str(cached[0]) == "ready"
+                    and int(cached[5]) == COLUMN_STATS_CACHE_VERSION
+                ):
+                    return {
+                        "source_id": source_id,
+                        "alignment_length": int(cached[1]),
+                        "unique_rows": int(cached[2]),
+                        "conservation": unpack_uint16(cached[3]),
+                    }
+                now = time.time()
+                if cached is None:
+                    cursor = connection.execute(
+                        """
+                        INSERT OR IGNORE INTO column_stats_cache (
+                            source_id, min_interface_size, status, claimed_at, cache_version
+                        ) VALUES (?, ?, 'building', ?, ?)
+                        """,
+                        (source_id, min_size, now, COLUMN_STATS_CACHE_VERSION),
+                    )
+                    owns_build = cursor.rowcount == 1
+                elif int(cached[5]) != COLUMN_STATS_CACHE_VERSION:
+                    cursor = connection.execute(
+                        """
+                        UPDATE column_stats_cache
+                        SET status = 'building', claimed_at = ?, cache_version = ?
+                        WHERE source_id = ? AND min_interface_size = ?
+                          AND cache_version = ?
+                        """,
+                        (
+                            now, COLUMN_STATS_CACHE_VERSION, source_id, min_size,
+                            int(cached[5]),
+                        ),
+                    )
+                    owns_build = cursor.rowcount == 1
+                    if owns_build:
+                        connection.execute(
+                            "DELETE FROM column_stats_scope "
+                            "WHERE source_id = ? AND min_interface_size = ?",
+                            (source_id, min_size),
+                        )
+                elif now - float(cached[4]) > 900:
+                    cursor = connection.execute(
+                        """
+                        UPDATE column_stats_cache SET claimed_at = ?
+                        WHERE source_id = ? AND min_interface_size = ?
+                          AND status = 'building' AND claimed_at = ?
+                        """,
+                        (now, source_id, min_size, float(cached[4])),
+                    )
+                    owns_build = cursor.rowcount == 1
+                else:
+                    owns_build = False
+            if owns_build:
+                break
+            time.sleep(0.1)
+        try:
+            return self._build_column_statistics(path, source_id, min_size)
+        except BaseException:
+            with self.connect() as connection:
+                connection.execute(
+                    "DELETE FROM column_stats_cache WHERE source_id = ? AND min_interface_size = ?",
+                    (source_id, min_size),
+                )
+                connection.execute(
+                    "DELETE FROM column_stats_scope WHERE source_id = ? AND min_interface_size = ?",
+                    (source_id, min_size),
+                )
+            raise
+
+    def _build_column_statistics(self, path: Path, source_id: int, min_size: int) -> dict[str, object]:
+        import numpy as np
+
+        where_sql, where_args = self.filtered_where(min_size)
+        with self.connect() as connection:
+            alignment_length = int(connection.execute(
+                f"SELECT COALESCE(MAX(LENGTH(aligned_seq)), 0) FROM interface_rows "
+                f"WHERE source_id = ? AND {where_sql}",
+                (source_id, *where_args),
+            ).fetchone()[0])
+        conservation_counts = np.zeros((alignment_length, 26), dtype=np.int64)
+        global_residue_counts = np.zeros((alignment_length, 26), dtype=np.uint64)
+        global_interface = np.zeros(alignment_length, dtype=np.uint64)
+        global_surface = np.zeros(alignment_length, dtype=np.uint64)
+        global_plip: dict[str, dict[str, object]] = {}
+        global_rows = 0
+        unique_rows = 0
+        seen_row_keys: set[str] = set()
+        unique_batch: list[tuple[str, tuple[tuple[int, int], ...]]] = []
+
+        def flush_unique() -> None:
+            nonlocal unique_batch
+            if unique_batch:
+                conservation_counts[:] += count_clean_identity_batch(unique_batch, alignment_length)
+                unique_batch = []
+
+        with timed_step("store", "build persisted column statistics", file=path.name, min_size=min_size) as timer:
+            with self.connect() as connection:
+                rows = connection.execute(
+                    f"""
+                    SELECT partner_domain, interface_row_key, fragment_key, aligned_seq,
+                           interface_msa_columns_a, surface_msa_columns_a,
+                           interface_residues_a, surface_residue_ids_a, plip_interactions
+                    FROM interface_rows
+                    WHERE source_id = ? AND {where_sql}
+                    ORDER BY partner_domain, row_order
+                    """,
+                    (source_id, *where_args),
+                )
+                current_partner: str | None = None
+                partner_batch: list[tuple[str, tuple[tuple[int, int], ...]]] = []
+                partner_interface = np.zeros(alignment_length, dtype=np.uint64)
+                partner_surface = np.zeros(alignment_length, dtype=np.uint64)
+                partner_plip: dict[str, dict[str, object]] = {}
+                partner_rows = 0
+
+                def add_plip(target: dict[str, dict[str, object]], column: int, mask: int) -> None:
+                    entry = target.setdefault(
+                        str(column),
+                        {"rows": 0, "interactions": 0, "types": {}, "row_masks": {}},
+                    )
+                    entry["interactions"] = int(entry["interactions"]) + 1
+                    types = entry["types"]
+                    for bit in (1, 2, 4, 8, 16, 32, 64, 128):
+                        if mask & bit:
+                            types[str(bit)] = int(types.get(str(bit), 0)) + 1
+
+                def add_plip_row_masks(
+                    target: dict[str, dict[str, object]],
+                    row_masks: dict[int, int],
+                ) -> None:
+                    for column, mask in row_masks.items():
+                        entry = target[str(column)]
+                        entry["rows"] = int(entry["rows"]) + 1
+                        masks = entry["row_masks"]
+                        masks[str(mask)] = int(masks.get(str(mask), 0)) + 1
+
+                def flush_partner() -> None:
+                    nonlocal partner_batch, partner_rows
+                    if current_partner is None:
+                        return
+                    counts = np.zeros((alignment_length, 26), dtype=np.int64)
+                    for start in range(0, len(partner_batch), CLEAN_COLUMN_IDENTITY_BATCH_SIZE):
+                        counts += count_clean_identity_batch(
+                            partner_batch[start:start + CLEAN_COLUMN_IDENTITY_BATCH_SIZE], alignment_length
+                        )
+                    global_residue_counts[:] += counts.astype(np.uint64)
+                    global_interface[:] += partner_interface
+                    global_surface[:] += partner_surface
+                    with self.connect() as write_connection:
+                        write_connection.execute(
+                            """
+                            INSERT OR REPLACE INTO column_stats_scope (
+                                source_id, min_interface_size, partner_domain, row_count,
+                                residue_counts, interface_counts, surface_counts, plip_counts
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                source_id, min_size, current_partner, partner_rows,
+                                sqlite3.Binary(self._pack_count_array(counts)),
+                                sqlite3.Binary(self._pack_count_array(partner_interface)),
+                                sqlite3.Binary(self._pack_count_array(partner_surface)),
+                                sqlite3.Binary(zlib.compress(json.dumps(partner_plip, separators=(",", ":")).encode("utf-8"))),
+                            ),
+                        )
+                    partner_batch = []
+                    partner_rows = 0
+
+                for row in rows:
+                    partner = str(row[0])
+                    if current_partner is not None and partner != current_partner:
+                        flush_partner()
+                        partner_interface.fill(0)
+                        partner_surface.fill(0)
+                        partner_plip.clear()
+                    current_partner = partner
+                    row_key = str(row[1])
+                    ranges = tuple(fragment_ranges(str(row[2])))
+                    sequence = str(row[3] or "")
+                    partner_batch.append((sequence, ranges))
+                    partner_rows += 1
+                    global_rows += 1
+                    if row_key not in seen_row_keys:
+                        seen_row_keys.add(row_key)
+                        unique_rows += 1
+                        unique_batch.append((sequence, ranges))
+                        if len(unique_batch) >= CLEAN_COLUMN_IDENTITY_BATCH_SIZE:
+                            flush_unique()
+                    interface_columns = set(unpack_uints(row[4]))
+                    surface_columns = set(unpack_uints(row[5])) - interface_columns
+                    for column in interface_columns:
+                        if column < alignment_length:
+                            partner_interface[column] += 1
+                    for column in surface_columns:
+                        if column < alignment_length:
+                            partner_surface[column] += 1
+                    residue_to_column = dict(zip(unpack_uints(row[6]), unpack_uints(row[4])))
+                    residue_to_column.update(dict(zip(unpack_uints(row[7]), unpack_uints(row[5]))))
+                    row_masks: dict[int, int] = {}
+                    for main_residue, _partner_residue, mask in unpack_uint_triples(row[8]):
+                        column = residue_to_column.get(main_residue)
+                        if column is None or column >= alignment_length:
+                            continue
+                        add_plip(partner_plip, column, mask)
+                        add_plip(global_plip, column, mask)
+                        row_masks[column] = row_masks.get(column, 0) | mask
+                    add_plip_row_masks(partner_plip, row_masks)
+                    add_plip_row_masks(global_plip, row_masks)
+                flush_partner()
+            flush_unique()
+            if unique_rows:
+                conservation = ((conservation_counts.max(axis=1) * 100) // unique_rows).astype(int).tolist()
+            else:
+                conservation = [0] * alignment_length
+            with self.connect() as connection:
+                connection.execute(
+                    """
+                    INSERT OR REPLACE INTO column_stats_scope (
+                        source_id, min_interface_size, partner_domain, row_count,
+                        residue_counts, interface_counts, surface_counts, plip_counts
+                    ) VALUES (?, ?, '__all__', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        source_id, min_size, global_rows,
+                        sqlite3.Binary(self._pack_count_array(global_residue_counts)),
+                        sqlite3.Binary(self._pack_count_array(global_interface)),
+                        sqlite3.Binary(self._pack_count_array(global_surface)),
+                        sqlite3.Binary(zlib.compress(json.dumps(global_plip, separators=(",", ":")).encode("utf-8"))),
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE column_stats_cache
+                    SET status = 'ready', alignment_length = ?, unique_rows = ?,
+                        conservation = ?, computed_at = ?, cache_version = ?
+                    WHERE source_id = ? AND min_interface_size = ?
+                    """,
+                    (
+                        alignment_length, unique_rows, sqlite3.Binary(pack_uint16(conservation)),
+                        time.time(), COLUMN_STATS_CACHE_VERSION, source_id, min_size,
+                    ),
+                )
+            timer.set(columns=alignment_length, rows=global_rows, unique_rows=unique_rows)
+        return {
+            "source_id": source_id,
+            "alignment_length": alignment_length,
+            "unique_rows": unique_rows,
+            "conservation": conservation,
+        }
 
     def get_clean_column_identity(self, path: Path) -> list[int]:
         source_id = self.ensure_source_ready(path)

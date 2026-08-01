@@ -772,6 +772,8 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             "/api/cluster-overview",
             "/api/representative",
             "/api/structure-preview",
+            "/api/column-statistics",
+            "/api/plip-column-distribution",
             "/api/hmm-bit-scores",
         }
         if parsed.path in dataset_scoped_paths and not self._apply_dataset_from_query(query):
@@ -823,6 +825,9 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/structure-preview":
             self._handle_structure_preview(query)
+            return
+        if parsed.path in {"/api/column-statistics", "/api/plip-column-distribution"}:
+            self._handle_plip_column_distribution(query)
             return
         if parsed.path == "/api/hmm-bit-scores":
             self._handle_hmm_bit_scores(query)
@@ -1031,6 +1036,34 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             status=HTTPStatus.GONE,
         )
 
+    def _handle_plip_column_distribution(self, query: dict[str, list[str]]) -> None:
+        resolved_file = self._resolve_interface_file_and_filter(query.get("file", [""])[0], query)
+        if resolved_file is None:
+            return
+        path, interface_filter_settings = resolved_file
+        try:
+            column_index = int(query.get("column", [""])[0])
+            if column_index < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            self._send_json({"error": "column must be a non-negative integer"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        partner = str(query.get("partner", ["__all__"])[0] or "__all__")
+        if self.interface_store is None:
+            self._send_json({"error": "interface store is unavailable"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+        try:
+            payload = self.interface_store.get_plip_column_distribution(
+                path,
+                interface_filter_settings,
+                column_index,
+                partner,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._send_json(payload)
+
     def _handle_interface(self, query: dict[str, list[str]]) -> None:
         filename = query.get("file", [""])[0]
         resolved_file = self._resolve_interface_file_and_filter(filename, query)
@@ -1171,7 +1204,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         path: Path,
         interface_filter_settings: dict[str, object],
     ) -> dict[str, object]:
-        cache_key = interface_view_cache_key(path, interface_filter_settings)
+        cache_key = "2|" + interface_view_cache_key(path, interface_filter_settings)
         with INTERFACE_SUMMARY_CACHE_LOCK:
             cached_payload = INTERFACE_SUMMARY_CACHE.get(cache_key)
             if cached_payload is not None:
@@ -1290,9 +1323,13 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                     value = domain_length_from_row_payload(row_key, row_payload)
                 elif histogram_type == "pfam_row_coverage":
                     value = pfam_row_coverage_percent_from_payload(row_payload, str(row_key).split("_", 2)[1] if "_" in str(row_key) else "")
+                elif histogram_type == "plip_interaction_count":
+                    interactions = row_payload.get("plip_interactions")
+                    value = len(interactions) if isinstance(interactions, list) else 0
                 else:
                     raise ValueError(
-                        "histogram type must be 'interface_size', 'domain_length', or 'pfam_row_coverage'"
+                        "histogram type must be 'interface_size', 'domain_length', "
+                        "'pfam_row_coverage', or 'plip_interaction_count'"
                     )
                 if value < bin_start or value > bin_end:
                     continue
@@ -1318,9 +1355,12 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
             bin_end = query_non_negative_int(query, "end", bin_start)
             if bin_end < bin_start:
                 raise ValueError("histogram end cannot be smaller than start")
-            if histogram_type not in {"interface_size", "domain_length", "pfam_row_coverage"}:
+            if histogram_type not in {
+                "interface_size", "domain_length", "pfam_row_coverage", "plip_interaction_count"
+            }:
                 raise ValueError(
-                    "histogram type must be 'interface_size', 'domain_length', or 'pfam_row_coverage'"
+                    "histogram type must be 'interface_size', 'domain_length', "
+                    "'pfam_row_coverage', or 'plip_interaction_count'"
                 )
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
@@ -2761,6 +2801,15 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                     partner=partner,
                     align_to_row_key=align_to_row_key,
                 )
+        structure_plip_interactions = list(row_structure["plip_interactions"])
+        structure_plip_type_counts = {bit: 0 for bit in (1, 2, 4, 8, 16, 32, 64, 128)}
+        for interaction in structure_plip_interactions:
+            if not isinstance(interaction, (list, tuple)) or len(interaction) < 3:
+                continue
+            mask = int(interaction[2])
+            for bit in structure_plip_type_counts:
+                if mask & bit:
+                    structure_plip_type_counts[bit] += 1
         self._send_json(
             {
                 "row_key": row_key,
@@ -2781,6 +2830,13 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
                 "partner_fragment_residue_ids": row_structure["partner_fragment_residue_ids"],
                 "partner_fragment_ranges": row_structure["partner_fragment_ranges"],
                 "residue_contacts": row_structure["residue_contacts"],
+                "plip_interactions": structure_plip_interactions,
+                "plip_interaction_count": len(structure_plip_interactions),
+                "plip_type_counts": {
+                    str(bit): count
+                    for bit, count in structure_plip_type_counts.items()
+                    if count > 0
+                },
                 "model_source": prediction.get("entryId", ""),
                 "model_url": (
                     f"/api/aligned-model/{Path(response_model_path).name}"
