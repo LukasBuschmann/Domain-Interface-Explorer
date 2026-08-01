@@ -1256,8 +1256,9 @@
             <button id="close-structure-modal" class="structure-close-button" type="button">Close</button>
           </div>
         </div>
-        <div class="structure-viewer-shell">
-          <div id="structure-viewer" class="structure-viewer"></div>
+        <div class="structure-viewer-layout">
+          <div class="structure-viewer-shell">
+            <div id="structure-viewer" class="structure-viewer"></div>
           <div id="structure-partner-picker" class="structure-partner-picker hidden" aria-hidden="true">
             <label for="structure-partner-select">Partner</label>
             <select id="structure-partner-select"></select>
@@ -1817,73 +1818,56 @@
               </details>
             </div>            </div>
           </div>
-          <div id="structure-hover-card" class="structure-hover-card hidden">
-            <strong>Main Residue</strong>
-            <dl id="structure-hover-details">
-              <div><dt>Residue</dt><dd>-</dd></div>
-              <div><dt>Amino acid</dt><dd>-</dd></div>
-              <div><dt>Conserved</dt><dd>-</dd></div>
-              <div><dt>MSA column</dt><dd>-</dd></div>
-            </dl>
-            <div class="structure-hover-histogram-block">
-              <span class="structure-hover-histogram-title">Top Residues In Column</span>
-              <div id="structure-hover-histogram" class="structure-hover-histogram">
-                <p class="structure-hover-empty">Hover a main-domain residue dot.</p>
-              </div>
+          <aside class="structure-hover-sidebar" aria-label="Structure hover information">
+            <div id="structure-hover-placeholder" class="structure-hover-placeholder">
+              <div id="structure-idle-stats">Hover a main-domain residue or PLIP interaction line to inspect it.</div>
             </div>
-            <div class="structure-hover-distribution-block">
-              <span class="structure-hover-histogram-title">Column State Distribution</span>
-              <div class="structure-hover-distribution-layout">
-                <div id="structure-hover-distribution-chart" class="structure-hover-distribution-chart"></div>
-                <div id="structure-hover-distribution-legend" class="structure-hover-distribution-legend">
-                  <p class="structure-hover-empty">Hover a main-domain residue dot.</p>
+            <section id="structure-residue-context" class="structure-hover-scope hidden">
+              <h3>Selected Residue</h3>
+              <div id="structure-hover-card" class="structure-hover-card hidden">
+                <dl id="structure-hover-details">
+                  <div><dt>Residue</dt><dd>-</dd></div>
+                  <div><dt>Amino acid</dt><dd>-</dd></div>
+                </dl>
+              </div>
+              <div id="structure-plip-hover-card" class="structure-plip-hover-card hidden">
+                <dl class="structure-plip-hover-details">
+                  <div><dt>Type</dt><dd id="structure-plip-hover-types">-</dd></div>
+                  <div><dt>Residues</dt><dd id="structure-plip-hover-residues">-</dd></div>
+                  <div><dt>MSA column</dt><dd id="structure-plip-hover-column">-</dd></div>
+                </dl>
+              </div>
+              <div id="structure-plip-column-card" class="structure-plip-column-card hidden">
+                <div class="structure-hover-histogram-block structure-plip-exact-block">
+                  <span id="structure-plip-exact-title" class="structure-hover-histogram-title">Interactions In This Interface</span>
+                  <div id="structure-plip-exact-list" class="structure-plip-exact-list"></div>
                 </div>
               </div>
-            </div>
-          </div>
-        </div>
-        <div class="structure-modal-footer">
-          <div class="structure-legend">
-            <span class="legend-item">
-              <span class="swatch structure-main-domain"></span>
-              Main domain
-            </span>
-            <span class="legend-item">
-              <span class="swatch structure-main-dots"></span>
-              Main residue CA dots
-            </span>
-            <span class="legend-item">
-              <span class="swatch structure-partner-dots"></span>
-              Partner contact CA dots
-            </span>
-            <span class="legend-item">
-              <span class="swatch structure-contact-line"></span>
-              Residue contacts
-            </span>
-            <span class="legend-item">
-              <span class="swatch structure-main-surface"></span>
-              Main surface
-            </span>
-            <span class="legend-item">
-              <span class="swatch structure-main-interface"></span>
-              Main interface
-            </span>
-            <span class="legend-item">
-              <span class="swatch structure-partner-domain"></span>
-              Partner domain
-            </span>
-            <span class="legend-item">
-              <span class="swatch structure-partner-surface"></span>
-              Partner surface
-            </span>
-            <span class="legend-item">
-              <span class="swatch structure-partner-interface"></span>
-              Partner interface
-            </span>
-          </div>
-          <p id="structure-modal-status" class="structure-status">
-            Open display settings with D to adjust regions, clipping, DOF, effects, and geometry.
-          </p>
+            </section>
+            <section id="structure-family-column-context" class="structure-hover-scope structure-family-column-context hidden">
+              <h3>Pfam Column Context</h3>
+              <dl id="structure-family-column-details">
+                <div><dt>MSA column</dt><dd>-</dd></div>
+                <div><dt>Conservation</dt><dd>-</dd></div>
+              </dl>
+              <div class="structure-hover-histogram-block">
+                <span class="structure-hover-histogram-title">Residue Makeup</span>
+                <div id="structure-hover-histogram" class="structure-hover-histogram"></div>
+              </div>
+              <div class="structure-hover-distribution-block">
+                <span class="structure-hover-histogram-title">Structural Location Makeup</span>
+                <div class="structure-hover-distribution-layout">
+                  <div id="structure-hover-distribution-chart" class="structure-hover-distribution-chart"></div>
+                  <div id="structure-hover-distribution-legend" class="structure-hover-distribution-legend"></div>
+                </div>
+              </div>
+              <div class="structure-hover-distribution-block">
+                <span id="structure-plip-column-title" class="structure-hover-histogram-title">PLIP Interaction Makeup</span>
+                <div id="structure-plip-column-bars" class="structure-hover-histogram structure-plip-makeup-bars"></div>
+              </div>
+            </section>
+            <p id="structure-modal-status" class="structure-status structure-sidebar-status"></p>
+          </aside>
         </div>
       </div>
     </div>

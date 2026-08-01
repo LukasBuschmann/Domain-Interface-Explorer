@@ -4,6 +4,17 @@ import { interactionRowKey, interfaceFilePfamId, parseInteractionRowKey } from "
 import { appendSelectionSettingsToParams } from "./selectionSettings.js";
 import { createDomainMolstarViewer } from "./molstarView.js";
 
+const PLIP_INTERACTION_TYPES = [
+  { bit: 1, label: "Hydrophobic", color: "#d79b28" },
+  { bit: 2, label: "Hydrogen bond", color: "#2aa7c9" },
+  { bit: 4, label: "Salt bridge", color: "#dc4d4d" },
+  { bit: 8, label: "Pi stacking", color: "#8c62c7" },
+  { bit: 16, label: "Pi-cation", color: "#d35da5" },
+  { bit: 32, label: "Water bridge", color: "#4f83db" },
+  { bit: 64, label: "Halogen bond", color: "#55a868" },
+  { bit: 128, label: "Metal complex", color: "#7b8794" },
+];
+
 export function createStructureViewController({
   state,
   elements,
@@ -34,8 +45,11 @@ export function createStructureViewController({
   const structurePreviewInFlight = new Map();
   const structureModelTextInFlight = new Map();
   const structureHmmScoresInFlight = new Map();
+  const plipColumnDistributionCache = new Map();
+  const structureInterfaceSummaryCache = new Map();
   let structurePreloadAbortController = null;
   let structurePreloadTimer = 0;
+  let plipHoverRequestToken = 0;
 
   function uniprotEntryUrl(accession) {
     return `https://www.uniprot.org/uniprotkb/${encodeURIComponent(String(accession || "").trim())}`;
@@ -1615,13 +1629,182 @@ export function createStructureViewController({
     }, STRUCTURE_PRELOAD_DELAY_MS);
   }
 
+  function fragmentLength(fragmentKey) {
+    return String(fragmentKey || "").split(",").reduce((total, part) => {
+      const [startText, endText] = part.trim().split("-", 2);
+      const start = Number(startText);
+      const end = Number(endText);
+      return total + (Number.isInteger(start) && Number.isInteger(end) && end >= start ? end - start + 1 : 0);
+    }, 0);
+  }
+
+  function compactHistogramEntries(rawEntries, maxBins = 12) {
+    const entries = (Array.isArray(rawEntries) ? rawEntries : [])
+      .map((entry) => ({ size: Number(entry?.size), count: Number(entry?.count) }))
+      .filter((entry) => Number.isFinite(entry.size) && entry.size >= 0 && entry.count > 0)
+      .sort((left, right) => left.size - right.size);
+    if (entries.length <= maxBins) {
+      return entries.map((entry) => ({ start: entry.size, end: entry.size, count: entry.count }));
+    }
+    const min = entries[0].size;
+    const max = entries[entries.length - 1].size;
+    const width = Math.max(1, Math.ceil((max - min + 1) / maxBins));
+    const bins = new Map();
+    for (const entry of entries) {
+      const start = min + Math.floor((entry.size - min) / width) * width;
+      const end = Math.min(max, start + width - 1);
+      const key = `${start}:${end}`;
+      const bin = bins.get(key) || { start, end, count: 0 };
+      bin.count += entry.count;
+      bins.set(key, bin);
+    }
+    return [...bins.values()].sort((left, right) => left.start - right.start);
+  }
+
+  function renderIdleHistogram(container, titleText, entries, selectedValue, valueFormatter = String) {
+    const section = document.createElement("section");
+    section.className = "structure-idle-histogram";
+    const title = document.createElement("span");
+    title.className = "structure-hover-histogram-title";
+    title.textContent = titleText;
+    section.appendChild(title);
+    const bins = compactHistogramEntries(entries);
+    if (bins.length === 0) {
+      section.innerHTML += '<p class="structure-hover-empty">No distribution available.</p>';
+      container.appendChild(section);
+      return;
+    }
+    const maxCount = Math.max(...bins.map((bin) => bin.count), 1);
+    const chart = document.createElement("div");
+    chart.className = "structure-idle-histogram-chart";
+    chart.style.gridTemplateColumns = `repeat(${bins.length}, minmax(0, 1fr))`;
+    for (const bin of bins) {
+      const selected = Number.isFinite(selectedValue) && selectedValue >= bin.start && selectedValue <= bin.end;
+      const column = document.createElement("div");
+      column.className = `structure-idle-histogram-column${selected ? " selected" : ""}`;
+      const bar = document.createElement("div");
+      bar.className = "structure-idle-histogram-bar";
+      bar.style.height = `${Math.max(5, (bin.count / maxCount) * 100)}%`;
+      const label = document.createElement("span");
+      label.textContent = bin.start === bin.end
+        ? valueFormatter(bin.start)
+        : `${valueFormatter(bin.start)}–${valueFormatter(bin.end)}`;
+      column.title = `${label.textContent}: ${bin.count.toLocaleString()} interfaces${selected ? " · current interface" : ""}`;
+      column.append(bar, label);
+      chart.appendChild(column);
+    }
+    section.appendChild(chart);
+    container.appendChild(section);
+  }
+
+  function renderIdlePlipTypes(container, payload) {
+    const counts = new Map();
+    if (payload?.plip_type_counts && typeof payload.plip_type_counts === "object") {
+      for (const [bit, count] of Object.entries(payload.plip_type_counts)) {
+        counts.set(Number(bit), Number(count) || 0);
+      }
+    } else {
+      for (const interaction of Array.isArray(payload?.plip_interactions) ? payload.plip_interactions : []) {
+        for (const type of plipTypesForMask(Number(interaction?.[2]) || 0)) {
+          counts.set(type.bit, (counts.get(type.bit) || 0) + 1);
+        }
+      }
+    }
+    const entries = PLIP_INTERACTION_TYPES
+      .map((type) => ({ ...type, count: counts.get(type.bit) || 0 }))
+      .filter((entry) => entry.count > 0)
+      .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+    const section = document.createElement("section");
+    section.className = "structure-idle-plip-types";
+    const title = document.createElement("span");
+    title.className = "structure-hover-histogram-title";
+    title.textContent = "PLIP Types In This Interface";
+    section.appendChild(title);
+    if (entries.length === 0) {
+      section.innerHTML += '<p class="structure-hover-empty">No PLIP interactions in this interface.</p>';
+      container.appendChild(section);
+      return;
+    }
+    const total = entries.reduce((sum, entry) => sum + entry.count, 0);
+    const layout = document.createElement("div");
+    layout.className = "structure-idle-plip-layout";
+    const pie = document.createElement("div");
+    pie.className = "structure-idle-plip-pie";
+    const legend = document.createElement("div");
+    legend.className = "structure-idle-plip-legend";
+    const slices = [];
+    let offset = 0;
+    for (const entry of entries) {
+      const share = (entry.count / total) * 100;
+      slices.push(`${entry.color} ${offset}% ${offset + share}%`);
+      offset += share;
+      const row = document.createElement("div");
+      row.className = "structure-idle-plip-row";
+      row.innerHTML = `<span class="structure-distribution-swatch" style="background:${entry.color}"></span><span>${entry.label}</span><strong>${entry.count.toLocaleString()}</strong>`;
+      legend.appendChild(row);
+    }
+    pie.style.background = `conic-gradient(${slices.join(", ")})`;
+    layout.append(pie, legend);
+    section.appendChild(layout);
+    container.appendChild(section);
+  }
+
+  function renderStructureIdleStats(row, payload, summary) {
+    const root = elements.structureIdleStats;
+    root.replaceChildren();
+    const heading = document.createElement("h3");
+    heading.textContent = "Current Interface";
+    root.appendChild(heading);
+    renderIdlePlipTypes(root, payload);
+    const distributionsTitle = document.createElement("h3");
+    distributionsTitle.textContent = "Pfam Distributions";
+    root.appendChild(distributionsTitle);
+    const interfaceColumns = payload?.interface_msa_columns_a || payload?.interface_residue_ids || [];
+    const interfaceSize = new Set(interfaceColumns.map(Number).filter(Number.isFinite)).size;
+    const domainLength = fragmentLength(payload?.fragment_key || row?.fragment_key);
+    const alignedSequence = String(payload?.aligned_sequence || row?.aligned_sequence || "");
+    const alignedResidues = [...alignedSequence].filter((char) => /^[A-Za-z]$/.test(char)).length;
+    const coverage = domainLength > 0 && alignedResidues > 0
+      ? Math.max(0, Math.min(100, Math.round((domainLength / alignedResidues) * 100)))
+      : NaN;
+    const plipCount = Number.isFinite(Number(payload?.plip_interaction_count))
+      ? Number(payload.plip_interaction_count)
+      : Array.isArray(payload?.plip_interactions) ? payload.plip_interactions.length : 0;
+    renderIdleHistogram(root, "Interface Size", summary?.interface_size_histogram, interfaceSize);
+    renderIdleHistogram(root, "Domain Length", summary?.domain_length_histogram, domainLength);
+    renderIdleHistogram(root, "Pfam Row Coverage", summary?.pfam_row_coverage_histogram, coverage, (value) => `${value}%`);
+    renderIdleHistogram(root, "PLIP Interaction Count", summary?.plip_interaction_count_histogram, plipCount);
+  }
+
+  async function updateStructureIdleStats(row, payload) {
+    elements.structureIdleStats.innerHTML = '<p class="structure-hover-empty">Loading interface statistics…</p>';
+    const params = new URLSearchParams({ file: interfaceSelect.value });
+    appendSelectionSettingsToParams(params, state.selectionSettings);
+    const url = `/api/interface-summary?${params.toString()}`;
+    let request = structureInterfaceSummaryCache.get(url);
+    if (!request) {
+      request = fetchJson(url).catch((error) => {
+        structureInterfaceSummaryCache.delete(url);
+        throw error;
+      });
+      structureInterfaceSummaryCache.set(url, request);
+    }
+    try {
+      const response = await request;
+      if (state.structureData?.row !== row) return;
+      renderStructureIdleStats(row, payload, response?.interface_summary || {});
+    } catch (error) {
+      if (state.structureData?.row !== row) return;
+      elements.structureIdleStats.innerHTML = `<p class="structure-hover-empty">${String(error?.message || "Interface statistics unavailable.")}</p>`;
+    }
+  }
+
   function resetStructurePanel(message = "Click a row name or use the button to open the structure.") {
     setStructureLoadingUi(false);
     elements.structureModalTitle.textContent = "Structure";
     elements.structureStatus.textContent = message;
     elements.structureModalSubtitle.textContent = message;
-    elements.structureModalStatus.textContent =
-      "Open display settings with D to adjust regions, clipping, DOF, effects, and geometry.";
+    elements.structureModalStatus.textContent = "";
     state.structureResidueLookup = null;
     state.structureData = null;
     state.structureRenderedModelKey = null;
@@ -1630,6 +1813,13 @@ export function createStructureViewController({
     resetStructureHmmScoresPanel();
     renderStructurePartnerControl(null);
     elements.structureHoverCard.classList.add("hidden");
+    elements.structurePlipHoverCard.classList.add("hidden");
+    elements.structurePlipColumnCard.classList.add("hidden");
+    elements.structureResidueContext.classList.add("hidden");
+    elements.structureFamilyColumnContext.classList.add("hidden");
+    elements.structureHoverPlaceholder.classList.remove("hidden");
+    elements.structureIdleStats.textContent = "Hover a main-domain residue or PLIP interaction line to inspect it.";
+    plipHoverRequestToken += 1;
     setStructureHoverDetails(null);
     setStructureHoverHistogram(null);
     setStructureHoverDistribution(null);
@@ -1654,14 +1844,19 @@ export function createStructureViewController({
       conservedness: "-",
       columnIndex: null,
     };
-    const items = [
+    const residueItems = [
       values.residueId,
       values.aminoAcid,
-      values.conservedness,
-      values.columnIndex === null || values.columnIndex === undefined ? "-" : values.columnIndex,
     ];
     [...elements.structureHoverDetails.querySelectorAll("dd")].forEach((el, index) => {
-      el.textContent = String(items[index]);
+      el.textContent = String(residueItems[index]);
+    });
+    const columnItems = [
+      values.columnIndex === null || values.columnIndex === undefined ? "-" : values.columnIndex,
+      values.conservedness,
+    ];
+    [...elements.structureFamilyColumnDetails.querySelectorAll("dd")].forEach((el, index) => {
+      el.textContent = String(columnItems[index]);
     });
   }
 
@@ -1722,6 +1917,181 @@ export function createStructureViewController({
       elements.structureHoverDistributionLegend.append(item);
     }
     elements.structureHoverDistributionChart.style.background = `conic-gradient(${slices.join(", ")})`;
+  }
+
+  function plipTypesForMask(mask) {
+    const numericMask = Number(mask) || 0;
+    return PLIP_INTERACTION_TYPES.filter((type) => (numericMask & type.bit) !== 0);
+  }
+
+  function plipInteractionsForResidue(payload, residueId) {
+    const numericResidueId = Number(residueId);
+    return (Array.isArray(payload?.plip_interactions) ? payload.plip_interactions : [])
+      .filter((item) => Array.isArray(item) && Number(item[0]) === numericResidueId)
+      .map((item) => ({
+        mainResidueId: Number(item[0]),
+        partnerResidueId: Number(item[1]),
+        mask: Number(item[2]),
+        types: plipTypesForMask(item[2]),
+      }));
+  }
+
+  function renderExactPlipInteractions(payload, residueId) {
+    const interactions = plipInteractionsForResidue(payload, residueId);
+    elements.structurePlipExactTitle.textContent = "Interactions In This Interface";
+    elements.structurePlipExactList.replaceChildren();
+    if (interactions.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "structure-hover-empty";
+      empty.textContent = "This residue has no PLIP interactions in the selected interface.";
+      elements.structurePlipExactList.append(empty);
+      return;
+    }
+    const countsByType = new Map();
+    for (const interaction of interactions) {
+      for (const type of interaction.types) {
+        countsByType.set(type.bit, (countsByType.get(type.bit) || 0) + 1);
+      }
+    }
+    const entries = PLIP_INTERACTION_TYPES
+      .map((type) => ({ ...type, count: countsByType.get(type.bit) || 0 }))
+      .filter((entry) => entry.count > 0);
+    for (const entry of entries) {
+      const row = document.createElement("div");
+      row.className = "structure-plip-exact-row";
+      const swatch = document.createElement("span");
+      swatch.className = "structure-distribution-swatch";
+      swatch.style.background = entry.color;
+      const type = document.createElement("span");
+      type.className = "structure-plip-exact-type";
+      type.textContent = entry.label;
+      const count = document.createElement("span");
+      count.className = "structure-plip-exact-count";
+      count.textContent = entry.count.toLocaleString();
+      row.append(swatch, type, count);
+      elements.structurePlipExactList.append(row);
+    }
+  }
+
+  function plipColumnDistributionUrl(columnIndex, payload) {
+    const params = new URLSearchParams({
+      file: interfaceSelect.value,
+      column: String(columnIndex),
+      partner: "__all__",
+    });
+    appendSelectionSettingsToParams(params, state.selectionSettings);
+    return `/api/column-statistics?${params.toString()}`;
+  }
+
+  function renderPlipColumnDistribution(payload, columnIndex) {
+    const rowMaskCounts = payload?.row_mask_counts || {};
+    const weightedTypeCounts = new Map();
+    for (const [maskValue, rawCount] of Object.entries(rowMaskCounts)) {
+      const types = plipTypesForMask(Number(maskValue) || 0);
+      const count = Number(rawCount) || 0;
+      if (types.length === 0 || count <= 0) {
+        continue;
+      }
+      const weightPerType = count / types.length;
+      for (const type of types) {
+        weightedTypeCounts.set(type.bit, (weightedTypeCounts.get(type.bit) || 0) + weightPerType);
+      }
+    }
+    const interactionEntries = PLIP_INTERACTION_TYPES
+      .map((type) => ({ ...type, count: weightedTypeCounts.get(type.bit) || 0 }))
+      .filter((entry) => entry.count > 0)
+      .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+    const residueRowCount = Object.values(payload?.residue_counts || {})
+      .reduce((sum, count) => sum + (Number(count) || 0), 0);
+    const interactionRows = interactionEntries.reduce((sum, entry) => sum + entry.count, 0);
+    const noInteractionCount = Math.max(0, residueRowCount - interactionRows);
+    const entries = [
+      ...interactionEntries,
+      ...(noInteractionCount > 0
+        ? [{ label: "No interaction", color: "#a9a397", count: noInteractionCount }]
+        : []),
+    ];
+    const total = entries.reduce((sum, entry) => sum + entry.count, 0);
+    elements.structurePlipColumnTitle.textContent = `PLIP Interaction Makeup · Column ${columnIndex}`;
+    elements.structurePlipColumnBars.replaceChildren();
+    if (total <= 0) {
+      const empty = document.createElement("p");
+      empty.className = "structure-hover-empty";
+      empty.textContent = "No family rows are available at this column.";
+      elements.structurePlipColumnBars.append(empty);
+    } else {
+      const maxShare = Math.max(...entries.map((entry) => entry.count / total), 0.01);
+      for (const entry of entries) {
+        const share = (entry.count / total) * 100;
+        const row = document.createElement("div");
+        row.className = "structure-hist-row";
+        const label = document.createElement("span");
+        label.className = "structure-hist-label";
+        label.textContent = entry.label;
+        const bar = document.createElement("div");
+        bar.className = "structure-hist-bar";
+        const fill = document.createElement("div");
+        fill.className = "structure-hist-fill";
+        fill.style.background = entry.color;
+        fill.style.width = `${Math.max(4, ((entry.count / total) / maxShare) * 100)}%`;
+        const value = document.createElement("span");
+        value.className = "structure-hist-value";
+        value.textContent = share > 0 && share < 1 ? "<1%" : `${Math.round(share)}%`;
+        bar.append(fill);
+        row.append(label, bar, value);
+        elements.structurePlipColumnBars.append(row);
+      }
+    }
+  }
+
+  async function updatePlipHoverInformation(residueId, columnIndex, payload, selectedResidue = "") {
+    const requestToken = ++plipHoverRequestToken;
+    elements.structureHoverPlaceholder.classList.add("hidden");
+    elements.structureResidueContext.classList.remove("hidden");
+    elements.structureFamilyColumnContext.classList.remove("hidden");
+    elements.structurePlipColumnCard.classList.remove("hidden");
+    renderExactPlipInteractions(payload, residueId);
+    if (!Number.isInteger(Number(columnIndex)) || Number(columnIndex) < 0) {
+      elements.structurePlipColumnTitle.textContent = "PLIP Interaction Makeup";
+      elements.structurePlipColumnBars.innerHTML =
+        '<p class="structure-hover-empty">No MSA column mapping is available.</p>';
+      return;
+    }
+    const numericColumnIndex = Number(columnIndex);
+    elements.structurePlipColumnTitle.textContent = `PLIP Interaction Makeup · Column ${numericColumnIndex}`;
+    elements.structurePlipColumnBars.innerHTML =
+      '<p class="structure-hover-empty">Loading column PLIP distribution…</p>';
+    const url = plipColumnDistributionUrl(numericColumnIndex, payload);
+    let request = plipColumnDistributionCache.get(url);
+    if (!request) {
+      request = fetchJson(url).catch((error) => {
+        plipColumnDistributionCache.delete(url);
+        throw error;
+      });
+      plipColumnDistributionCache.set(url, request);
+    }
+    try {
+      const distribution = await request;
+      if (requestToken !== plipHoverRequestToken) {
+        return;
+      }
+      setStructureHoverHistogram(
+        topResiduesForColumn(numericColumnIndex, selectedResidue, distribution)
+      );
+      setStructureHoverDistribution(
+        columnStateDistribution(numericColumnIndex, undefined, distribution)
+      );
+      renderPlipColumnDistribution(distribution, numericColumnIndex);
+    } catch (error) {
+      if (requestToken !== plipHoverRequestToken) {
+        return;
+      }
+      elements.structurePlipColumnBars.replaceChildren();
+      const message = document.createElement("p");
+      message.className = "structure-hover-empty";
+      message.textContent = String(error?.message || "PLIP distribution unavailable.");
+      elements.structurePlipColumnBars.append(message);
+    }
   }
 
   function openStructureModal() {
@@ -1817,7 +2187,64 @@ export function createStructureViewController({
     };
   }
 
+  function structureAlignmentRow(row, payload) {
+    const rowResidueIds = Array.isArray(row?.residueIds)
+      ? row.residueIds
+      : Array.isArray(row?.residue_ids)
+        ? row.residue_ids
+        : [];
+    if (rowResidueIds.some((residueId) => residueId !== null && residueId !== undefined)) {
+      return row;
+    }
+    if (!Array.isArray(payload?.residue_ids) || payload.residue_ids.length === 0) {
+      return row;
+    }
+    return {
+      ...row,
+      aligned_sequence: String(payload.aligned_sequence || row?.aligned_sequence || ""),
+      residueIds: payload.residue_ids,
+      has_alignment: true,
+      synthetic: false,
+    };
+  }
+
   function handleStructureHover(hoverPayload) {
+    if (hoverPayload?.kind === "plip") {
+      const interactionTypes = Array.isArray(hoverPayload.interactionTypes)
+        ? hoverPayload.interactionTypes.filter(Boolean)
+        : [];
+      elements.structureHoverCard.classList.add("hidden");
+      elements.structureHoverPlaceholder.classList.add("hidden");
+      elements.structurePlipHoverTypes.textContent = interactionTypes.length
+        ? interactionTypes.join(" + ")
+        : `Interaction mask ${hoverPayload.mask ?? "-"}`;
+      elements.structurePlipHoverResidues.textContent =
+        `${hoverPayload.mainResidueId ?? "-"} ↔ ${hoverPayload.partnerResidueId ?? "-"}`;
+      const mainResidueId = Number(hoverPayload.mainResidueId);
+      const mapped = state.structureResidueLookup?.get(mainResidueId);
+      setStructureHoverDetails({
+        residueId: mainResidueId,
+        aminoAcid: mapped?.aminoAcid || "-",
+        conservedness:
+          mapped?.conservedness === "-" || mapped?.conservedness === undefined
+            ? "-"
+            : `${mapped.conservedness}%`,
+        columnIndex: mapped?.columnIndex ?? null,
+      });
+      elements.structurePlipHoverColumn.textContent =
+        mapped?.columnIndex === null || mapped?.columnIndex === undefined
+          ? "-"
+          : String(mapped.columnIndex);
+      elements.structurePlipHoverCard.classList.remove("hidden");
+      void updatePlipHoverInformation(
+        mainResidueId,
+        mapped?.columnIndex ?? null,
+        state.structureData?.payload,
+        mapped?.aminoAcid || ""
+      );
+      return;
+    }
+    elements.structurePlipHoverCard.classList.add("hidden");
     const residueIds = [hoverPayload?.residueId, ...(Array.isArray(hoverPayload?.residueIds) ? hoverPayload.residueIds : [])]
       .map((residueId) => Number(residueId))
       .filter((residueId) => Number.isFinite(residueId));
@@ -1827,14 +2254,27 @@ export function createStructureViewController({
       return;
     }
     const hover = formatStructureHover({ ...hoverPayload, residueId });
+    elements.structureHoverPlaceholder.classList.add("hidden");
     elements.structureHoverCard.classList.remove("hidden");
     setStructureHoverDetails(hover);
-    setStructureHoverHistogram(topResiduesForColumn(hover.columnIndex, hover.residueLetter));
-    setStructureHoverDistribution(columnStateDistribution(hover.columnIndex));
+    setStructureHoverHistogram(null);
+    setStructureHoverDistribution(null);
+    void updatePlipHoverInformation(
+      residueId,
+      hover.columnIndex,
+      state.structureData?.payload,
+      hover.residueLetter
+    );
   }
 
   function clearStructureHover() {
+    plipHoverRequestToken += 1;
     elements.structureHoverCard.classList.add("hidden");
+    elements.structurePlipHoverCard.classList.add("hidden");
+    elements.structurePlipColumnCard.classList.add("hidden");
+    elements.structureResidueContext.classList.add("hidden");
+    elements.structureFamilyColumnContext.classList.add("hidden");
+    elements.structureHoverPlaceholder.classList.remove("hidden");
     setStructureHoverDetails(null);
     setStructureHoverHistogram(null);
     setStructureHoverDistribution(null);
@@ -1847,6 +2287,7 @@ export function createStructureViewController({
     }
 
     const { row, payload, modelText } = structure;
+    void updateStructureIdleStats(row, payload);
     const viewer = getStructureViewer();
     const currentModelKey = structure.modelKey || structureModelKey(row, payload);
     const currentModelIdentityKey = structure.modelIdentityKey || structureModelIdentityKey(payload);
@@ -1870,7 +2311,7 @@ export function createStructureViewController({
       renderedNotified = true;
       options.onRendered?.();
     };
-    state.structureResidueLookup = buildStructureResidueLookup(row);
+    state.structureResidueLookup = buildStructureResidueLookup(structureAlignmentRow(row, payload));
     const residueStyles = columnResidueStyles(state.structureResidueLookup);
     const markerResidueStyles = structureMarkerResidueStyles(state.structureResidueLookup);
     const displaySettings = structureDisplaySettingsForView("structure");
@@ -1963,14 +2404,7 @@ export function createStructureViewController({
       `partner range: ${partnerRanges}` +
       `${payload.matched_partners.join(", ") ? ` | partners: ${payload.matched_partners.join(", ")}` : ""}` +
       `${alignmentNote}`;
-    elements.structureModalStatus.textContent = state.structureColumnView
-      ? `Main domain uses MSA column colors 0-${msaColumnMaxIndex()}. Region styles, alpha, and contact appearance can be adjusted from Display.${markerStatusNote}`
-      : `Main interface: ${payload.interface_residue_ids.length} | ` +
-        `Main surface: ${payload.surface_residue_ids.length} | ` +
-        `Partner interface: ${payload.partner_interface_residue_ids.length} | ` +
-        `Partner surface: ${payload.partner_surface_residue_ids.length} | ` +
-        `Contacts: ${residueContactPairs(payload).length} | ` +
-        `AlphaFold: ${payload.model_source || "unknown"}${markerNote}`;
+    elements.structureModalStatus.textContent = "";
     syncStructureHmmScoresButton(false);
     syncColumnLegends();
   }

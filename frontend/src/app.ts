@@ -1453,12 +1453,28 @@ function activeRepresentativeInterfaceStats() {
   return state.interface.partnerColumnStats?.get(state.selectedPartner) || null;
 }
 
-function topResiduesForColumn(columnIndex, selectedResidue) {
-  return getTopResiduesForColumn(state.msa, state.filteredRowIndexes, columnIndex, selectedResidue);
+function topResiduesForColumn(columnIndex, selectedResidue, serverStats = null) {
+  return getTopResiduesForColumn(
+    state.msa,
+    state.filteredRowIndexes,
+    columnIndex,
+    selectedResidue,
+    serverStats
+  );
 }
 
-function columnStateDistribution(columnIndex, rowIndexes = state.filteredRowIndexes) {
-  return getColumnStateDistribution(state.msa, rowIndexes, columnIndex, overlayStateForRow);
+function columnStateDistribution(
+  columnIndex,
+  rowIndexes = state.filteredRowIndexes,
+  serverStats = null
+) {
+  return getColumnStateDistribution(
+    state.msa,
+    rowIndexes,
+    columnIndex,
+    overlayStateForRow,
+    serverStats
+  );
 }
 
 function representativeResidueStyles(row, clusterLensData = null) {

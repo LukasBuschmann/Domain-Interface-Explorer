@@ -98,22 +98,29 @@ export function buildStructureResidueLookup(row, conservationVector) {
   return lookup;
 }
 
-export function topResiduesForColumn(msa, filteredRowIndexes, columnIndex, selectedResidue) {
+export function topResiduesForColumn(msa, filteredRowIndexes, columnIndex, selectedResidue, serverStats = null) {
   if (!msa || columnIndex === null || columnIndex === undefined) {
     return [];
   }
-  const counts = new Map();
-  const denominator = filteredRowIndexes.length;
+  const serverCounts = serverStats?.residue_counts;
+  const counts = serverCounts && typeof serverCounts === "object"
+    ? new Map(Object.entries(serverCounts).map(([residue, count]) => [residue, Number(count) || 0]))
+    : new Map();
+  const denominator = serverStats
+    ? Number(serverStats.row_count || 0)
+    : filteredRowIndexes.length;
   if (denominator === 0) {
     return [];
   }
-  for (const rowIndex of filteredRowIndexes) {
-    const residue = msa.rows[rowIndex]?.aligned_sequence?.[columnIndex];
-    if (!/^[A-Za-z]$/.test(residue || "")) {
-      continue;
+  if (!serverStats) {
+    for (const rowIndex of filteredRowIndexes) {
+      const residue = msa.rows[rowIndex]?.aligned_sequence?.[columnIndex];
+      if (!/^[A-Za-z]$/.test(residue || "")) {
+        continue;
+      }
+      const key = residue.toUpperCase();
+      counts.set(key, (counts.get(key) || 0) + 1);
     }
-    const key = residue.toUpperCase();
-    counts.set(key, (counts.get(key) || 0) + 1);
   }
   const selectedKey = String(selectedResidue || "").toUpperCase();
   const ranked = [...counts.entries()]
@@ -136,32 +143,43 @@ export function topResiduesForColumn(msa, filteredRowIndexes, columnIndex, selec
   return topFive;
 }
 
-export function columnStateDistribution(msa, filteredRowIndexes, columnIndex, overlayStateForRow) {
+export function columnStateDistribution(msa, filteredRowIndexes, columnIndex, overlayStateForRow, serverStats = null) {
   if (!msa || columnIndex === null || columnIndex === undefined) {
     return [];
   }
-  const totals = { interface: 0, surface: 0, core: 0, gap: 0 };
-  const denominator = filteredRowIndexes.length;
+  const totals = serverStats?.state_counts
+    ? {
+        interface: Number(serverStats.state_counts.interface || 0),
+        surface: Number(serverStats.state_counts.surface || 0),
+        core: Number(serverStats.state_counts.core || 0),
+        gap: Number(serverStats.state_counts.gap || 0),
+      }
+    : { interface: 0, surface: 0, core: 0, gap: 0 };
+  const denominator = serverStats
+    ? Number(serverStats.row_count || 0)
+    : filteredRowIndexes.length;
   if (denominator === 0) {
     return [];
   }
-  for (const rowIndex of filteredRowIndexes) {
-    const row = msa.rows[rowIndex];
-    const residue = row?.aligned_sequence?.[columnIndex];
-    if (!/^[A-Za-z]$/.test(residue || "")) {
-      totals.gap += 1;
-      continue;
+  if (!serverStats) {
+    for (const rowIndex of filteredRowIndexes) {
+      const row = msa.rows[rowIndex];
+      const residue = row?.aligned_sequence?.[columnIndex];
+      if (!/^[A-Za-z]$/.test(residue || "")) {
+        totals.gap += 1;
+        continue;
+      }
+      const overlay = overlayStateForRow(row);
+      if (overlay?.interface.has(columnIndex)) {
+        totals.interface += 1;
+        continue;
+      }
+      if (overlay?.surface.has(columnIndex)) {
+        totals.surface += 1;
+        continue;
+      }
+      totals.core += 1;
     }
-    const overlay = overlayStateForRow(row);
-    if (overlay?.interface.has(columnIndex)) {
-      totals.interface += 1;
-      continue;
-    }
-    if (overlay?.surface.has(columnIndex)) {
-      totals.surface += 1;
-      continue;
-    }
-    totals.core += 1;
   }
   return [
     { key: "interface", label: "Interface", color: "#bc402d", count: totals.interface, fraction: totals.interface / denominator, percent: Math.round((totals.interface / denominator) * 100) },
