@@ -1680,6 +1680,31 @@
                   <input id="structure-display-contact-radius" class="structure-display-input" type="range" min="0.02" max="0.18" step="0.005" data-structure-display-setting="contactRadius" data-representation-setting="true">
                 </label>
               </details>
+              <details class="structure-display-fieldset" open>
+                <summary class="structure-display-fieldset-title">PLIP interactions</summary>
+                <div class="structure-display-toggle-grid">
+                  <label><input id="structure-display-plip-visible" type="checkbox" data-structure-display-setting="plipInteractionsVisible" data-representation-setting="true"> Draw PLIP lines</label>
+                </div>
+                <label>
+                  <span>PLIP opacity <button class="structure-display-help" type="button" title="Controls the opacity of PLIP residue-pair lines.">?</button></span>
+                  <input id="structure-display-plip-opacity" class="structure-display-input" type="range" min="0.05" max="1" step="0.01" data-structure-display-setting="plipInteractionOpacity" data-representation-setting="true">
+                </label>
+                <label>
+                  <span>PLIP width <button class="structure-display-help" type="button" title="Controls PLIP residue-pair line thickness.">?</button></span>
+                  <input id="structure-display-plip-radius" class="structure-display-input" type="range" min="0.02" max="0.30" step="0.005" data-structure-display-setting="plipInteractionRadius" data-representation-setting="true">
+                </label>
+                <div class="plip-interaction-key" aria-label="PLIP interaction color key">
+                  <span style="--plip-key-color:#d79b28">Hydrophobic</span>
+                  <span style="--plip-key-color:#2aa7c9">H-bond</span>
+                  <span style="--plip-key-color:#dc4d4d">Salt bridge</span>
+                  <span style="--plip-key-color:#8c62c7">Pi stacking</span>
+                  <span style="--plip-key-color:#d35da5">Pi-cation</span>
+                  <span style="--plip-key-color:#4f83db">Water bridge</span>
+                  <span style="--plip-key-color:#55a868">Halogen</span>
+                  <span style="--plip-key-color:#7b8794">Metal</span>
+                </div>
+                <small class="plip-interaction-key-note">Multiple types blend their colors and use a thicker line.</small>
+              </details>
               <details class="structure-display-fieldset">
                 <summary class="structure-display-fieldset-title">Cartoon geometry</summary>
                 <label>
