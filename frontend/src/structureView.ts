@@ -1686,10 +1686,11 @@ export function createStructureViewController({
       bar.className = "structure-idle-histogram-bar";
       bar.style.height = `${Math.max(5, (bin.count / maxCount) * 100)}%`;
       const label = document.createElement("span");
-      label.textContent = bin.start === bin.end
+      label.textContent = valueFormatter(bin.end);
+      const rangeLabel = bin.start === bin.end
         ? valueFormatter(bin.start)
         : `${valueFormatter(bin.start)}–${valueFormatter(bin.end)}`;
-      column.title = `${label.textContent}: ${bin.count.toLocaleString()} interfaces${selected ? " · current interface" : ""}`;
+      column.title = `${rangeLabel}: ${bin.count.toLocaleString()} interfaces${selected ? " · current interface" : ""}`;
       column.append(bar, label);
       chart.appendChild(column);
     }
