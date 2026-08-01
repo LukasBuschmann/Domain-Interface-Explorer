@@ -942,6 +942,17 @@ export function createClusterCompareController({ state, elements, interfaceSelec
         }
         centerClusterCompareDomains({ nudge: Boolean(options.nudge) });
     }
+    function refreshRepresentativeClusterTileStyles(tile) {
+        if (state.clusterCompareMode !== "representative-clusters" ||
+            !tile?.row ||
+            !tile?.entry?.clusterSummary ||
+            !tile?.payload) {
+            return;
+        }
+        const stylePayload = representativeClusterCompareTileStyles(tile.row, tile.entry.clusterSummary, tile.payload);
+        tile.residueStyles = stylePayload.residueStyles || [];
+        tile.clusterLensData = stylePayload.clusterLensData || null;
+    }
     async function renderClusterCompareTile(tileIndex) {
         const tile = state.clusterCompareTiles[tileIndex];
         if (!tile || tile.error || !tile.viewerRoot) {
@@ -952,6 +963,7 @@ export function createClusterCompareController({ state, elements, interfaceSelec
         if (!payload || typeof modelText !== "string" || modelText.length === 0) {
             throw new Error("Structure preview is missing model data.");
         }
+        refreshRepresentativeClusterTileStyles(tile);
         try {
             await loadClusterCompareTileViewer(viewer, tile, modelText);
         }

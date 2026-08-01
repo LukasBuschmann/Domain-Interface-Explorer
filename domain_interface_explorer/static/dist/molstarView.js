@@ -8,6 +8,16 @@ const PARTNER_SURFACE_COLOR = "#5b9fe3";
 const PARTNER_INTERFACE_COLOR = "#0b3f78";
 const RESIDUE_CONTACT_COLOR = "#4f4f4f";
 const REGION_COLOR_THEME_NAME = "domain-interface-region";
+const PLIP_INTERACTION_TYPES = [
+    { bit: 128, key: "metal", label: "Metal complex", color: "#7b8794" },
+    { bit: 4, key: "salt", label: "Salt bridge", color: "#dc4d4d" },
+    { bit: 2, key: "hbond", label: "Hydrogen bond", color: "#2aa7c9" },
+    { bit: 16, key: "pi-cation", label: "Pi-cation", color: "#d35da5" },
+    { bit: 8, key: "pi-stacking", label: "Pi stacking", color: "#8c62c7" },
+    { bit: 64, key: "halogen", label: "Halogen bond", color: "#55a868" },
+    { bit: 32, key: "water", label: "Water bridge", color: "#4f83db" },
+    { bit: 1, key: "hydrophobic", label: "Hydrophobic", color: "#d79b28" },
+];
 function clamp(value, min, max) {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) {
@@ -425,7 +435,7 @@ function formatPdbNumber(value) {
     const numeric = Number(value);
     return (Number.isFinite(numeric) ? numeric : 0).toFixed(3).padStart(8).slice(-8);
 }
-function contactLinePdb(modelText, payload) {
+function residuePairLinePdb(modelText, pairs, residueName = "DCL") {
     const coordinates = parsePdbCaCoordinates(modelText);
     if (coordinates.size === 0) {
         return "";
@@ -434,24 +444,102 @@ function contactLinePdb(modelText, payload) {
     const connectLines = [];
     let atomSerial = 1;
     let residueSerial = 1;
-    for (const [mainResidueId, partnerResidueId] of residueContactPairs(payload)) {
-        const start = coordinates.get(mainResidueId);
-        const end = coordinates.get(partnerResidueId);
-        if (!start || !end) {
+    for (const [mainResidueId, partnerResidueId, offset = 0] of pairs) {
+        const sourceStart = coordinates.get(mainResidueId);
+        const sourceEnd = coordinates.get(partnerResidueId);
+        if (!sourceStart || !sourceEnd) {
             continue;
         }
+        const direction = {
+            x: sourceEnd.x - sourceStart.x,
+            y: sourceEnd.y - sourceStart.y,
+            z: sourceEnd.z - sourceStart.z,
+        };
+        let perpendicular = { x: -direction.y, y: direction.x, z: 0 };
+        let perpendicularLength = Math.hypot(perpendicular.x, perpendicular.y, perpendicular.z);
+        if (perpendicularLength < 1e-6) {
+            perpendicular = { x: 0, y: -direction.z, z: direction.y };
+            perpendicularLength = Math.hypot(perpendicular.x, perpendicular.y, perpendicular.z);
+        }
+        const offsetScale = perpendicularLength > 0 ? Number(offset) / perpendicularLength : 0;
+        const shift = {
+            x: perpendicular.x * offsetScale,
+            y: perpendicular.y * offsetScale,
+            z: perpendicular.z * offsetScale,
+        };
+        const start = {
+            x: sourceStart.x + shift.x,
+            y: sourceStart.y + shift.y,
+            z: sourceStart.z + shift.z,
+        };
+        const end = {
+            x: sourceEnd.x + shift.x,
+            y: sourceEnd.y + shift.y,
+            z: sourceEnd.z + shift.z,
+        };
         const firstSerial = atomSerial;
         const secondSerial = atomSerial + 1;
         const residueId = ((residueSerial - 1) % 9000) + 1;
-        atomLines.push(`HETATM${String(firstSerial).padStart(5)} HE   DCL Z${String(residueId).padStart(4)}    ` +
+        atomLines.push(`HETATM${String(firstSerial).padStart(5)} HE   ${residueName} Z${String(residueId).padStart(4)}    ` +
             `${formatPdbNumber(start.x)}${formatPdbNumber(start.y)}${formatPdbNumber(start.z)}  1.00  0.00          He`);
-        atomLines.push(`HETATM${String(secondSerial).padStart(5)} HE   DCL Z${String(residueId).padStart(4)}    ` +
+        atomLines.push(`HETATM${String(secondSerial).padStart(5)} HE   ${residueName} Z${String(residueId).padStart(4)}    ` +
             `${formatPdbNumber(end.x)}${formatPdbNumber(end.y)}${formatPdbNumber(end.z)}  1.00  0.00          He`);
         connectLines.push(`CONECT${String(firstSerial).padStart(5)}${String(secondSerial).padStart(5)}`);
         atomSerial += 2;
         residueSerial += 1;
     }
     return atomLines.length ? `${atomLines.join("\n")}\n${connectLines.join("\n")}\nEND\n` : "";
+}
+function contactLinePdb(modelText, payload) {
+    return residuePairLinePdb(modelText, residueContactPairs(payload));
+}
+function mixedInteractionColor(types) {
+    const colors = types
+        .map((type) => String(type.color || "").replace(/^#/, ""))
+        .filter((value) => /^[0-9a-f]{6}$/i.test(value))
+        .map((value) => Number.parseInt(value, 16));
+    if (colors.length === 0) {
+        return "#ffffff";
+    }
+    const channel = (shift) => Math.round(colors.reduce((sum, color) => sum + ((color >> shift) & 0xff), 0) / colors.length);
+    const mixed = (channel(16) << 16) + (channel(8) << 8) + channel(0);
+    return `#${mixed.toString(16).padStart(6, "0")}`;
+}
+function plipInteractionGroups(payload) {
+    const groups = new Map();
+    for (const interaction of Array.isArray(payload?.plip_interactions) ? payload.plip_interactions : []) {
+        if (!Array.isArray(interaction) || interaction.length < 3) {
+            continue;
+        }
+        const mainResidueId = Number.parseInt(interaction[0], 10);
+        const partnerResidueId = Number.parseInt(interaction[1], 10);
+        const mask = Number.parseInt(interaction[2], 10);
+        if (!Number.isFinite(mainResidueId) || !Number.isFinite(partnerResidueId) || !Number.isFinite(mask)) {
+            continue;
+        }
+        const types = PLIP_INTERACTION_TYPES.filter((candidate) => (mask & candidate.bit) !== 0);
+        if (types.length === 0) {
+            continue;
+        }
+        const groupKey = String(mask);
+        if (!groups.has(groupKey)) {
+            groups.set(groupKey, {
+                key: `mask-${mask}`,
+                label: types.map((type) => type.label).join(" + "),
+                color: mixedInteractionColor(types),
+                typeCount: types.length,
+                pairs: [],
+            });
+        }
+        groups.get(groupKey).pairs.push([
+            mainResidueId,
+            partnerResidueId,
+            0,
+            mask,
+            types.map((interactionType) => interactionType.label),
+        ]);
+    }
+    return [...groups.values()].filter((group) => group.pairs.length > 0);
 }
 function residueNameForLocation(location) {
     const residueName = String(StructureProperties.atom.label_comp_id(location) || "").toUpperCase();
@@ -681,6 +769,12 @@ class DomainMolstarViewer {
         this.hoverMarkingDisabled = false;
         this.explicitHighlightActive = false;
         this.regionColorThemeRegistered = false;
+        this.plipLociMetadata = new Map();
+        this.plipLabelProvider = {
+            priority: 100,
+            label: (loci) => this.plipInteractionLabel(loci),
+        };
+        this.plipLabelProviderRegistered = false;
         this.readyPromise = null;
         this.root?.addEventListener("pointermove", (event) => {
             this.pointer = { x: event.clientX, y: event.clientY };
@@ -810,6 +904,7 @@ class DomainMolstarViewer {
             this.viewer = viewer;
             this.plugin = viewer.plugin;
             this.registerRegionColorTheme();
+            this.registerPlipLabelProvider();
             this.plugin.managers.interactivity.setProps({ granularity: "residue" });
             this.applyDisplaySettings(settings);
             return viewer;
@@ -837,6 +932,7 @@ class DomainMolstarViewer {
         this.detachHover();
         this.detachResidueClick();
         this.representationRefs = [];
+        this.plipLociMetadata.clear();
         this.currentModelText = normalizedModelText;
         this.currentResidueCoordinates = null;
         await this.plugin.clear();
@@ -924,6 +1020,7 @@ class DomainMolstarViewer {
         this.detachHover();
         this.detachResidueClick();
         await this.clearRepresentations();
+        this.plipLociMetadata.clear();
         if (generation !== this.loadGeneration) {
             return;
         }
@@ -941,6 +1038,7 @@ class DomainMolstarViewer {
             modelText: this.currentModelText,
         });
         this.attachHover(onHover, onHoverEnd);
+        this.attachResidueClick(onResidueClick);
         this.resize();
         this.render();
         onRendered?.();
@@ -1088,6 +1186,9 @@ class DomainMolstarViewer {
         }
         if (mode !== "compare" && contactsVisible) {
             await this.addResidueContactRepresentation(modelText, payload, settings);
+        }
+        if (mode !== "compare" && settings.plipInteractionsVisible !== false) {
+            await this.addPlipInteractionRepresentations(modelText, payload, settings);
         }
     }
     async addRepresentativeRepresentations(options) {
@@ -1269,14 +1370,129 @@ class DomainMolstarViewer {
         catch (_error) {
         }
     }
+    async addPlipInteractionRepresentations(modelText, payload, settings) {
+        const coordinateIds = new Set(parsePdbCaCoordinates(modelText).keys());
+        for (const group of plipInteractionGroups(payload)) {
+            try {
+                const renderedPairs = group.pairs.filter(([mainResidueId, partnerResidueId]) => coordinateIds.has(mainResidueId) && coordinateIds.has(partnerResidueId));
+                const pdb = residuePairLinePdb(modelText, renderedPairs, "PLI");
+                if (!pdb) {
+                    continue;
+                }
+                const label = `PLIP: ${group.label}`;
+                const data = await this.plugin.builders.data.rawData({ data: pdb, label });
+                this.trackRepresentationRef(data);
+                const trajectory = await this.plugin.builders.structure.parseTrajectory(data, "pdb");
+                const model = await this.plugin.builders.structure.createModel(trajectory);
+                const structure = await this.plugin.builders.structure.createStructure(model, {
+                    name: "model",
+                    params: {},
+                });
+                const structureData = structure?.cell?.obj?.data || null;
+                if (structureData) {
+                    const metadataByResidue = new Map();
+                    renderedPairs.forEach((pair, index) => {
+                        metadataByResidue.set(index + 1, {
+                            mainResidueId: pair[0],
+                            partnerResidueId: pair[1],
+                            mask: pair[3],
+                            interactionTypes: pair[4],
+                        });
+                    });
+                    this.plipLociMetadata.set(structureData.root || structureData, metadataByResidue);
+                }
+                const component = await this.plugin.builders.structure.tryCreateComponentStatic(structure, "all", { label });
+                if (!component) {
+                    continue;
+                }
+                await this.plugin.builders.structure.representation.addRepresentation(component, {
+                    type: "line",
+                    typeParams: typeParamsFor(settings, {
+                        alpha: clamp(settings.plipInteractionOpacity ?? 0.9, 0.05, 1),
+                        extra: {
+                            visuals: ["intra-bond"],
+                            sizeFactor: clamp((settings.plipInteractionRadius ?? 0.14) * 36 *
+                                (1 + 0.45 * Math.max(0, group.typeCount - 1)), 1.5, 12),
+                            linkScale: 1,
+                            linkSpacing: 0,
+                            dashCount: 0,
+                            multipleBonds: "off",
+                            ignoreHydrogens: false,
+                        },
+                    }),
+                    color: "uniform",
+                    colorParams: { value: colorFromHex(group.color) },
+                });
+            }
+            catch (_error) {
+            }
+        }
+    }
+    registerPlipLabelProvider() {
+        if (this.plipLabelProviderRegistered || !this.plugin?.managers?.lociLabels) {
+            return;
+        }
+        this.plugin.managers.lociLabels.addProvider(this.plipLabelProvider);
+        this.plipLabelProviderRegistered = true;
+    }
+    plipInteractionMetadata(loci) {
+        if (!StructureElement.Loci.is(loci) || StructureElement.Loci.isEmpty(loci)) {
+            return null;
+        }
+        const structureKey = loci.structure?.root || loci.structure;
+        const metadataByResidue = this.plipLociMetadata.get(structureKey);
+        if (!metadataByResidue) {
+            return null;
+        }
+        const firstResidue = StructureElement.Loci.firstResidue(loci);
+        const location = StructureElement.Loci.getFirstLocation(firstResidue);
+        if (!location) {
+            return null;
+        }
+        const residueId = Number(StructureProperties.residue.auth_seq_id(location));
+        return Number.isFinite(residueId) ? metadataByResidue.get(residueId) || null : null;
+    }
+    plipInteractionLabel(loci) {
+        const metadata = this.plipInteractionMetadata(loci);
+        if (!metadata) {
+            return undefined;
+        }
+        const types = Array.isArray(metadata.interactionTypes) && metadata.interactionTypes.length
+            ? metadata.interactionTypes.join(" + ")
+            : `mask ${metadata.mask}`;
+        return (`<b>PLIP: ${types}</b></br>` +
+            `Main residue ${metadata.mainResidueId} &harr; partner residue ${metadata.partnerResidueId}`);
+    }
+    normalizedInteractionLoci(current) {
+        const fallback = current?.loci;
+        if (!fallback) {
+            return fallback;
+        }
+        try {
+            return this.plugin?.managers?.interactivity?.lociHighlights
+                ?.normalizedLoci?.(current, true, true)?.loci || fallback;
+        }
+        catch (_error) {
+            return fallback;
+        }
+    }
     attachHover(onHover, onHoverEnd) {
         if (!this.plugin || typeof onHover !== "function") {
             return;
         }
         this.hoverSubscription = this.plugin.behaviors.interaction.hover.subscribe(({ current }) => {
-            const loci = current?.loci;
+            const loci = this.normalizedInteractionLoci(current);
             if (!StructureElement.Loci.is(loci) || StructureElement.Loci.isEmpty(loci)) {
                 onHoverEnd?.();
+                return;
+            }
+            const plipInteraction = this.plipInteractionMetadata(loci);
+            if (plipInteraction) {
+                onHover({
+                    kind: "plip",
+                    ...plipInteraction,
+                    pointer: this.pointer,
+                });
                 return;
             }
             if (!this.isPrimaryStructureLoci(loci)) {
@@ -1320,7 +1536,7 @@ class DomainMolstarViewer {
         return this.currentResidueCoordinates?.get(residueId) || null;
     }
     residuePickFromInteraction(event) {
-        const loci = event?.current?.loci;
+        const loci = this.normalizedInteractionLoci(event?.current);
         if (!StructureElement.Loci.is(loci) || StructureElement.Loci.isEmpty(loci)) {
             return null;
         }
@@ -1489,6 +1705,7 @@ class DomainMolstarViewer {
         this.structure = null;
         this.structureRef = null;
         this.representationRefs = [];
+        this.plipLociMetadata.clear();
         this.currentModelText = "";
         this.currentResidueCoordinates = null;
     }
@@ -1496,9 +1713,14 @@ class DomainMolstarViewer {
         this.loadGeneration += 1;
         this.detachHover();
         this.detachResidueClick();
+        if (this.plipLabelProviderRegistered) {
+            this.plugin?.managers?.lociLabels?.removeProvider?.(this.plipLabelProvider);
+            this.plipLabelProviderRegistered = false;
+        }
         this.structure = null;
         this.structureRef = null;
         this.representationRefs = [];
+        this.plipLociMetadata.clear();
         this.currentModelText = "";
         this.currentResidueCoordinates = null;
         this.displaySettingsKey = "";

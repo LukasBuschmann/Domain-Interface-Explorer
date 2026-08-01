@@ -2,6 +2,16 @@ import { CELL_WIDTH, HEADER_HEIGHT, LABEL_WIDTH, ROW_HEIGHT, TEXT_FONT, } from "
 import { fetchJson, setActiveDatasetKey } from "./api.js";
 import { interactionRowKey, interfaceFileStem, parseInteractionRowKey } from "./interfaceModel.js";
 import { appendSelectionSettingsToParams, normalizeSelectionSettings, } from "./selectionSettings.js";
+const PLIP_INTERACTION_TYPES = [
+    { bit: 1, label: "Hydrophobic", color: "#d79b28" },
+    { bit: 2, label: "Hydrogen bond", color: "#2aa7c9" },
+    { bit: 4, label: "Salt bridge", color: "#dc4d4d" },
+    { bit: 8, label: "Pi stacking", color: "#8c62c7" },
+    { bit: 16, label: "Pi-cation", color: "#d35da5" },
+    { bit: 32, label: "Water bridge", color: "#4f83db" },
+    { bit: 64, label: "Halogen bond", color: "#55a868" },
+    { bit: 128, label: "Metal complex", color: "#7b8794" },
+];
 export function createMsaViewController({ state, elements, buildPairs, activeConservationVector, conservationColor, overlayStateForRow, representativeLens, embeddingDistanceLabel, syncColumnLegends, syncRepresentativeLensControls, syncRepresentativeScopeControls, syncEmbeddingLoadingUi, syncEmbeddingMemberControls, syncEmbeddingSettingsUi, resizeEmbeddingCanvas, resizeColumnsCanvas, resizeDendrogramCanvas, renderEmbeddingPlot, renderColumnsChart, renderDendrogram, renderDendrogramLegend, renderColumnsClusterLegend, setEmbeddingInfo, setColumnsInfo, ensureEmbeddingDataLoaded, ensureEmbeddingClusteringLoaded, ensureDendrogramLoaded, resetColumnsClusterSelection, resetDendrogramPartnerSelection, resetDendrogramClusterSelection, resetEmbeddingPartnerSelection, resetEmbeddingClusterSelection, resetEmbeddingMetricSelections, resetRepresentativePartnerSelection, resetRepresentativeClusterSelection, renderRepresentativePartnerFilter, renderEmbeddingLegend, refreshRepresentativeSelection, loadInteractiveStructure, handleStructureLoadFailure, resetRepresentativePanel, resetStructurePanel, closeClusterCompareModal, closeStructureModal, resizeClusterCompareViewers, buildOverlayMaps, buildPartnerColorMap, embeddingClusterColor, embeddingClusterLabel, allColumnsClusterLabels, visibleColumnsClusters, updatePartnerOptions, syncDendrogramControls, syncDomainSizeRangeForSelectedFamily, }) {
     const { appStatus, cellDetailsPanel, columnCount, columnsClusterLegend, dendrogramRoot, detailsList, detailsBar, embeddingRoot, columnsRoot, gridCanvas, gridScroll, gridSpacer, headerCanvas, infoRoot, datasetSelect, interfaceSelect, labelsCanvas, loadingDetail, loadingLabel, loadingPanel, loadStructureButton, msaLegend, msaPanelTabs, msaClusterLegend, msaPickerButton, msaPickerFilters, msaPickerMenu, msaPickerOptions, msaPickerSearch, msaPickerSelection, msaSelect, selectionSettingsPanel, selectionSettingsToggle, selectionMinInterfaceSizeInput, partnerSelect, progressBar, representativeShell, representativeViewerRoot, rowCount, selectedRowCopy, statsPanel, structureModal, viewerPanel, viewerRoot, } = elements;
     let layoutSyncScheduled = false;
@@ -316,7 +326,7 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         item.appendChild(labelElement);
         container.appendChild(item);
     }
-    function normalizeHistogramEntries(entries) {
+    function normalizeHistogramEntries(entries, allowZero = false) {
         if (!Array.isArray(entries)) {
             return [];
         }
@@ -325,7 +335,10 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
             size: Number(entry?.size ?? entry?.length),
             count: Number(entry?.count),
         }))
-            .filter((entry) => Number.isFinite(entry.size) && entry.size > 0 && Number.isFinite(entry.count) && entry.count > 0)
+            .filter((entry) => Number.isFinite(entry.size) &&
+            (allowZero ? entry.size >= 0 : entry.size > 0) &&
+            Number.isFinite(entry.count) &&
+            entry.count > 0)
             .sort((left, right) => left.size - right.size);
     }
     function normalizeInterfaceSummary(summary) {
@@ -335,9 +348,11 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         const rawInterfaceHistogram = summary.interface_size_histogram || summary.histogramEntries;
         const rawDomainLengthHistogram = summary.domain_length_histogram || summary.domainLengthHistogramEntries;
         const rawPfamRowCoverageHistogram = summary.pfam_row_coverage_histogram || summary.pfamRowCoverageHistogramEntries;
+        const rawPlipInteractionCountHistogram = summary.plip_interaction_count_histogram || summary.plipInteractionCountHistogramEntries;
         const histogramEntries = normalizeHistogramEntries(rawInterfaceHistogram);
         const domainLengthHistogramEntries = normalizeHistogramEntries(rawDomainLengthHistogram);
         const pfamRowCoverageHistogramEntries = normalizeHistogramEntries(rawPfamRowCoverageHistogram);
+        const plipInteractionCountHistogramEntries = normalizeHistogramEntries(rawPlipInteractionCountHistogram, true);
         const datasetDomains = Number(summary.dataset_domains ?? summary.datasetDomains);
         const datasetInterfaces = Number(summary.dataset_interfaces ?? summary.datasetInterfaces);
         const uniqueInterfaces = Number(summary.unique_interfaces ?? summary.uniqueInterfaces);
@@ -346,7 +361,8 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
             !Number.isFinite(uniqueInterfaces) &&
             !Array.isArray(rawInterfaceHistogram) &&
             !Array.isArray(rawDomainLengthHistogram) &&
-            !Array.isArray(rawPfamRowCoverageHistogram)) {
+            !Array.isArray(rawPfamRowCoverageHistogram)
+            && !Array.isArray(rawPlipInteractionCountHistogram)) {
             return null;
         }
         return {
@@ -359,6 +375,9 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
             domainLengthHistogramEntries,
             pfamRowCoverageHistogramAvailable: Array.isArray(rawPfamRowCoverageHistogram),
             pfamRowCoverageHistogramEntries,
+            plipInteractionCountHistogramAvailable: Array.isArray(rawPlipInteractionCountHistogram),
+            plipInteractionCountHistogramEntries,
+            plipTypeCounts: summary.plip_type_counts || summary.plipTypeCounts || {},
         };
     }
     function currentInterfaceSummary(selected = currentMsaOption()) {
@@ -520,8 +539,8 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
                 count: entry.count,
             }));
         }
-        const minSize = entries[0]?.size || 1;
-        const maxSize = entries[entries.length - 1]?.size || minSize;
+        const minSize = entries[0]?.size ?? 1;
+        const maxSize = entries[entries.length - 1]?.size ?? minSize;
         const binWidth = Math.max(1, Math.ceil((maxSize - minSize + 1) / maxBarCount));
         const buckets = new Map();
         for (const entry of entries) {
@@ -944,6 +963,65 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
             valueUnitLabel: "",
         });
     }
+    function renderPfamInfoPlipCountHistogram(interfaceSummary) {
+        return renderPfamInfoHistogram({
+            titleText: "PLIP interactions per interface",
+            histogramAvailable: interfaceSummary?.plipInteractionCountHistogramAvailable,
+            histogramEntries: interfaceSummary?.plipInteractionCountHistogramEntries || [],
+            unavailableText: "No server PLIP-count histogram available.",
+            emptyText: "No filtered interfaces have PLIP interaction data.",
+            countSingular: "filtered interface",
+            countPlural: "filtered interfaces",
+            targetType: "plip_interaction_count",
+            noTargetsText: "No filtered interfaces are available in that PLIP-count range.",
+            valueUnitLabel: "interactions",
+        });
+    }
+    function renderPfamInfoPlipTypes(interfaceSummary) {
+        const section = document.createElement("section");
+        section.className = "pfam-info-histogram";
+        const title = document.createElement("div");
+        title.className = "pfam-info-histogram-title";
+        title.textContent = "PLIP interaction types";
+        section.appendChild(title);
+        const entries = PLIP_INTERACTION_TYPES
+            .map((type) => ({ ...type, count: Number(interfaceSummary?.plipTypeCounts?.[String(type.bit)] || 0) }))
+            .filter((entry) => entry.count > 0)
+            .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+        if (entries.length === 0) {
+            const empty = document.createElement("p");
+            empty.className = "pfam-info-histogram-empty";
+            empty.textContent = "No PLIP interactions occur in the filtered interfaces.";
+            section.appendChild(empty);
+            return section;
+        }
+        const total = entries.reduce((sum, entry) => sum + entry.count, 0);
+        const layout = document.createElement("div");
+        layout.className = "pfam-info-plip-layout";
+        const chart = document.createElement("div");
+        chart.className = "pfam-info-plip-chart";
+        let offset = 0;
+        const slices = [];
+        const legend = document.createElement("div");
+        legend.className = "pfam-info-plip-legend";
+        for (const entry of entries) {
+            const share = (entry.count / total) * 100;
+            slices.push(`${entry.color} ${offset}% ${offset + share}%`);
+            offset += share;
+            const row = document.createElement("div");
+            row.className = "pfam-info-plip-row";
+            row.innerHTML = `
+        <span class="structure-distribution-swatch" style="background:${entry.color}"></span>
+        <span>${entry.label}</span>
+        <strong>${formatPfamCount(entry.count)}</strong>
+      `;
+            legend.appendChild(row);
+        }
+        chart.style.background = `conic-gradient(${slices.join(", ")})`;
+        layout.append(chart, legend);
+        section.appendChild(layout);
+        return section;
+    }
     function renderInfoPanel() {
         if (!infoRoot) {
             return;
@@ -1030,6 +1108,8 @@ export function createMsaViewController({ state, elements, buildPairs, activeCon
         shell.appendChild(renderPfamInfoInterfaceHistogram(interfaceSummary));
         shell.appendChild(renderPfamInfoDomainLengthHistogram(interfaceSummary));
         shell.appendChild(renderPfamInfoPfamRowCoverageHistogram(interfaceSummary));
+        shell.appendChild(renderPfamInfoPlipCountHistogram(interfaceSummary));
+        shell.appendChild(renderPfamInfoPlipTypes(interfaceSummary));
         const metaGrid = document.createElement("section");
         metaGrid.className = "pfam-info-meta-grid";
         if (Number.isFinite(datasetDomainCount)) {

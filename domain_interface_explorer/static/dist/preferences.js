@@ -62,6 +62,9 @@ function optionalUnitNumber(value, fallback = "") {
     }
     return finiteNumber(value, fallback, { min: 0, max: 1 });
 }
+function percentNumber(value, fallback = 0) {
+    return finiteNumber(value, fallback, { min: 0, max: 100 });
+}
 function autoOrPositiveNumber(value, fallback = "auto") {
     if (String(value ?? "").trim().toLowerCase() === "auto" || String(value ?? "").trim() === "") {
         return "auto";
@@ -240,6 +243,8 @@ function normalizeStructureDisplaySettings(rawSettings = {}) {
     if (source.restProteinAlpha === undefined && Number.isFinite(Number(source.contextAlpha))) {
         normalized.restProteinAlpha = Number(source.contextAlpha);
     }
+    normalized.representativeClusterSupportMin = percentNumber(source.representativeClusterSupportMin, DEFAULT_STRUCTURE_DISPLAY_SETTINGS.representativeClusterSupportMin);
+    normalized.clusterOverviewClusterSupportMin = percentNumber(source.clusterOverviewClusterSupportMin, DEFAULT_STRUCTURE_DISPLAY_SETTINGS.clusterOverviewClusterSupportMin);
     return normalized;
 }
 function structureDisplayPresetId(value, fallbackName = "preset") {
