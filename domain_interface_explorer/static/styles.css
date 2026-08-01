@@ -3652,6 +3652,220 @@ select,
   white-space: nowrap;
 }
 
+.structure-hmm-overlap-bars {
+  min-width: 0;
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid rgba(215, 204, 179, 0.78);
+  border-radius: 8px;
+  background: rgba(255, 250, 240, 0.74);
+}
+
+.structure-hmm-overlap-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.structure-hmm-overlap-header strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.structure-hmm-overlap-header span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-family: "Iosevka Web", "IBM Plex Mono", monospace;
+  font-size: 11px;
+}
+
+.structure-hmm-overlap-body {
+  display: grid;
+  gap: 8px;
+}
+
+.structure-hmm-overlap-row {
+  display: grid;
+  grid-template-columns: minmax(112px, 0.9fr) minmax(128px, 1.2fr) minmax(54px, max-content);
+  align-items: center;
+  gap: 8px;
+}
+
+.structure-hmm-overlap-label {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.structure-hmm-overlap-label strong,
+.structure-hmm-overlap-label span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.structure-hmm-overlap-label strong {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.structure-hmm-overlap-label span {
+  color: var(--muted);
+  font-family: "Iosevka Web", "IBM Plex Mono", monospace;
+  font-size: 10px;
+}
+
+.structure-hmm-overlap-track {
+  position: relative;
+  height: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(215, 204, 179, 0.8);
+  border-radius: 7px;
+  background: rgba(255, 252, 245, 0.92);
+}
+
+.structure-hmm-overlap-fill {
+  position: absolute;
+  max-width: calc(100% - 6px);
+  border-radius: 999px;
+}
+
+.structure-hmm-overlap-fill-union {
+  inset: 3px auto 3px 3px;
+  background: #7d8fa3;
+  opacity: 0.32;
+}
+
+.structure-hmm-overlap-fill-both {
+  inset: 6px auto 6px 3px;
+  z-index: 1;
+  background: #2f7d62;
+  opacity: 0.96;
+  box-shadow: 0 0 0 1px rgba(255, 252, 245, 0.42);
+}
+
+.structure-hmm-overlap-value {
+  display: grid;
+  gap: 2px;
+  color: var(--text);
+  font-family: "Iosevka Web", "IBM Plex Mono", monospace;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.structure-hmm-overlap-value-cell {
+  min-width: 0;
+}
+
+.structure-hmm-union-gain-bars {
+  min-width: 0;
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid rgba(215, 204, 179, 0.78);
+  border-radius: 8px;
+  background: rgba(255, 250, 240, 0.74);
+}
+
+.structure-hmm-union-gain-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.structure-hmm-union-gain-header strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.structure-hmm-union-gain-header span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-family: "Iosevka Web", "IBM Plex Mono", monospace;
+  font-size: 11px;
+}
+
+.structure-hmm-union-gain-body {
+  display: grid;
+  gap: 8px;
+}
+
+.structure-hmm-union-gain-row {
+  display: grid;
+  grid-template-columns: minmax(112px, 0.9fr) minmax(128px, 1.2fr) minmax(84px, max-content);
+  align-items: center;
+  gap: 8px;
+}
+
+.structure-hmm-union-gain-label {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.structure-hmm-union-gain-label strong,
+.structure-hmm-union-gain-label span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.structure-hmm-union-gain-label strong {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.structure-hmm-union-gain-label span {
+  color: var(--muted);
+  font-family: "Iosevka Web", "IBM Plex Mono", monospace;
+  font-size: 10px;
+}
+
+.structure-hmm-union-gain-track {
+  position: relative;
+  height: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(215, 204, 179, 0.8);
+  border-radius: 7px;
+  background: rgba(255, 252, 245, 0.92);
+}
+
+.structure-hmm-union-gain-fill {
+  position: absolute;
+  left: 3px;
+  top: 4px;
+  bottom: 4px;
+  max-width: calc(100% - 6px);
+  min-width: 2px;
+  border-radius: 999px;
+}
+
+.structure-hmm-union-gain-fill-main {
+  background: #e17a2d;
+}
+
+.structure-hmm-union-gain-fill-partner {
+  background: #2f68b8;
+}
+
+.structure-hmm-union-gain-value {
+  color: var(--text);
+  font-family: "Iosevka Web", "IBM Plex Mono", monospace;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: right;
+  white-space: nowrap;
+}
+
 .structure-hmm-coverage-bars {
   display: grid;
   gap: 8px;
@@ -3772,6 +3986,24 @@ select,
   }
 
   .structure-hmm-gain-value {
+    text-align: left;
+  }
+
+  .structure-hmm-overlap-row {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .structure-hmm-overlap-value {
+    text-align: left;
+  }
+
+  .structure-hmm-union-gain-row {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .structure-hmm-union-gain-value {
     text-align: left;
   }
 

@@ -916,6 +916,288 @@ export function createStructureViewController({
     return parts.join(" | ");
   }
 
+  function overlapItemsForPayload(payload) {
+    return Array.isArray(payload?.hmm_overlaps) ? payload.hmm_overlaps : [];
+  }
+
+  function overlapPercentForItem(item) {
+    return percentFromItem(
+      item,
+      ["overlap_hmm_coverage_percent"],
+      ["overlap_hmm_coverage"]
+    );
+  }
+
+  function unionPercentForItem(item) {
+    return percentFromItem(
+      item,
+      ["union_hmm_coverage_percent"],
+      ["union_hmm_coverage"]
+    );
+  }
+
+  function mainUnionGainPercentForItem(item) {
+    return percentFromItem(
+      item,
+      ["main_union_hmm_coverage_gain_percent", "main_union_coverage_gain_percent"],
+      ["main_union_hmm_coverage_gain", "main_union_coverage_gain"],
+      { clamp: false }
+    );
+  }
+
+  function partnerUnionGainPercentForItem(item) {
+    return percentFromItem(
+      item,
+      ["partner_union_hmm_coverage_gain_percent", "partner_union_coverage_gain_percent"],
+      ["partner_union_hmm_coverage_gain", "partner_union_coverage_gain"],
+      { clamp: false }
+    );
+  }
+
+  function hmmOverlapLabel(item) {
+    const pfamId = String(item?.hmm_pfam_id || "");
+    const name = String(item?.hmm_name || "");
+    return name && name !== pfamId ? `${pfamId} ${name}` : pfamId || "HMM";
+  }
+
+  function hmmOverlapDetailLabel(item) {
+    const hmmLength = Number(item?.hmm_length);
+    const mainCovered = Number(item?.main_matched_hmm_covered);
+    const partnerCovered = Number(item?.partner_matched_hmm_covered);
+    const unionCovered = Number(item?.union_hmm_covered);
+    if (
+      Number.isFinite(hmmLength) &&
+      hmmLength > 0 &&
+      Number.isFinite(mainCovered) &&
+      Number.isFinite(partnerCovered) &&
+      Number.isFinite(unionCovered)
+    ) {
+      return `Main ${mainCovered}/${hmmLength} | Partner ${partnerCovered}/${hmmLength} | Union ${unionCovered}/${hmmLength}`;
+    }
+    return "No reported matched positions";
+  }
+
+  function hmmOverlapTrackTitle(item, overlapPercent, unionPercent) {
+    const hmmLength = Number(item?.hmm_length);
+    const overlapCovered = Number(item?.overlap_hmm_covered);
+    const unionCovered = Number(item?.union_hmm_covered);
+    const mainCovered = Number(item?.main_matched_hmm_covered);
+    const partnerCovered = Number(item?.partner_matched_hmm_covered);
+    const jaccardPercent = Number(item?.overlap_over_union_percent);
+    const smallerHitPercent = Number(item?.overlap_over_smaller_hit_percent);
+    const parts = [];
+    if (Number.isFinite(overlapPercent)) {
+      let label = `both ${formatCoveragePercent(overlapPercent)}`;
+      if (Number.isFinite(overlapCovered) && Number.isFinite(hmmLength) && hmmLength > 0) {
+        label += ` (${overlapCovered}/${hmmLength})`;
+      }
+      parts.push(label);
+    }
+    if (Number.isFinite(unionPercent)) {
+      let label = `either ${formatCoveragePercent(unionPercent)}`;
+      if (Number.isFinite(unionCovered) && Number.isFinite(hmmLength) && hmmLength > 0) {
+        label += ` (${unionCovered}/${hmmLength})`;
+      }
+      parts.push(label);
+    }
+    if (Number.isFinite(mainCovered)) {
+      parts.push(`main matched ${mainCovered}`);
+    }
+    if (Number.isFinite(partnerCovered)) {
+      parts.push(`partner matched ${partnerCovered}`);
+    }
+    if (Number.isFinite(jaccardPercent)) {
+      parts.push(`both/either ${formatCoveragePercent(jaccardPercent)}`);
+    }
+    if (Number.isFinite(smallerHitPercent)) {
+      parts.push(`both/smaller hit ${formatCoveragePercent(smallerHitPercent)}`);
+    }
+    return parts.join(" | ");
+  }
+
+  function renderStructureHmmOverlapBars(payload) {
+    const overlapItems = overlapItemsForPayload(payload);
+    if (overlapItems.length === 0) {
+      return null;
+    }
+    const root = document.createElement("section");
+    root.className = "structure-hmm-overlap-bars";
+
+    const header = document.createElement("div");
+    header.className = "structure-hmm-overlap-header";
+    const title = document.createElement("strong");
+    title.textContent = "HMM Position Overlap";
+    const baseline = document.createElement("span");
+    baseline.textContent = "both / model";
+    header.append(title, baseline);
+    root.appendChild(header);
+
+    const body = document.createElement("div");
+    body.className = "structure-hmm-overlap-body";
+    for (const [index, item] of overlapItems.entries()) {
+      const overlapPercent = overlapPercentForItem(item);
+      const unionPercent = unionPercentForItem(item);
+      const row = document.createElement("div");
+      row.className = `structure-hmm-overlap-row ${index % 2 === 0 ? "main" : "partner"}`;
+
+      const label = document.createElement("span");
+      label.className = "structure-hmm-overlap-label";
+      const labelTitle = document.createElement("strong");
+      labelTitle.textContent = hmmOverlapLabel(item);
+      const detail = document.createElement("span");
+      detail.textContent = hmmOverlapDetailLabel(item);
+      label.append(labelTitle, detail);
+
+      const track = document.createElement("div");
+      track.className = "structure-hmm-overlap-track";
+      track.title = hmmOverlapTrackTitle(item, overlapPercent, unionPercent);
+      if (Number.isFinite(unionPercent)) {
+        const unionFill = document.createElement("span");
+        unionFill.className = "structure-hmm-overlap-fill structure-hmm-overlap-fill-union";
+        unionFill.style.width = `${unionPercent}%`;
+        track.appendChild(unionFill);
+      }
+      if (Number.isFinite(overlapPercent)) {
+        const overlapFill = document.createElement("span");
+        overlapFill.className = "structure-hmm-overlap-fill structure-hmm-overlap-fill-both";
+        overlapFill.style.width = `${overlapPercent}%`;
+        track.appendChild(overlapFill);
+      }
+
+      const value = document.createElement("span");
+      value.className = "structure-hmm-overlap-value";
+      const overlapValue = document.createElement("span");
+      overlapValue.className = "structure-hmm-overlap-value-cell";
+      overlapValue.title = "Both matched HMM positions / model length";
+      overlapValue.textContent = formatCoveragePercent(overlapPercent);
+      value.appendChild(overlapValue);
+      row.append(label, track, value);
+      body.appendChild(row);
+    }
+    root.appendChild(body);
+    return root;
+  }
+
+  function hmmUnionGainTrackTitle(item, domainLabel, domainCovered, unionGain, unionPercent) {
+    const hmmLength = Number(item?.hmm_length);
+    const unionCovered = Number(item?.union_hmm_covered);
+    const parts = [];
+    if (Number.isFinite(unionGain)) {
+      parts.push(`${domainLabel.toLowerCase()} union gain ${formatCoverageGainPercent(unionGain)}`);
+    }
+    if (Number.isFinite(unionPercent)) {
+      let label = `union ${formatCoveragePercent(unionPercent)}`;
+      if (Number.isFinite(unionCovered) && Number.isFinite(hmmLength) && hmmLength > 0) {
+        label += ` (${unionCovered}/${hmmLength})`;
+      }
+      parts.push(label);
+    }
+    if (Number.isFinite(domainCovered)) {
+      let label = `${domainLabel.toLowerCase()} matched ${domainCovered}`;
+      if (Number.isFinite(hmmLength) && hmmLength > 0) {
+        label += `/${hmmLength}`;
+      }
+      parts.push(label);
+    }
+    return parts.join(" | ");
+  }
+
+  function hmmUnionGainDetailLabel(item, domainLabel, domainCovered) {
+    const hmmLength = Number(item?.hmm_length);
+    const unionCovered = Number(item?.union_hmm_covered);
+    if (
+      Number.isFinite(hmmLength) &&
+      hmmLength > 0 &&
+      Number.isFinite(unionCovered) &&
+      Number.isFinite(domainCovered)
+    ) {
+      return `${domainLabel} ${domainCovered}/${hmmLength} | Union ${unionCovered}/${hmmLength}`;
+    }
+    return "No reported union coverage";
+  }
+
+  function renderStructureHmmUnionGainBars(payload) {
+    const overlapItems = overlapItemsForPayload(payload);
+    const gainItems = overlapItems
+      .map((item, index) => ({
+        item,
+        index,
+        domainLabel: index === 0 ? "Main" : "Partner",
+        domainCovered: Number(
+          index === 0
+            ? item?.main_matched_hmm_covered
+            : item?.partner_matched_hmm_covered
+        ),
+        unionGain: index === 0
+          ? mainUnionGainPercentForItem(item)
+          : partnerUnionGainPercentForItem(item),
+        unionPercent: unionPercentForItem(item),
+      }))
+      .filter((entry) => Number.isFinite(entry.unionGain));
+    if (gainItems.length === 0) {
+      return null;
+    }
+
+    const root = document.createElement("section");
+    root.className = "structure-hmm-union-gain-bars";
+
+    const header = document.createElement("div");
+    header.className = "structure-hmm-union-gain-header";
+    const title = document.createElement("strong");
+    title.textContent = "Union Coverage Gain";
+    const baseline = document.createElement("span");
+    baseline.textContent = "union - domain pp";
+    header.append(title, baseline);
+    root.appendChild(header);
+
+    const body = document.createElement("div");
+    body.className = "structure-hmm-union-gain-body";
+    for (const entry of gainItems) {
+      const row = document.createElement("div");
+      row.className = "structure-hmm-union-gain-row";
+
+      const label = document.createElement("span");
+      label.className = "structure-hmm-union-gain-label";
+      const labelTitle = document.createElement("strong");
+      labelTitle.textContent = hmmOverlapLabel(entry.item);
+      const detail = document.createElement("span");
+      detail.textContent = hmmUnionGainDetailLabel(
+        entry.item,
+        entry.domainLabel,
+        entry.domainCovered
+      );
+      label.append(labelTitle, detail);
+
+      const track = document.createElement("div");
+      track.className = "structure-hmm-union-gain-track";
+      track.title = hmmUnionGainTrackTitle(
+        entry.item,
+        entry.domainLabel,
+        entry.domainCovered,
+        entry.unionGain,
+        entry.unionPercent
+      );
+      if (Number.isFinite(entry.unionGain) && entry.unionGain > 0) {
+        const fill = document.createElement("span");
+        fill.className = `structure-hmm-union-gain-fill ${
+          entry.index === 0
+            ? "structure-hmm-union-gain-fill-main"
+            : "structure-hmm-union-gain-fill-partner"
+        }`;
+        fill.style.width = `${Math.max(0, Math.min(100, entry.unionGain))}%`;
+        track.appendChild(fill);
+      }
+
+      const value = document.createElement("span");
+      value.className = "structure-hmm-union-gain-value";
+      value.textContent = formatCoverageGainPercent(entry.unionGain);
+      row.append(label, track, value);
+      body.appendChild(row);
+    }
+    root.appendChild(body);
+    return root;
+  }
+
   function appendZeroCenteredGainBar(track, value, maxAbsValue, className) {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) {
@@ -1127,6 +1409,16 @@ export function createStructureViewController({
     const gainBars = renderStructureHmmGainBars(payload, domains, hmms, scores);
     if (gainBars) {
       output.appendChild(gainBars);
+    }
+
+    const overlapBars = renderStructureHmmOverlapBars(payload);
+    if (overlapBars) {
+      output.appendChild(overlapBars);
+    }
+
+    const unionGainBars = renderStructureHmmUnionGainBars(payload);
+    if (unionGainBars) {
+      output.appendChild(unionGainBars);
     }
 
     output.appendChild(renderStructureHmmCoverageBars(payload, domains, hmms, scores));
