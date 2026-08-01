@@ -360,7 +360,18 @@ def hmm_domain_coverage_payload(
     }
 
 
-HMMER_ALIGNMENT_ROW_RE = re.compile(r"^\s*(\S+)\s+\d+\s+([A-Za-z.\-]+)\s+\d+\s*$")
+HMMER_ALIGNMENT_ROW_RE = re.compile(r"^\s*(\S+)\s+(\d+)\s+([A-Za-z.\-]+)\s+(\d+)\s*$")
+
+
+def empty_alignment_coverage() -> dict[str, object]:
+    return {
+        "matched_hmm_covered": 0,
+        "matched_hmm_coverage": 0.0,
+        "matched_hmm_coverage_percent": 0.0,
+        "deleted_hmm_columns": 0,
+        "aligned_hmm_columns": 0,
+        "matched_hmm_positions": [],
+    }
 
 
 def parse_hmmsearch_alignment_coverages(
@@ -374,61 +385,74 @@ def parse_hmmsearch_alignment_coverages(
     current_target: str | None = None
     current_domain: int | None = None
     pending_model_alignment: str | None = None
+    pending_model_start: int | None = None
     for line in output.splitlines():
         if line.startswith(">> "):
             current_target = line[3:].strip()
             current_domain = None
             pending_model_alignment = None
+            pending_model_start = None
             continue
         domain_match = re.match(r"^\s*== domain (\d+)\s+score:", line)
         if domain_match:
             current_domain = int(domain_match.group(1))
             pending_model_alignment = None
+            pending_model_start = None
             if current_target is not None:
-                coverages[(current_target, current_domain)] = {
-                    "matched_hmm_covered": 0,
-                    "matched_hmm_coverage": 0.0,
-                    "matched_hmm_coverage_percent": 0.0,
-                    "deleted_hmm_columns": 0,
-                    "aligned_hmm_columns": 0,
-                }
+                coverages[(current_target, current_domain)] = empty_alignment_coverage()
             continue
         if current_target is None or current_domain is None:
             continue
         row_match = HMMER_ALIGNMENT_ROW_RE.match(line)
         if row_match is None:
             continue
-        row_name, alignment = row_match.groups()
+        row_name, start_text, alignment, _end_text = row_match.groups()
         if row_name == hmm_name:
             pending_model_alignment = alignment
+            pending_model_start = int(start_text)
             continue
-        if row_name != current_target or pending_model_alignment is None:
+        if (
+            row_name != current_target
+            or pending_model_alignment is None
+            or pending_model_start is None
+        ):
             continue
         coverage = coverages.setdefault(
             (current_target, current_domain),
-            {
-                "matched_hmm_covered": 0,
-                "matched_hmm_coverage": 0.0,
-                "matched_hmm_coverage_percent": 0.0,
-                "deleted_hmm_columns": 0,
-                "aligned_hmm_columns": 0,
-            },
+            empty_alignment_coverage(),
         )
+        matched_positions = coverage.setdefault("matched_hmm_positions", [])
+        hmm_position = pending_model_start
         for hmm_char, query_char in zip(pending_model_alignment, alignment):
             if hmm_char == ".":
                 continue
             coverage["aligned_hmm_columns"] = int(coverage["aligned_hmm_columns"]) + 1
             if query_char.isalpha():
                 coverage["matched_hmm_covered"] = int(coverage["matched_hmm_covered"]) + 1
+                if isinstance(matched_positions, list):
+                    matched_positions.append(hmm_position)
             else:
                 coverage["deleted_hmm_columns"] = int(coverage["deleted_hmm_columns"]) + 1
+            hmm_position += 1
         pending_model_alignment = None
+        pending_model_start = None
     normalized_length = optional_int(hmm_length)
     for coverage in coverages.values():
         matched = int(coverage.get("matched_hmm_covered") or 0)
         fraction = (min(1.0, matched / normalized_length) if normalized_length else 0.0)
         coverage["matched_hmm_coverage"] = fraction
         coverage["matched_hmm_coverage_percent"] = fraction * 100.0
+        raw_positions = coverage.get("matched_hmm_positions")
+        if isinstance(raw_positions, list):
+            positions = []
+            seen_positions: set[int] = set()
+            for raw_position in raw_positions:
+                position = optional_int(raw_position)
+                if position is None or position in seen_positions:
+                    continue
+                seen_positions.add(position)
+                positions.append(position)
+            coverage["matched_hmm_positions"] = sorted(positions)
     return coverages
 
 
@@ -636,6 +660,95 @@ def add_combined_coverage_gain(
     )
 
 
+def matched_hmm_position_set(score: dict[str, object]) -> set[int]:
+    positions = score.get("matched_hmm_positions")
+    if not isinstance(positions, list):
+        return set()
+    normalized: set[int] = set()
+    for raw_position in positions:
+        position = optional_int(raw_position)
+        if position is not None:
+            normalized.add(position)
+    return normalized
+
+
+def hmm_position_overlap_payload(
+    *,
+    hmm_summary: dict[str, object],
+    main_score: dict[str, object],
+    partner_score: dict[str, object],
+    main_pfam_id: str,
+    partner_pfam_id: str,
+) -> dict[str, object]:
+    hmm_length = (
+        optional_int(hmm_summary.get("length"))
+        or optional_int(main_score.get("hmm_length"))
+        or optional_int(partner_score.get("hmm_length"))
+    )
+    main_positions = matched_hmm_position_set(main_score)
+    partner_positions = matched_hmm_position_set(partner_score)
+    overlap_positions = main_positions & partner_positions
+    union_positions = main_positions | partner_positions
+    overlap_count = len(overlap_positions)
+    union_count = len(union_positions)
+    main_count = len(main_positions)
+    partner_count = len(partner_positions)
+    main_fraction = (
+        min(1.0, main_count / hmm_length)
+        if hmm_length is not None and hmm_length > 0
+        else 0.0
+    )
+    partner_fraction = (
+        min(1.0, partner_count / hmm_length)
+        if hmm_length is not None and hmm_length > 0
+        else 0.0
+    )
+    overlap_fraction = (
+        min(1.0, overlap_count / hmm_length)
+        if hmm_length is not None and hmm_length > 0
+        else 0.0
+    )
+    union_fraction = (
+        min(1.0, union_count / hmm_length)
+        if hmm_length is not None and hmm_length > 0
+        else 0.0
+    )
+    overlap_over_union = overlap_count / union_count if union_count > 0 else 0.0
+    smaller_hit_count = min(main_count, partner_count)
+    overlap_over_smaller_hit = (
+        overlap_count / smaller_hit_count if smaller_hit_count > 0 else 0.0
+    )
+    main_union_gain = union_fraction - main_fraction
+    partner_union_gain = union_fraction - partner_fraction
+    return {
+        "hmm_pfam_id": hmm_summary.get("pfam_id"),
+        "hmm_name": hmm_summary.get("name", ""),
+        "hmm_length": hmm_length,
+        "main_pfam_id": main_pfam_id,
+        "partner_pfam_id": partner_pfam_id,
+        "main_matched_hmm_covered": main_count,
+        "main_matched_hmm_coverage": main_fraction,
+        "main_matched_hmm_coverage_percent": main_fraction * 100.0,
+        "partner_matched_hmm_covered": partner_count,
+        "partner_matched_hmm_coverage": partner_fraction,
+        "partner_matched_hmm_coverage_percent": partner_fraction * 100.0,
+        "overlap_hmm_covered": overlap_count,
+        "union_hmm_covered": union_count,
+        "overlap_hmm_coverage": overlap_fraction,
+        "overlap_hmm_coverage_percent": overlap_fraction * 100.0,
+        "union_hmm_coverage": union_fraction,
+        "union_hmm_coverage_percent": union_fraction * 100.0,
+        "main_union_hmm_coverage_gain": main_union_gain,
+        "main_union_hmm_coverage_gain_percent": main_union_gain * 100.0,
+        "partner_union_hmm_coverage_gain": partner_union_gain,
+        "partner_union_hmm_coverage_gain_percent": partner_union_gain * 100.0,
+        "overlap_over_union": overlap_over_union,
+        "overlap_over_union_percent": overlap_over_union * 100.0,
+        "overlap_over_smaller_hit": overlap_over_smaller_hit,
+        "overlap_over_smaller_hit_percent": overlap_over_smaller_hit * 100.0,
+    }
+
+
 def score_sequences_against_hmm(
     *,
     hmmsearch_path: str,
@@ -719,7 +832,7 @@ def score_cache_key(payload: dict[str, object], pfam_hmm_path: Path) -> str:
     cache_payload = {
         **payload,
         **stat_payload,
-        "version": 8,
+        "version": 10,
     }
     return hashlib.sha1(
         json.dumps(cache_payload, sort_keys=True).encode("utf-8")
@@ -937,11 +1050,33 @@ def compute_domain_hmm_bit_scores(
             }
         )
 
+    hmm_overlaps = []
+    for hmm_summary in hmm_summaries:
+        pfam_id = str(hmm_summary.get("pfam_id") or "")
+        if not pfam_id:
+            continue
+        main_score = score_matrix.get("main", {}).get(pfam_id) or unreported_hmmer_score(
+            optional_int(hmm_summary.get("length"))
+        )
+        partner_score = score_matrix.get("partner", {}).get(pfam_id) or unreported_hmmer_score(
+            optional_int(hmm_summary.get("length"))
+        )
+        hmm_overlaps.append(
+            hmm_position_overlap_payload(
+                hmm_summary=hmm_summary,
+                main_score=main_score,
+                partner_score=partner_score,
+                main_pfam_id=main_pfam_id,
+                partner_pfam_id=partner_pfam_id,
+            )
+        )
+
     payload = {
         "domains": sequence_summaries,
         "hmms": hmm_summaries,
         "scores": score_matrix,
         "coverage": coverage,
+        "hmm_overlaps": hmm_overlaps,
         "combined_sequence": {
             key: value
             for key, value in combined_sequence.items()
