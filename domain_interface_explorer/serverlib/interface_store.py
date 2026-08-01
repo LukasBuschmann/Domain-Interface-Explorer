@@ -27,8 +27,8 @@ from .stats_service import (
 from .timing import log_event, timed_step
 
 
-INTERFACE_STORE_SCHEMA_VERSION = 2
-COLUMN_STATS_CACHE_VERSION = 2
+INTERFACE_STORE_SCHEMA_VERSION = 3
+COLUMN_STATS_CACHE_VERSION = 3
 
 
 def pack_uints(values: object) -> bytes:
@@ -1078,7 +1078,10 @@ class InterfaceStore:
             with self.connect() as connection:
                 for row in connection.execute(
                     f"""
-                    SELECT partner_domain, interface_row_key, interface_msa_columns_a, aligned_seq
+                    SELECT partner_domain, interface_row_key,
+                           interface_msa_columns_a, aligned_seq,
+                           interface_residues_a, surface_residue_ids_a,
+                           surface_msa_columns_a, plip_interactions
                     FROM interface_rows
                     WHERE source_id = ? AND {where_sql}
                     ORDER BY row_order
@@ -1090,10 +1093,107 @@ class InterfaceStore:
                     payload.setdefault(partner_domain, {})[row_key] = {
                         "interface_msa_columns_a": unpack_uints(row[2]),
                         "aligned_seq": str(row[3] or ""),
+                        "interface_residues_a": unpack_uints(row[4]),
+                        "surface_residue_ids_a": unpack_uints(row[5]),
+                        "surface_msa_columns_a": unpack_uints(row[6]),
+                        "plip_interactions": unpack_uint_triples(row[7]),
                     }
                     row_count += 1
             timer.set(rows=row_count, partner_domains=len(payload))
             return payload
+
+    def get_columns_scope_chart(
+        self,
+        path: Path,
+        filter_settings: dict[str, object],
+        source: str,
+    ) -> dict[str, object]:
+        """Return contact and PLIP column distributions grouped by domain or globally."""
+        if source not in {"domains", "all"}:
+            raise ValueError("columns source must be 'domains' or 'all'")
+        cache = self.get_column_statistics(path, filter_settings)
+        source_id = int(cache["source_id"])
+        alignment_length = int(cache["alignment_length"])
+        min_size = filter_min_interface_size(filter_settings)
+        scope_sql = "partner_domain = '__all__'" if source == "all" else "partner_domain != '__all__'"
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT partner_domain, row_count, residue_counts,
+                       interface_counts, plip_counts
+                FROM column_stats_scope
+                WHERE source_id = ? AND min_interface_size = ? AND {scope_sql}
+                ORDER BY partner_domain
+                """,
+                (source_id, min_size),
+            ).fetchall()
+
+        clusters: list[str] = []
+        cluster_sizes: dict[str, int] = {}
+        relative_by_cluster: dict[str, list[float]] = {}
+        gap_by_cluster: dict[str, list[float]] = {}
+        conservation_by_cluster: dict[str, list[float]] = {}
+        plip_masks_by_cluster: dict[str, dict[str, dict[str, int]]] = {}
+        stack_totals = [0.0] * alignment_length
+        for row in rows:
+            raw_partner = str(row[0])
+            cluster_label = "__all__" if source == "all" else raw_partner
+            row_count = max(0, int(row[1]))
+            denominator = max(1, row_count)
+            residue_totals, residue_maxima = self._unpack_count_matrix_metrics(
+                row[2], alignment_length
+            )
+            contact_counts = self._unpack_count_vector(row[3])
+            relative = [
+                (float(contact_counts[index]) / denominator if index < len(contact_counts) else 0.0)
+                for index in range(alignment_length)
+            ]
+            gaps = [
+                max(0.0, min(1.0, (row_count - residue_totals[index]) / denominator))
+                for index in range(alignment_length)
+            ]
+            conservation = [
+                (float(residue_maxima[index]) / residue_totals[index]
+                 if residue_totals[index] > 0 else 0.0)
+                for index in range(alignment_length)
+            ]
+            try:
+                plip_payload = json.loads(zlib.decompress(bytes(row[4])).decode("utf-8"))
+            except (TypeError, ValueError, zlib.error, json.JSONDecodeError):
+                plip_payload = {}
+            sparse_masks: dict[str, dict[str, int]] = {}
+            for raw_column, column_payload in plip_payload.items():
+                if not isinstance(column_payload, dict):
+                    continue
+                row_masks = column_payload.get("row_masks")
+                if not isinstance(row_masks, dict):
+                    continue
+                normalized_masks = {
+                    str(mask): int(count)
+                    for mask, count in row_masks.items()
+                    if int(count) > 0
+                }
+                if normalized_masks:
+                    sparse_masks[str(raw_column)] = normalized_masks
+            clusters.append(cluster_label)
+            cluster_sizes[cluster_label] = row_count
+            relative_by_cluster[cluster_label] = relative
+            gap_by_cluster[cluster_label] = gaps
+            conservation_by_cluster[cluster_label] = conservation
+            plip_masks_by_cluster[cluster_label] = sparse_masks
+            for index, value in enumerate(relative):
+                stack_totals[index] += value
+        return {
+            "alignmentLength": alignment_length,
+            "clusters": clusters,
+            "clusterSizes": cluster_sizes,
+            "relativeByCluster": relative_by_cluster,
+            "gapByCluster": gap_by_cluster,
+            "conservationByCluster": conservation_by_cluster,
+            "plipMaskCountsByCluster": plip_masks_by_cluster,
+            "maxStackValue": max(stack_totals) if stack_totals else 0.0,
+            "source": source,
+        }
 
     def get_filtered_alignment_length(
         self,
@@ -1405,6 +1505,28 @@ class InterfaceStore:
         values = np.frombuffer(zlib.decompress(bytes(blob)), dtype=np.uint32)
         matrix = values.reshape((alignment_length, 26))
         return matrix[column_index].astype(int).tolist()
+
+    @staticmethod
+    def _unpack_count_matrix_metrics(
+        blob: object, alignment_length: int
+    ) -> tuple[list[int], list[int]]:
+        import numpy as np
+
+        if alignment_length <= 0:
+            return [], []
+        values = np.frombuffer(zlib.decompress(bytes(blob)), dtype=np.uint32)
+        matrix = values.reshape((alignment_length, 26))
+        return (
+            matrix.sum(axis=1, dtype=np.uint64).astype(int).tolist(),
+            matrix.max(axis=1).astype(int).tolist(),
+        )
+
+    @staticmethod
+    def _unpack_count_vector(blob: object) -> list[int]:
+        import numpy as np
+
+        values = np.frombuffer(zlib.decompress(bytes(blob)), dtype=np.uint32)
+        return values.astype(int).tolist()
 
     @staticmethod
     def _unpack_count_vector_value(blob: object, column_index: int) -> int:

@@ -518,19 +518,41 @@ export function applyUiPreferences(state) {
     typeof preferences.columnsInterfaceOnly === "boolean"
       ? preferences.columnsInterfaceOnly
       : state.columnsInterfaceOnly;
-  state.columnsEmptyBinsWhite =
-    typeof preferences.columnsEmptyBinsWhite === "boolean"
-      ? preferences.columnsEmptyBinsWhite
-      : state.columnsEmptyBinsWhite;
-  state.columnsGapShading =
-    typeof preferences.columnsGapShading === "boolean"
-      ? preferences.columnsGapShading
-      : state.columnsGapShading;
+  state.columnsIndividualScales =
+    typeof preferences.columnsIndividualScales === "boolean"
+      ? preferences.columnsIndividualScales
+      : state.columnsIndividualScales;
   state.columnsSource = enumValue(
     preferences.columnsSource,
-    ["clusters", "domains"],
+    ["clusters", "domains", "all"],
     state.columnsSource,
   );
+  if (Array.isArray(preferences.columnsCategories)) {
+    const allowedCategories = new Set(["contacts", "conservation", "gaps"]);
+    state.columnsCategories = new Set(
+      preferences.columnsCategories.map(String).filter((value) => allowedCategories.has(value))
+    );
+  }
+  state.columnsRowOrder = enumValue(
+    preferences.columnsRowOrder,
+    ["group", "category"],
+    state.columnsRowOrder,
+  );
+  state.columnsDisplay = enumValue(
+    preferences.columnsDisplay,
+    ["lines", "histograms"],
+    state.columnsDisplay,
+  );
+  if (Array.isArray(preferences.columnsPlipTypes)) {
+    const allowedPlipTypes = new Set(["1", "2", "4", "8", "16"]);
+    state.columnsPlipTypes = new Set(
+      preferences.columnsPlipTypes.map(String).filter((value) => allowedPlipTypes.has(value))
+    );
+  }
+  state.columnsPlipMerged =
+    typeof preferences.columnsPlipMerged === "boolean"
+      ? preferences.columnsPlipMerged
+      : state.columnsPlipMerged;
 
   const dendrogram = isRecord(preferences.dendrogram) ? preferences.dendrogram : {};
   state.dendrogramStyle = enumValue(dendrogram.style, ["radial", "linear"], state.dendrogramStyle);
@@ -617,9 +639,13 @@ function preferencesPayload(state) {
       columnsSettingsOpen: state.columnsSettingsOpen,
     },
     columnsInterfaceOnly: state.columnsInterfaceOnly,
-    columnsEmptyBinsWhite: state.columnsEmptyBinsWhite,
-    columnsGapShading: state.columnsGapShading,
+    columnsIndividualScales: state.columnsIndividualScales,
     columnsSource: state.columnsSource,
+    columnsCategories: [...(state.columnsCategories || [])],
+    columnsPlipTypes: [...(state.columnsPlipTypes || [])],
+    columnsPlipMerged: state.columnsPlipMerged,
+    columnsRowOrder: state.columnsRowOrder,
+    columnsDisplay: state.columnsDisplay,
     dendrogram: {
       style: state.dendrogramStyle,
       depth: state.dendrogramDepth,

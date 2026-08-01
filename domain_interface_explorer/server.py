@@ -1605,7 +1605,12 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         path: Path,
         interface_filter_settings: dict[str, object],
     ) -> dict[str, object]:
-        if response_payload.get("columns_chart") is not None:
+        existing_chart = response_payload.get("columns_chart")
+        if (
+            isinstance(existing_chart, dict)
+            and "plipMaskCountsByCluster" in existing_chart
+            and "conservationByCluster" in existing_chart
+        ):
             return response_payload
         interface_payload = self._load_interface_columns_payload(
             path,
@@ -1703,6 +1708,66 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         if resolved is None:
             return
         path, interface_filter_settings = resolved
+        source = str(query.get("source", ["clusters"])[0] or "clusters").strip().lower()
+        if source not in {"clusters", "domains", "all"}:
+            self._send_json(
+                {"error": "columns source must be 'clusters', 'domains', or 'all'"},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        if source in {"domains", "all"}:
+            try:
+                if self.interface_store is not None:
+                    columns_chart = self.interface_store.get_columns_scope_chart(
+                        path,
+                        interface_filter_settings,
+                        source,
+                    )
+                else:
+                    interface_payload = self._load_interface_columns_payload(
+                        path,
+                        interface_filter_settings,
+                        fallback_context="grouped columns chart payload fallback",
+                    )
+                    alignment_length = self._filtered_alignment_length(
+                        path,
+                        interface_filter_settings,
+                        interface_payload,
+                    )
+                    points = [
+                        {
+                            "row_key": str(row_key),
+                            "partner_domain": str(partner_domain),
+                            "cluster_label": "__all__" if source == "all" else str(partner_domain),
+                        }
+                        for partner_domain, rows in interface_payload.items()
+                        if isinstance(rows, dict)
+                        for row_key in rows
+                    ]
+                    columns_chart = compute_columns_chart_payload(
+                        interface_payload,
+                        {"points": points},
+                        alignment_length=alignment_length,
+                    )
+                    columns_chart["source"] = source
+            except (RuntimeError, ValueError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            except Exception as exc:  # pragma: no cover
+                self._send_json(
+                    {"error": f"Unexpected columns chart error: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+                return
+            self._send_json(
+                {
+                    "file": path.name,
+                    "pfam_id": interface_file_pfam_id(path),
+                    "filter_settings": interface_filter_settings,
+                    "columns_chart": columns_chart,
+                }
+            )
+            return
         try:
             clustering_settings = parse_clustering_settings(query)
         except ValueError as exc:

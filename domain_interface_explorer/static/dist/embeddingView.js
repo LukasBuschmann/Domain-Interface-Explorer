@@ -30,6 +30,21 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         key: "",
         columns: [],
     };
+    const columnsInteractionValuesCache = {
+        chart: null,
+        key: "",
+        valuesByCluster: new Map(),
+    };
+    const COLUMNS_CATEGORIES = [
+        { key: "contacts", label: "Contacts", shortLabel: "Contacts", color: "#8d5b2c" },
+        { key: "plip:1", label: "Hydrophobic", shortLabel: "Hydrophobic", color: "#d79b28" },
+        { key: "plip:2", label: "Hydrogen bond", shortLabel: "H-bond", color: "#2aa7c9" },
+        { key: "plip:4", label: "Salt bridge", shortLabel: "Salt", color: "#dc4d4d" },
+        { key: "plip:8", label: "Pi stacking", shortLabel: "Pi stack", color: "#8c62c7" },
+        { key: "plip:16", label: "Pi-cation", shortLabel: "Pi-cation", color: "#d35da5" },
+        { key: "conservation", label: "Conservation", shortLabel: "Conserv.", color: "#2d6a4f" },
+        { key: "gaps", label: "Gap %", shortLabel: "Gaps", color: "#7b8794" },
+    ];
     function embeddingSettingsKey(settings = state.embeddingSettings) {
         return JSON.stringify(settings);
     }
@@ -445,10 +460,22 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         return `/api/clustering?${params.toString()}`;
     }
     function currentColumnsChartQuery() {
-        return currentEmbeddingClusteringQuery().replace("/api/clustering?", "/api/columns-chart?");
+        if (columnsSourceMode() === "clusters") {
+            const url = new URL(currentEmbeddingClusteringQuery().replace("/api/clustering?", "/api/columns-chart?"), window.location.origin);
+            url.searchParams.set("source", "clusters");
+            return `${url.pathname}?${url.searchParams.toString()}`;
+        }
+        const params = new URLSearchParams({
+            file: interfaceSelect.value,
+            source: columnsSourceMode(),
+        });
+        appendSelectionSettingsToParams(params, state.selectionSettings);
+        return `/api/columns-chart?${params.toString()}`;
     }
     function currentColumnsChartRequestKey() {
-        return `${currentEmbeddingClusteringRequestKey()}|columns-chart`;
+        return columnsSourceMode() === "clusters"
+            ? `${currentEmbeddingClusteringRequestKey()}|columns-chart|clusters`
+            : `${interfaceSelect.value}|${selectionSettingsKey(state.selectionSettings)}|columns-chart|${columnsSourceMode()}`;
     }
     function currentClusterCompareQuery(clusterLabel) {
         const params = new URLSearchParams({
@@ -1291,13 +1318,24 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         return Number(clusterLabel) < 0 ? "Noise" : `Cluster ${Number(clusterLabel) + 1}`;
     }
     function columnsSourceMode() {
-        return state.columnsSource === "domains" ? "domains" : "clusters";
+        if (state.columnsSource === "domains" || state.columnsSource === "all") {
+            return state.columnsSource;
+        }
+        return "clusters";
     }
     function columnsSourceTitle() {
-        return columnsSourceMode() === "domains" ? "Domain" : "Cluster";
+        return columnsSourceMode() === "domains"
+            ? "Domain"
+            : columnsSourceMode() === "all"
+                ? "All rows"
+                : "Cluster";
     }
     function columnsSourcePlural() {
-        return columnsSourceMode() === "domains" ? "domains" : "clusters";
+        return columnsSourceMode() === "domains"
+            ? "domains"
+            : columnsSourceMode() === "all"
+                ? "group"
+                : "clusters";
     }
     function columnsClusterShortLabel(clusterLabel) {
         if (clusterLabel === null || clusterLabel === undefined || Number.isNaN(Number(clusterLabel))) {
@@ -1306,11 +1344,14 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         return Number(clusterLabel) < 0 ? "N" : `C${Number(clusterLabel) + 1}`;
     }
     function columnsSeriesShortLabel(seriesLabel) {
+        if (columnsSourceMode() === "all") {
+            return "All";
+        }
         if (columnsSourceMode() !== "domains") {
             return columnsClusterShortLabel(seriesLabel);
         }
         const label = String(seriesLabel || "?");
-        return label.length > 8 ? label.slice(0, 8) : label;
+        return label.length > 16 ? `${label.slice(0, 15)}…` : label;
     }
     function embeddingClusterColor(clusterLabel) {
         const numericLabel = Number(clusterLabel);
@@ -1323,9 +1364,11 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         return CLUSTER_COLOR_PALETTE[numericLabel % CLUSTER_COLOR_PALETTE.length];
     }
     function columnsSeriesColor(seriesLabel) {
-        return columnsSourceMode() === "domains"
-            ? partnerColor(seriesLabel)
-            : embeddingClusterColor(seriesLabel);
+        return columnsSourceMode() === "all"
+            ? "#8d5b2c"
+            : columnsSourceMode() === "domains"
+                ? partnerColor(seriesLabel)
+                : embeddingClusterColor(seriesLabel);
     }
     function sizeBracketColor(index, bracketCount) {
         if (bracketCount <= 1) {
@@ -1495,21 +1538,16 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
     function rgbToCss(channels) {
         return `rgb(${channels[0]}, ${channels[1]}, ${channels[2]})`;
     }
-    function columnsEmptyBinRgb() {
-        return state.columnsEmptyBinsWhite ? [255, 255, 255] : [234, 223, 207];
+    function columnsBackgroundRgb() {
+        return [255, 255, 255];
     }
-    function columnsBarcodeRgb(clusterLabel, fraction) {
+    function columnsBarcodeRgb(clusterLabel, fraction, categoryColor = null) {
         const clamped = Math.max(0, Math.min(1, Number(fraction) || 0));
-        const base = colorToRgb(columnsSeriesColor(clusterLabel));
+        const base = colorToRgb(categoryColor || columnsSeriesColor(clusterLabel));
         const background = [234, 223, 207];
         const strength = clamped * clamped * (3 - (2 * clamped));
         const high = base.map((channel) => Math.round(channel + (255 - channel) * 0.38));
         return background.map((channel, index) => Math.round(channel + (high[index] - channel) * strength));
-    }
-    function columnsGapMergedColor(baseRgb, fraction) {
-        const clamped = Math.max(0, Math.min(1, Number(fraction) || 0));
-        const blackness = Math.min(0.78, clamped * 0.78);
-        return rgbToCss(baseRgb.map((channel) => Math.round(channel * (1 - blackness))));
     }
     function niceColumnTickStep(span, targetTicks = 8) {
         const roughStep = Math.max(1, Number(span) / Math.max(1, targetTicks));
@@ -1622,45 +1660,25 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             }
         });
     }
-    function columnsAlignmentLength() {
-        return Math.max(0, Number(state.msa?.alignment_length ||
-            state.interface?.alignment_length ||
-            state.interface?.alignmentLength ||
-            0));
-    }
-    function columnsDomainChartSignature(alignmentLength) {
-        const partners = state.interface?.partnerDomains || [];
-        return [
-            interfaceSelect.value || "",
-            columnsSourceMode(),
-            alignmentLength,
-            partners
-                .map((partner) => {
-                const stats = state.interface?.partnerColumnStats?.get(partner);
-                const columnCountTotal = stats?.columnCounts instanceof Map
-                    ? Array.from(stats.columnCounts.values()).reduce((total, count) => total + Number(count || 0), 0)
-                    : 0;
-                return `${partner}:${Number(stats?.denominator || 0)}:${Number(stats?.columnCounts?.size || 0)}:${columnCountTotal}`;
-            })
-                .join(","),
-        ].join("|");
-    }
     function columnsChartCacheKey() {
-        if (columnsSourceMode() === "domains") {
-            return columnsDomainChartSignature(columnsAlignmentLength());
-        }
-        const serverChart = state.embeddingClustering?.columns_chart;
+        const serverChart = rawColumnsChartPayload();
         return [
-            interfaceSelect.value || "",
-            state.embeddingClustering?.settingsKey || "",
-            columnsSourceMode(),
+            currentColumnsChartRequestKey(),
             serverChart ? Number(serverChart.alignmentLength || 0) : "missing",
             serverChart ? (serverChart.clusters || []).join(",") : "",
-            Number(state.embeddingClustering?.points?.length || 0),
+            serverChart ? Object.keys(serverChart.plipMaskCountsByCluster || {}).length : 0,
         ].join("|");
     }
+    function rawColumnsChartPayload() {
+        if (columnsSourceMode() === "clusters") {
+            return state.embeddingClustering?.columns_chart || null;
+        }
+        return state.columnsChartPayloadKey === currentColumnsChartRequestKey()
+            ? state.columnsChartPayload
+            : null;
+    }
     function normalizedServerColumnsChart() {
-        const chart = state.embeddingClustering?.columns_chart;
+        const chart = rawColumnsChartPayload();
         if (!chart || !Array.isArray(chart.clusters)) {
             return null;
         }
@@ -1675,11 +1693,23 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         const rawRelativeByCluster = chart.relativeByCluster || {};
         const gapByCluster = {};
         const rawGapByCluster = chart.gapByCluster || {};
+        const conservationByCluster = {};
+        const rawConservationByCluster = chart.conservationByCluster || {};
+        const plipMaskCountsByCluster = {};
+        const rawPlipMaskCountsByCluster = chart.plipMaskCountsByCluster || {};
         for (const clusterLabel of clusters) {
             const values = rawRelativeByCluster[clusterLabel];
             relativeByCluster[clusterLabel] = Array.isArray(values) ? values : [];
             const gapValues = rawGapByCluster[clusterLabel];
             gapByCluster[clusterLabel] = Array.isArray(gapValues) ? gapValues : [];
+            const conservationValues = rawConservationByCluster[clusterLabel];
+            conservationByCluster[clusterLabel] = Array.isArray(conservationValues)
+                ? conservationValues
+                : [];
+            const rawColumnCounts = rawPlipMaskCountsByCluster[clusterLabel];
+            plipMaskCountsByCluster[clusterLabel] = rawColumnCounts && typeof rawColumnCounts === "object"
+                ? rawColumnCounts
+                : {};
         }
         return {
             file: interfaceSelect.value,
@@ -1688,16 +1718,101 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             clusterSizes,
             relativeByCluster,
             gapByCluster,
+            conservationByCluster,
+            plipMaskCountsByCluster,
             maxStackValue: Number(chart.maxStackValue || 0),
-            source: "clusters",
+            source: columnsSourceMode(),
         };
     }
+    function selectedColumnsCategories() {
+        const baseCategories = state.columnsCategories instanceof Set
+            ? state.columnsCategories
+            : new Set(["contacts"]);
+        const plipTypes = state.columnsPlipTypes instanceof Set
+            ? state.columnsPlipTypes
+            : new Set(["1", "2", "4", "8", "16"]);
+        const selectedPlipCategories = COLUMNS_CATEGORIES.filter((category) => (category.key.startsWith("plip:") && plipTypes.has(category.key.slice(5))));
+        const selectedPlipMask = selectedPlipCategories.reduce((mask, category) => mask | Number(category.key.slice(5)), 0);
+        const categories = [];
+        let insertedPlip = false;
+        for (const category of COLUMNS_CATEGORIES) {
+            if (category.key.startsWith("plip:")) {
+                if (!insertedPlip && state.columnsPlipMerged && selectedPlipMask > 0) {
+                    categories.push({
+                        key: `plip:merged:${selectedPlipMask}`,
+                        label: "PLIP merged",
+                        shortLabel: "PLIP",
+                        color: "#6f4aa8",
+                    });
+                    insertedPlip = true;
+                }
+                else if (!state.columnsPlipMerged && plipTypes.has(category.key.slice(5))) {
+                    categories.push(category);
+                }
+            }
+            else if (baseCategories.has(category.key)) {
+                categories.push(category);
+            }
+        }
+        return categories;
+    }
+    function columnsCategoryPlipMask(categoryKey) {
+        const match = String(categoryKey || "").match(/^plip:(?:merged:)?(\d+)$/);
+        return match ? Number(match[1]) : 0;
+    }
+    function columnsInteractionValuesByCluster() {
+        const categories = selectedColumnsCategories();
+        const cacheKey = categories.map((category) => category.key).join(",");
+        if (columnsInteractionValuesCache.chart === state.columnsChart &&
+            columnsInteractionValuesCache.key === cacheKey) {
+            return columnsInteractionValuesCache.valuesByCluster;
+        }
+        const valuesByCluster = new Map();
+        for (const clusterLabel of state.columnsChart?.clusters || []) {
+            for (const category of categories) {
+                const valueKey = `${clusterLabel}|${category.key}`;
+                if (category.key === "contacts") {
+                    valuesByCluster.set(valueKey, state.columnsChart?.relativeByCluster?.[clusterLabel] || []);
+                    continue;
+                }
+                if (category.key === "gaps") {
+                    valuesByCluster.set(valueKey, state.columnsChart?.gapByCluster?.[clusterLabel] || []);
+                    continue;
+                }
+                if (category.key === "conservation") {
+                    valuesByCluster.set(valueKey, state.columnsChart?.conservationByCluster?.[clusterLabel] || []);
+                    continue;
+                }
+                const selectedMask = columnsCategoryPlipMask(category.key);
+                const values = new Float64Array(Math.max(0, Number(state.columnsChart?.alignmentLength || 0)));
+                const denominator = Math.max(1, Number(state.columnsChart?.clusterSizes?.[clusterLabel] || 0));
+                const columnCounts = state.columnsChart?.plipMaskCountsByCluster?.[clusterLabel] || {};
+                for (const [rawColumn, rawMaskCounts] of Object.entries(columnCounts)) {
+                    const columnIndex = Number(rawColumn);
+                    if (!Number.isInteger(columnIndex) || columnIndex < 0 || columnIndex >= values.length) {
+                        continue;
+                    }
+                    let matchingRows = 0;
+                    for (const [rawMask, rawCount] of Object.entries(rawMaskCounts || {})) {
+                        if ((Number(rawMask) & selectedMask) !== 0) {
+                            matchingRows += Number(rawCount || 0);
+                        }
+                    }
+                    values[columnIndex] = matchingRows / denominator;
+                }
+                valuesByCluster.set(valueKey, values);
+            }
+        }
+        columnsInteractionValuesCache.chart = state.columnsChart;
+        columnsInteractionValuesCache.key = cacheKey;
+        columnsInteractionValuesCache.valuesByCluster = valuesByCluster;
+        return valuesByCluster;
+    }
     function ensureColumnsChartLoaded() {
-        if (columnsSourceMode() !== "clusters" ||
-            !interfaceSelect.value ||
-            !state.embeddingClustering ||
-            state.embeddingClustering.error ||
-            state.embeddingClustering.columns_chart) {
+        const clusterSource = columnsSourceMode() === "clusters";
+        if (!interfaceSelect.value ||
+            (clusterSource && (!state.embeddingClustering || state.embeddingClustering.error)) ||
+            rawColumnsChartPayload()) {
             return null;
         }
         const requestKey = currentColumnsChartRequestKey();
@@ -1716,22 +1831,28 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         const promise = (async () => {
             try {
                 const payload = await fetchJson(currentColumnsChartQuery());
-                if (requestId !== state.embeddingClusteringRequestId ||
+                if ((clusterSource && requestId !== state.embeddingClusteringRequestId) ||
                     state.columnsChartLoadingKey !== requestKey ||
-                    !state.embeddingClustering ||
-                    state.embeddingClustering.file !== interfaceSelect.value) {
+                    (clusterSource && (!state.embeddingClustering ||
+                        state.embeddingClustering.file !== interfaceSelect.value))) {
                     return;
                 }
-                state.embeddingClustering = {
-                    ...state.embeddingClustering,
-                    columns_chart: payload.columns_chart || null,
-                };
+                if (clusterSource) {
+                    state.embeddingClustering = {
+                        ...state.embeddingClustering,
+                        columns_chart: payload.columns_chart || null,
+                    };
+                }
+                else {
+                    state.columnsChartPayload = payload.columns_chart || null;
+                    state.columnsChartPayloadKey = requestKey;
+                }
                 state.columnsChartKey = null;
             }
             catch (error) {
                 if (state.columnsChartLoadingKey === requestKey) {
                     state.columnsChartErrorKey = requestKey;
-                    if (state.embeddingClustering) {
+                    if (clusterSource && state.embeddingClustering) {
                         state.embeddingClustering = {
                             ...state.embeddingClustering,
                             columns_chart_error: error.message,
@@ -1925,64 +2046,12 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         state.columnsDomainOverlayPromise = promise;
         return promise;
     }
-    function normalizedDomainColumnsChart() {
-        const alignmentLength = columnsAlignmentLength();
-        if (!state.interface || alignmentLength <= 0) {
-            return null;
-        }
-        const partners = (state.interface.partnerDomains || [])
-            .map((partner) => String(partner || ""))
-            .filter((partner) => partner);
-        if (partners.length === 0) {
-            return null;
-        }
-        const clusters = [];
-        const clusterSizes = {};
-        const relativeByCluster = {};
-        const gapByCluster = {};
-        for (const partner of partners) {
-            const stats = state.interface.partnerColumnStats?.get(partner);
-            const denominator = Math.max(0, Number(stats?.denominator || 0));
-            if (denominator <= 0) {
-                continue;
-            }
-            clusters.push(partner);
-            clusterSizes[partner] = denominator;
-            const values = new Array(alignmentLength).fill(0);
-            if (stats?.columnCounts instanceof Map) {
-                for (const [columnIndex, count] of stats.columnCounts.entries()) {
-                    const index = Number(columnIndex);
-                    if (!Number.isInteger(index) || index < 0 || index >= alignmentLength) {
-                        continue;
-                    }
-                    values[index] = Math.max(0, Number(count || 0)) / denominator;
-                }
-            }
-            relativeByCluster[partner] = values;
-            gapByCluster[partner] = new Array(alignmentLength).fill(0);
-        }
-        if (clusters.length === 0) {
-            return null;
-        }
-        return {
-            file: interfaceSelect.value,
-            alignmentLength,
-            clusters,
-            clusterSizes,
-            relativeByCluster,
-            gapByCluster,
-            maxStackValue: 1,
-            source: "domains",
-        };
-    }
     function rebuildColumnsChartIfNeeded() {
         const nextKey = columnsChartCacheKey();
         if (state.columnsChartKey === nextKey) {
             return;
         }
-        const columnsChart = columnsSourceMode() === "domains"
-            ? normalizedDomainColumnsChart()
-            : normalizedServerColumnsChart();
+        const columnsChart = normalizedServerColumnsChart();
         if (!columnsChart) {
             state.columnsChart = null;
             state.columnsChartKey = nextKey;
@@ -2071,14 +2140,19 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
     }
     function columnsChartArea(width) {
         return {
-            chartLeft: 58,
+            chartLeft: 184,
             chartRight: width - 12,
         };
     }
     function columnHasVisibleInteraction(columnIndex, visibleClusters) {
         for (const clusterLabel of visibleClusters) {
-            const values = state.columnsChart?.relativeByCluster?.[clusterLabel] || [];
-            if (Number(values[columnIndex] || 0) > 0) {
+            const contactValues = state.columnsChart?.relativeByCluster?.[clusterLabel] || [];
+            if (Number(contactValues[columnIndex] || 0) > 0) {
+                return true;
+            }
+            const maskCounts = state.columnsChart?.plipMaskCountsByCluster?.[clusterLabel]?.[String(columnIndex)];
+            if (maskCounts &&
+                Object.values(maskCounts).some((count) => Number(count || 0) > 0)) {
                 return true;
             }
         }
@@ -2179,18 +2253,18 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         return clusterCount > 80 ? 0 : clusterCount > 36 ? 1 : 2;
     }
     function columnsCanvasContentHeight(viewportHeight) {
-        const clusterCount = visibleColumnsClusters().length;
-        if (!clusterCount) {
+        const rowCount = visibleColumnsClusters().length * selectedColumnsCategories().length;
+        if (!rowCount) {
             return viewportHeight;
         }
         const rowsTop = 62;
         const bottomInset = 42;
-        const minRowHeight = 10;
-        const gap = columnsRowGap(clusterCount);
+        const minRowHeight = state.columnsDisplay === "histograms" ? 36 : 10;
+        const gap = columnsRowGap(rowCount);
         return Math.ceil(rowsTop +
             bottomInset +
-            clusterCount * minRowHeight +
-            gap * Math.max(0, clusterCount - 1));
+            rowCount * minRowHeight +
+            gap * Math.max(0, rowCount - 1));
     }
     function columnsVirtualWidth(viewportWidth, alignmentLength, span) {
         const total = Math.max(1, Number(alignmentLength) || 1);
@@ -2392,6 +2466,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         return [
             columnsSourceMode(),
             cell.row?.clusterLabel ?? "",
+            cell.row?.category?.key ?? "",
             cell.binIndex ?? "",
             cell.columnIndex ?? "",
         ].join("|");
@@ -2421,6 +2496,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 key,
                 source: columnsSourceMode(),
                 seriesLabel: String(cell.row?.clusterLabel ?? ""),
+                categoryKey: String(cell.row?.category?.key ?? ""),
                 columnIndex: cell.columnIndex,
                 rect: cell.rect,
             };
@@ -2453,6 +2529,33 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         }
         return Array.isArray(columns) && columns.some((value) => Number(value) === columnIndex);
     }
+    function payloadHasSelectedInteractionColumn(rowPayload, columnIndex, categoryKey) {
+        if (categoryKey === "contacts") {
+            return payloadHasInterfaceColumn(rowPayload, columnIndex);
+        }
+        if (!String(categoryKey).startsWith("plip:")) {
+            return false;
+        }
+        const selectedMask = columnsCategoryPlipMask(categoryKey);
+        if (!rowPayload || !selectedMask) {
+            return false;
+        }
+        const residueToColumn = new Map();
+        for (const [residueKey, columnKey] of [
+            ["interface_residues_a", "interface_msa_columns_a"],
+            ["surface_residue_ids_a", "surface_msa_columns_a"],
+        ]) {
+            const residues = Array.isArray(rowPayload[residueKey]) ? rowPayload[residueKey] : [];
+            const columns = Array.isArray(rowPayload[columnKey]) ? rowPayload[columnKey] : [];
+            for (let index = 0; index < Math.min(residues.length, columns.length); index += 1) {
+                residueToColumn.set(Number(residues[index]), Number(columns[index]));
+            }
+        }
+        return (Array.isArray(rowPayload.plip_interactions) ? rowPayload.plip_interactions : [])
+            .some((interaction) => (Array.isArray(interaction) &&
+            residueToColumn.get(Number(interaction[0])) === columnIndex &&
+            (Number(interaction[2]) & selectedMask) !== 0));
+    }
     function interactionPayloadForMember(member) {
         const rowKey = String(member?.row_key || "");
         const partnerDomain = String(member?.partner_domain || "");
@@ -2469,19 +2572,27 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         return uniqueColumns.sort((left, right) => Math.abs(left - preferred) - Math.abs(right - preferred) ||
             left - right);
     }
-    function domainMembersForColumn(partnerDomain, columnIndex) {
+    function domainMembersForColumn(partnerDomain, columnIndex, categoryKey) {
         const rowsByKey = state.interface?.data?.[partnerDomain];
         if (!rowsByKey || typeof rowsByKey !== "object") {
             return [];
         }
         return Object.entries(rowsByKey)
-            .filter(([_rowKey, rowPayload]) => payloadHasInterfaceColumn(rowPayload, columnIndex))
+            .filter(([_rowKey, rowPayload]) => payloadHasSelectedInteractionColumn(rowPayload, columnIndex, categoryKey))
             .map(([rowKey]) => ({
             row_key: String(rowKey),
             partner_domain: String(partnerDomain),
         }));
     }
-    function clusterMembersForColumn(clusterLabel, columnIndex) {
+    function allMembersForColumn(columnIndex, categoryKey) {
+        return Object.entries(state.interface?.data || {}).flatMap(([partnerDomain, rowsByKey]) => Object.entries(rowsByKey || {})
+            .filter(([_rowKey, rowPayload]) => payloadHasSelectedInteractionColumn(rowPayload, columnIndex, categoryKey))
+            .map(([rowKey]) => ({
+            row_key: String(rowKey),
+            partner_domain: String(partnerDomain),
+        })));
+    }
+    function clusterMembersForColumn(clusterLabel, columnIndex, categoryKey) {
         const numericClusterLabel = Number(clusterLabel);
         if (!Number.isFinite(numericClusterLabel)) {
             return [];
@@ -2493,7 +2604,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 continue;
             }
             for (const member of columnsPointMembers(point)) {
-                if (!payloadHasInterfaceColumn(interactionPayloadForMember(member), columnIndex)) {
+                if (!payloadHasSelectedInteractionColumn(interactionPayloadForMember(member), columnIndex, categoryKey)) {
                     continue;
                 }
                 const key = columnsMemberKey(member);
@@ -2510,11 +2621,14 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         return members;
     }
     function membersForColumnsCell(cell) {
+        const categoryKey = String(cell.row?.category?.key || "");
         const candidateColumns = uniqueSortedColumns(cell.bucketColumns, cell.columnIndex);
         for (const columnIndex of candidateColumns) {
             const members = columnsSourceMode() === "domains"
-                ? domainMembersForColumn(String(cell.row.clusterLabel), columnIndex)
-                : clusterMembersForColumn(cell.row.clusterLabel, columnIndex);
+                ? domainMembersForColumn(String(cell.row.clusterLabel), columnIndex, categoryKey)
+                : columnsSourceMode() === "all"
+                    ? allMembersForColumn(columnIndex, categoryKey)
+                    : clusterMembersForColumn(cell.row.clusterLabel, columnIndex, categoryKey);
             if (members.length > 0) {
                 return {
                     columnIndex,
@@ -2536,6 +2650,10 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         }
         event.preventDefault();
         event.stopPropagation();
+        if (!["contacts"].includes(cell.row?.category?.key) && !String(cell.row?.category?.key || "").startsWith("plip:")) {
+            setColumnsInfo(`${cell.row?.category?.label || "This metric"} is a summary metric; structure examples are available for contact and PLIP rows.`);
+            return;
+        }
         const overlayPromise = ensureColumnsDomainOverlayLoaded();
         if (overlayPromise) {
             setColumnsInfo("Loading interface examples for the selected column...");
@@ -2565,7 +2683,7 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             return;
         }
         const row = columnsRowAtPoint(point);
-        if (row && point.x < layout.chartLeft) {
+        if (row && state.columnsRowOrder !== "category" && point.x < 20) {
             event.preventDefault();
             state.columnsDrag = {
                 type: "reorder",
@@ -2739,25 +2857,17 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         const sourceTitle = columnsSourceTitle();
         const sourcePlural = columnsSourcePlural();
         const clusterSource = sourceMode === "clusters";
-        const domainSource = sourceMode === "domains";
-        if (domainSource && state.interface && !state.interface.overlayComplete) {
-            void ensureColumnsDomainOverlayLoaded();
-        }
-        if (clusterSource && state.embeddingClustering && !state.embeddingClustering.columns_chart) {
+        if (!rawColumnsChartPayload()) {
             void ensureColumnsChartLoaded();
         }
         rebuildColumnsChartIfNeeded();
         renderColumnsClusterLegend();
-        const showClusterLoading = clusterSource &&
-            (state.embeddingClusteringLoading || state.columnsChartLoading) &&
+        const showChartLoading = (state.columnsChartLoading || (clusterSource && state.embeddingClusteringLoading)) &&
             !(state.columnsChart?.clusters || []).length;
-        const showDomainLoading = domainSource && state.columnsDomainOverlayLoading && !state.interface?.overlayComplete;
-        elements.columnsLoading.classList.toggle("hidden", !(showClusterLoading || showDomainLoading));
-        elements.columnsLoadingLabel.textContent = showDomainLoading
-            ? "Loading interacting domains..."
-            : state.columnsChartLoading
-                ? "Loading column histogram..."
-                : "Loading clustering data...";
+        elements.columnsLoading.classList.toggle("hidden", !showChartLoading);
+        elements.columnsLoadingLabel.textContent = state.columnsChartLoading
+            ? "Loading column histogram..."
+            : "Loading clustering data...";
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, width, height);
         ctx.fillStyle = "#fffdf8";
@@ -2803,10 +2913,12 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                     ? "Preparing column histogram..."
                     : clusterSource
                         ? "Load clustering to inspect cluster-column interactions."
-                        : "No interacting domains available.", centerX, centerY);
+                        : state.columnsChartLoading
+                            ? "Preparing column histogram..."
+                            : `No ${sourcePlural} available.`, centerX, centerY);
             setColumnsInfo(clusterSource
                 ? "Shows for each MSA column the fraction of each cluster that interacts at that position."
-                : "Shows for each MSA column the fraction of each interacting domain that contacts that position.");
+                : `Shows for each MSA column the fraction of each ${sourceMode === "all" ? "row" : "domain"} with the selected interaction.`);
             return;
         }
         const visibleClusters = visibleColumnsClusters();
@@ -2818,14 +2930,20 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             setColumnsInfo(`${sourceTitle} filter hides all columns.`);
             return;
         }
+        const selectedCategories = selectedColumnsCategories();
+        if (selectedCategories.length === 0) {
+            ctx.fillStyle = "#6f6658";
+            ctx.font = '13px "IBM Plex Sans", sans-serif';
+            ctx.textAlign = "center";
+            ctx.fillText("Select at least one value in Columns settings.", centerX, centerY);
+            setColumnsInfo("No column values are selected.");
+            return;
+        }
         if (elements.columnsInterfaceOnlyToggle) {
             elements.columnsInterfaceOnlyToggle.checked = Boolean(state.columnsInterfaceOnly);
         }
-        if (elements.columnsEmptyBinsWhiteToggle) {
-            elements.columnsEmptyBinsWhiteToggle.checked = Boolean(state.columnsEmptyBinsWhite);
-        }
-        if (elements.columnsGapShadingToggle) {
-            elements.columnsGapShadingToggle.checked = Boolean(state.columnsGapShading);
+        if (elements.columnsIndividualScalesToggle) {
+            elements.columnsIndividualScalesToggle.checked = Boolean(state.columnsIndividualScales);
         }
         const { chartLeft, chartRight } = columnsChartArea(width);
         const scrollTop = elements.columnsScroll?.scrollTop || 0;
@@ -2887,67 +3005,64 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         }
         const binCount = Math.max(1, Math.min(visibleColumnCount, Math.floor(chartWidth)));
         const binWidth = chartWidth / binCount;
-        const binnedValues = new Map(visibleClusters.map((clusterLabel) => [clusterLabel, new Float64Array(binCount)]));
-        const binnedGapValues = new Map(visibleClusters.map((clusterLabel) => [clusterLabel, new Float64Array(binCount)]));
-        const gapShading = Boolean(state.columnsGapShading);
-        let maxValue = 0;
+        const rowSpecs = [];
+        if (state.columnsRowOrder === "category") {
+            for (const category of selectedCategories) {
+                for (const clusterLabel of visibleClusters) {
+                    rowSpecs.push({ clusterLabel, category, key: `${clusterLabel}|${category.key}` });
+                }
+            }
+        }
+        else {
+            for (const clusterLabel of visibleClusters) {
+                for (const category of selectedCategories) {
+                    rowSpecs.push({ clusterLabel, category, key: `${clusterLabel}|${category.key}` });
+                }
+            }
+        }
+        const binnedValues = new Map(rowSpecs.map((row) => [row.key, new Float64Array(binCount)]));
+        const interactionValues = columnsInteractionValuesByCluster();
         for (let binIndex = 0; binIndex < binCount; binIndex += 1) {
             if (interfaceOnly) {
                 const startOrdinal = Math.floor((binIndex * interfaceColumns.length) / binCount);
                 const endOrdinal = Math.max(startOrdinal + 1, Math.ceil(((binIndex + 1) * interfaceColumns.length) / binCount));
-                for (const clusterLabel of visibleClusters) {
-                    const values = state.columnsChart.relativeByCluster?.[clusterLabel] || [];
-                    const gapValues = state.columnsChart.gapByCluster?.[clusterLabel] || [];
+                for (const row of rowSpecs) {
+                    const values = interactionValues.get(row.key) || [];
                     let sum = 0;
-                    let gapSum = 0;
                     for (let ordinal = startOrdinal; ordinal < endOrdinal; ordinal += 1) {
                         sum += Number(values[interfaceColumns[ordinal]] || 0);
-                        gapSum += Number(gapValues[interfaceColumns[ordinal]] || 0);
                     }
                     const averageValue = sum / Math.max(1, endOrdinal - startOrdinal);
-                    const averageGapValue = gapSum / Math.max(1, endOrdinal - startOrdinal);
-                    binnedValues.get(clusterLabel)[binIndex] = averageValue;
-                    binnedGapValues.get(clusterLabel)[binIndex] = averageGapValue;
-                    if (averageValue > maxValue) {
-                        maxValue = averageValue;
-                    }
+                    binnedValues.get(row.key)[binIndex] = averageValue;
                 }
             }
             else {
                 const startColumn = Math.max(0, Math.min(alignmentLength - 1, Math.floor(range.start + (binIndex * range.span) / binCount)));
                 const endColumn = Math.max(startColumn + 1, Math.min(alignmentLength, Math.ceil(range.start + ((binIndex + 1) * range.span) / binCount)));
-                for (const clusterLabel of visibleClusters) {
-                    const values = state.columnsChart.relativeByCluster?.[clusterLabel] || [];
-                    const gapValues = state.columnsChart.gapByCluster?.[clusterLabel] || [];
+                for (const row of rowSpecs) {
+                    const values = interactionValues.get(row.key) || [];
                     let sum = 0;
-                    let gapSum = 0;
                     for (let columnIndex = startColumn; columnIndex < endColumn; columnIndex += 1) {
                         sum += Number(values[columnIndex] || 0);
-                        gapSum += Number(gapValues[columnIndex] || 0);
                     }
                     const averageValue = sum / Math.max(1, endColumn - startColumn);
-                    const averageGapValue = gapSum / Math.max(1, endColumn - startColumn);
-                    binnedValues.get(clusterLabel)[binIndex] = averageValue;
-                    binnedGapValues.get(clusterLabel)[binIndex] = averageGapValue;
-                    if (averageValue > maxValue) {
-                        maxValue = averageValue;
-                    }
+                    binnedValues.get(row.key)[binIndex] = averageValue;
                 }
             }
         }
-        if (maxValue <= 0) {
-            ctx.fillStyle = "#6f6658";
-            ctx.font = '13px "IBM Plex Sans", sans-serif';
-            ctx.textAlign = "center";
-            ctx.fillText(`No interface residues found for selected ${sourcePlural}.`, centerX, centerY);
-            setColumnsInfo(`Selected ${sourcePlural} have no interacting columns.`);
-            return;
+        const rowMaxValues = new Map();
+        for (const row of rowSpecs) {
+            let rowMax = 0;
+            for (const value of interactionValues.get(row.key) || []) {
+                rowMax = Math.max(rowMax, Number(value || 0));
+            }
+            rowMaxValues.set(row.key, rowMax);
         }
-        const rowGap = columnsRowGap(visibleClusters.length);
-        const rowHeight = Math.max(1, (chartHeight - rowGap * Math.max(0, visibleClusters.length - 1)) / visibleClusters.length);
-        const rows = visibleClusters.map((clusterLabel, clusterIndex) => ({
-            clusterLabel,
-            y: rowsTopContent + clusterIndex * (rowHeight + rowGap) - scrollTop,
+        const rowGap = columnsRowGap(rowSpecs.length);
+        const rowHeight = Math.max(1, (chartHeight - rowGap * Math.max(0, rowSpecs.length - 1)) / rowSpecs.length);
+        const rows = rowSpecs.map((row, rowIndex) => ({
+            ...row,
+            y: rowsTopContent + rowIndex * (rowHeight + rowGap) - scrollTop,
             height: rowHeight,
         }));
         state.columnsInteractionLayout = {
@@ -2997,61 +3112,96 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         }
         drawColumnsRuler(ctx, rulerTicks, chartLeft, chartWidth, rowsTop - 7, true);
         drawColumnsRuler(ctx, rulerTicks, chartLeft, chartWidth, rowsBottom + 7, false);
+        const histogramDisplay = state.columnsDisplay === "histograms";
+        const groupFirst = state.columnsRowOrder !== "category";
+        ctx.fillStyle = "#8a8072";
+        ctx.font = '9px "IBM Plex Sans", sans-serif';
+        ctx.textAlign = "left";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(groupFirst ? "GROUP" : "VALUE", 26, rowsTop - 8);
+        ctx.textAlign = "right";
+        ctx.fillText(groupFirst ? "VALUE" : "GROUP", chartLeft - 8, rowsTop - 8);
         for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
             const row = rows[rowIndex];
             const clusterLabel = row.clusterLabel;
             const y = row.y;
             const rowY = Math.floor(y);
             const drawHeight = Math.max(1, Math.ceil(rowHeight));
+            const previousRow = rows[rowIndex - 1];
+            const blockStart = !previousRow || (groupFirst
+                ? previousRow.clusterLabel !== row.clusterLabel
+                : previousRow.category.key !== row.category.key);
             ctx.fillStyle = rowIndex % 2 === 0 ? "#fffaf1" : "#f8f1e6";
             ctx.fillRect(0, rowY, chartRight, drawHeight);
-            const emptyBinRgb = columnsEmptyBinRgb();
+            const emptyBinRgb = columnsBackgroundRgb();
             ctx.fillStyle = rgbToCss(emptyBinRgb);
             ctx.fillRect(chartLeft, rowY, chartWidth, drawHeight);
             if (rowHeight >= 8) {
-                ctx.fillStyle = "#b0a491";
+                const groupLabel = columnsSeriesShortLabel(clusterLabel);
+                const primaryLabel = groupFirst ? groupLabel : row.category.shortLabel;
+                const secondaryLabel = groupFirst ? row.category.shortLabel : groupLabel;
                 ctx.font = '10px "IBM Plex Sans", sans-serif';
-                ctx.textAlign = "left";
                 ctx.textBaseline = "middle";
-                ctx.fillText("::", 7, y + rowHeight / 2);
-                ctx.fillText("::", 13, y + rowHeight / 2);
-                ctx.fillStyle = columnsSeriesColor(clusterLabel);
-                ctx.fillRect(chartLeft - 34, y + Math.max(1, (rowHeight - 9) / 2), 9, Math.min(9, rowHeight - 2));
+                if (blockStart) {
+                    if (groupFirst) {
+                        ctx.fillStyle = "#b0a491";
+                        ctx.textAlign = "left";
+                        ctx.fillText("::", 7, y + rowHeight / 2);
+                        ctx.fillText("::", 13, y + rowHeight / 2);
+                    }
+                    ctx.fillStyle = groupFirst ? columnsSeriesColor(clusterLabel) : row.category.color;
+                    ctx.fillRect(26, y + Math.max(1, (rowHeight - 8) / 2), 8, Math.min(8, rowHeight - 2));
+                    ctx.fillStyle = "#554d43";
+                    ctx.font = '10px "IBM Plex Sans", sans-serif';
+                    ctx.textAlign = "left";
+                    ctx.textBaseline = "middle";
+                    ctx.fillText(primaryLabel, 39, y + rowHeight / 2);
+                }
+                ctx.fillStyle = groupFirst ? row.category.color : columnsSeriesColor(clusterLabel);
+                ctx.fillRect(chartLeft - 75, y + Math.max(1, (rowHeight - 8) / 2), 8, Math.min(8, rowHeight - 2));
                 ctx.fillStyle = "#6f6658";
                 ctx.font = '10px "IBM Plex Sans", sans-serif';
                 ctx.textAlign = "right";
                 ctx.textBaseline = "middle";
-                ctx.fillText(columnsSeriesShortLabel(clusterLabel), chartLeft - 7, y + rowHeight / 2);
+                ctx.fillText(secondaryLabel, chartLeft - 7, y + rowHeight / 2);
             }
             else {
-                ctx.fillStyle = columnsSeriesColor(clusterLabel);
+                ctx.fillStyle = row.category.color;
                 ctx.fillRect(chartLeft - 10, rowY, 5, drawHeight);
             }
-            const values = binnedValues.get(clusterLabel);
-            const gapValues = binnedGapValues.get(clusterLabel);
+            const values = binnedValues.get(row.key);
+            const histogramHeight = Math.max(1, Math.min(80, drawHeight - 4));
+            const histogramBaseline = Math.floor(rowY + (drawHeight + histogramHeight) / 2);
+            if (histogramDisplay && drawHeight >= 5) {
+                ctx.fillStyle = "rgba(114, 98, 76, 0.2)";
+                ctx.fillRect(chartLeft, histogramBaseline, chartWidth, 1);
+            }
             for (let binIndex = 0; binIndex < binCount; binIndex += 1) {
                 const value = values[binIndex];
-                const gapValue = gapValues?.[binIndex] || 0;
+                const rowMax = Number(rowMaxValues.get(row.key) || 0);
+                const displayValue = state.columnsIndividualScales && rowMax > 0
+                    ? value / rowMax
+                    : value;
                 const x0 = chartLeft + binIndex * binWidth;
                 const x1 = chartLeft + (binIndex + 1) * binWidth;
                 const drawWidth = Math.max(1, Math.ceil(x1 - x0));
                 const x = Math.floor(x0);
                 if (value <= 0) {
-                    if (gapShading && gapValue > 0) {
-                        ctx.fillStyle = columnsGapMergedColor(emptyBinRgb, gapValue);
-                        ctx.fillRect(x, rowY, drawWidth, drawHeight);
-                    }
                     continue;
                 }
-                const baseRgb = columnsBarcodeRgb(clusterLabel, value);
-                ctx.fillStyle = gapShading && gapValue > 0
-                    ? columnsGapMergedColor(baseRgb, gapValue)
-                    : rgbToCss(baseRgb);
-                ctx.fillRect(x, rowY, drawWidth, drawHeight);
+                const baseRgb = columnsBarcodeRgb(clusterLabel, displayValue, row.category.color);
+                ctx.fillStyle = rgbToCss(baseRgb);
+                if (histogramDisplay && drawHeight >= 5) {
+                    const barHeight = Math.max(1, Math.round(Math.min(1, displayValue) * histogramHeight));
+                    ctx.fillRect(x, histogramBaseline - barHeight, drawWidth, barHeight);
+                }
+                else {
+                    ctx.fillRect(x, rowY, drawWidth, drawHeight);
+                }
             }
             if (rowGap > 0) {
-                ctx.fillStyle = "rgba(114, 98, 76, 0.13)";
-                ctx.fillRect(0, rowY + drawHeight, chartRight, 1);
+                ctx.fillStyle = blockStart ? "rgba(114, 98, 76, 0.28)" : "rgba(114, 98, 76, 0.10)";
+                ctx.fillRect(0, blockStart ? rowY : rowY + drawHeight, chartRight, 1);
             }
         }
         drawColumnsHoverCell(ctx, state.columnsHoverCell);
@@ -3063,10 +3213,13 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
         const modeLabel = interfaceOnly
             ? `interface-only axis hides ${hiddenColumnCount} empty columns`
             : "full MSA axis";
-        const colorMeaning = gapShading
-            ? "gap fraction darkens each bin"
-            : "color luminance shows interacting fraction";
-        setColumnsInfo(`${sourceTitle} barcodes: ${modeLabel}; ${colorMeaning} (${visibleClusters.length}/${state.columnsChart.clusters.length} ${sourcePlural} visible, columns ${startLabel}-${endLabel}).`);
+        const colorMeaning = histogramDisplay
+            ? "bar height shows the selected value"
+            : "color luminance shows the selected value";
+        const scaleMeaning = state.columnsIndividualScales
+            ? "each row scaled to its own maximum"
+            : "shared 0-100% scale";
+        setColumnsInfo(`${sourceTitle} ${histogramDisplay ? "histograms" : "barcodes"}: ${selectedCategories.length} values, ${groupFirst ? "group-first" : "category-first"}; ${modeLabel}; ${colorMeaning}, ${scaleMeaning} (${visibleClusters.length}/${state.columnsChart.clusters.length} ${sourcePlural} visible, columns ${startLabel}-${endLabel}).`);
     }
     function embeddingClusterByRowKey() {
         const source = state.embeddingClustering?.points || emptyClusteringPoints;
@@ -3630,6 +3783,8 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
             state.columnsChartLoadingKey = null;
             state.columnsChartErrorKey = null;
             state.columnsChartPromise = null;
+            state.columnsChartPayload = null;
+            state.columnsChartPayloadKey = null;
             state.columnsView = { start: 0, end: null };
             state.columnsInterfaceView = { start: 0, end: null };
             state.columnsVisibleClusters = new Set();
@@ -3711,6 +3866,8 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 state.columnsChartLoadingKey = null;
                 state.columnsChartErrorKey = null;
                 state.columnsChartPromise = null;
+                state.columnsChartPayload = null;
+                state.columnsChartPayloadKey = null;
                 state.columnsView = { start: 0, end: null };
                 state.columnsInterfaceView = { start: 0, end: null };
                 state.columnsDrag = null;
@@ -3738,6 +3895,8 @@ export function createEmbeddingViewController({ state, elements, interfaceSelect
                 state.columnsChartLoadingKey = null;
                 state.columnsChartErrorKey = null;
                 state.columnsChartPromise = null;
+                state.columnsChartPayload = null;
+                state.columnsChartPayloadKey = null;
                 state.columnsView = { start: 0, end: null };
                 state.columnsInterfaceView = { start: 0, end: null };
                 state.columnsVisibleClusters = new Set();

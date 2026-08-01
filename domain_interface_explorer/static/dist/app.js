@@ -204,12 +204,15 @@ const embeddingViewController = createEmbeddingViewController({
     representativeLens,
 });
 const { allEmbeddingClusterLabels, allEmbeddingCoverageBracketKeys, allEmbeddingSizeBracketKeys, allColumnsClusterLabels, allRepresentativeClusterLabels, clusteringMethodLabel, currentClusterCompareQuery, currentEmbeddingClusteringQuery, currentEmbeddingClusteringRequestKey, currentEmbeddingQuery, currentEmbeddingRequestKey, currentHierarchicalTarget, embeddingClusterColor, embeddingClusterLabel, embeddingClusteringSettingsKey, embeddingDistanceLabel, embeddingLegendMode, embeddingPointAt, embeddingSettingsKey, ensureEmbeddingClusteringLoaded, ensureEmbeddingDataLoaded, ensureHierarchyStatusLoaded, handleColumnsDoubleClick, handleColumnsPointerLeave, handleColumnsPointerDown, handleColumnsPointerMove, handleColumnsPointerUp, handleColumnsScroll, handleColumnsWheel, normalizeHierarchicalDraft, parseEmbeddingClusteringSettingsDraft, parseEmbeddingSettingsDraft, readEmbeddingClusteringDraftInputs, renderEmbeddingLegend, renderEmbeddingPlot, requestEmbeddingRender, renderColumnsChart, renderColumnsClusterLegend, resetColumnsClusterSelection, resetEmbeddingClusterSelection, resetEmbeddingMetricSelections, resetEmbeddingPartnerSelection, resetRepresentativeClusterSelection, resizeColumnsCanvas, resizeEmbeddingCanvas, setEmbeddingInfo, setColumnsInfo, syncEmbeddingLoadingUi, syncEmbeddingMemberControls, syncDistanceThresholdValueUi, syncPersistenceMinLifetimeValueUi, syncPersistenceStabilityWeightValueUi, syncEmbeddingSettingsUi, syncHierarchicalTargetMemoryFromDraft, syncHierarchicalTargetUi, visibleColumnsClusters, visibleRepresentativeClusters, } = embeddingViewController;
+const COLUMNS_PLIP_TYPE_BITS = ["1", "2", "4", "8", "16"];
 function syncColumnsSettingsUi() {
     const open = Boolean(state.columnsSettingsOpen);
     elements.columnsSettingsToggle?.setAttribute("aria-expanded", String(open));
     elements.columnsSettingsToggle?.classList.toggle("active", open);
     elements.columnsSettingsPanel?.classList.toggle("hidden", !open);
-    const source = state.columnsSource === "domains" ? "domains" : "clusters";
+    const source = ["all", "domains"].includes(state.columnsSource)
+        ? state.columnsSource
+        : "clusters";
     elements.columnsSourceMode
         ?.querySelectorAll("[data-columns-source]")
         .forEach((button) => {
@@ -217,14 +220,52 @@ function syncColumnsSettingsUi() {
         button.classList.toggle("active", isActive);
         button.setAttribute("aria-pressed", String(isActive));
     });
+    const selectedCategories = state.columnsCategories instanceof Set
+        ? state.columnsCategories
+        : new Set(["contacts"]);
+    elements.columnsCategories
+        ?.querySelectorAll("[data-columns-category]")
+        .forEach((input) => {
+        input.checked = selectedCategories.has(String(input.dataset.columnsCategory));
+    });
+    const selectedPlipTypes = state.columnsPlipTypes instanceof Set
+        ? state.columnsPlipTypes
+        : new Set(COLUMNS_PLIP_TYPE_BITS);
+    elements.columnsPlipTypes
+        ?.querySelectorAll("[data-columns-plip-type]")
+        .forEach((input) => {
+        input.checked = selectedPlipTypes.has(String(input.dataset.columnsPlipType));
+    });
+    const allPlipInput = elements.columnsPlipTypes?.querySelector("[data-columns-plip-all]");
+    if (allPlipInput) {
+        allPlipInput.checked = COLUMNS_PLIP_TYPE_BITS.every((bit) => selectedPlipTypes.has(bit));
+        allPlipInput.indeterminate = !allPlipInput.checked && selectedPlipTypes.size > 0;
+    }
+    const mergedPlipInput = elements.columnsPlipTypes?.querySelector("[data-columns-plip-merged]");
+    if (mergedPlipInput) {
+        mergedPlipInput.checked = Boolean(state.columnsPlipMerged);
+    }
+    const rowOrder = state.columnsRowOrder === "category" ? "category" : "group";
+    elements.columnsRowOrder
+        ?.querySelectorAll("[data-columns-row-order]")
+        .forEach((button) => {
+        const isActive = button.dataset.columnsRowOrder === rowOrder;
+        button.classList.toggle("active", isActive);
+        button.setAttribute("aria-pressed", String(isActive));
+    });
+    const display = state.columnsDisplay === "histograms" ? "histograms" : "lines";
+    elements.columnsDisplayMode
+        ?.querySelectorAll("[data-columns-display]")
+        .forEach((button) => {
+        const isActive = button.dataset.columnsDisplay === display;
+        button.classList.toggle("active", isActive);
+        button.setAttribute("aria-pressed", String(isActive));
+    });
     if (elements.columnsInterfaceOnlyToggle) {
         elements.columnsInterfaceOnlyToggle.checked = Boolean(state.columnsInterfaceOnly);
     }
-    if (elements.columnsEmptyBinsWhiteToggle) {
-        elements.columnsEmptyBinsWhiteToggle.checked = Boolean(state.columnsEmptyBinsWhite);
-    }
-    if (elements.columnsGapShadingToggle) {
-        elements.columnsGapShadingToggle.checked = Boolean(state.columnsGapShading);
+    if (elements.columnsIndividualScalesToggle) {
+        elements.columnsIndividualScalesToggle.checked = Boolean(state.columnsIndividualScales);
     }
 }
 function resetColumnsChartState() {
@@ -234,6 +275,8 @@ function resetColumnsChartState() {
     state.columnsChartLoadingKey = null;
     state.columnsChartErrorKey = null;
     state.columnsChartPromise = null;
+    state.columnsChartPayload = null;
+    state.columnsChartPayloadKey = null;
     state.columnsView = { start: 0, end: null };
     state.columnsInterfaceView = { start: 0, end: null };
     state.columnsVisibleClusters = new Set();
@@ -3342,12 +3385,96 @@ elements.columnsSourceMode?.addEventListener("click", (event) => {
     if (!button) {
         return;
     }
-    const nextSource = button.dataset.columnsSource === "domains" ? "domains" : "clusters";
+    const requestedSource = String(button.dataset.columnsSource || "");
+    const nextSource = ["all", "domains"].includes(requestedSource)
+        ? requestedSource
+        : "clusters";
     if (nextSource === state.columnsSource) {
         return;
     }
     state.columnsSource = nextSource;
+    if (nextSource === "all") {
+        state.columnsDisplay = "histograms";
+    }
     resetColumnsChartState();
+    syncColumnsSettingsUi();
+    persistUiPreferences();
+    renderColumnsChart();
+});
+elements.columnsCategories?.addEventListener("change", (event) => {
+    const input = event.target.closest("[data-columns-category]");
+    if (!input) {
+        return;
+    }
+    const nextCategories = state.columnsCategories instanceof Set
+        ? new Set(state.columnsCategories)
+        : new Set(["contacts"]);
+    const category = String(input.dataset.columnsCategory || "");
+    if (input.checked) {
+        nextCategories.add(category);
+    }
+    else {
+        nextCategories.delete(category);
+    }
+    state.columnsCategories = nextCategories;
+    state.columnsInterfaceView = { start: 0, end: null };
+    syncColumnsSettingsUi();
+    persistUiPreferences();
+    renderColumnsChart();
+});
+elements.columnsPlipTypes?.addEventListener("change", (event) => {
+    const input = event.target.closest("input[type='checkbox']");
+    if (!input) {
+        return;
+    }
+    if (input.matches("[data-columns-plip-all]")) {
+        state.columnsPlipTypes = new Set(input.checked ? COLUMNS_PLIP_TYPE_BITS : []);
+    }
+    else if (input.matches("[data-columns-plip-merged]")) {
+        state.columnsPlipMerged = Boolean(input.checked);
+    }
+    else if (input.matches("[data-columns-plip-type]")) {
+        const nextTypes = state.columnsPlipTypes instanceof Set
+            ? new Set(state.columnsPlipTypes)
+            : new Set(COLUMNS_PLIP_TYPE_BITS);
+        const bit = String(input.dataset.columnsPlipType);
+        if (input.checked) {
+            nextTypes.add(bit);
+        }
+        else {
+            nextTypes.delete(bit);
+        }
+        state.columnsPlipTypes = nextTypes;
+    }
+    state.columnsInterfaceView = { start: 0, end: null };
+    syncColumnsSettingsUi();
+    persistUiPreferences();
+    renderColumnsChart();
+});
+elements.columnsDisplayMode?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-columns-display]");
+    if (!button) {
+        return;
+    }
+    const nextDisplay = button.dataset.columnsDisplay === "histograms" ? "histograms" : "lines";
+    if (nextDisplay === state.columnsDisplay) {
+        return;
+    }
+    state.columnsDisplay = nextDisplay;
+    syncColumnsSettingsUi();
+    persistUiPreferences();
+    renderColumnsChart();
+});
+elements.columnsRowOrder?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-columns-row-order]");
+    if (!button) {
+        return;
+    }
+    const nextOrder = button.dataset.columnsRowOrder === "category" ? "category" : "group";
+    if (nextOrder === state.columnsRowOrder) {
+        return;
+    }
+    state.columnsRowOrder = nextOrder;
     syncColumnsSettingsUi();
     persistUiPreferences();
     renderColumnsChart();
@@ -3359,14 +3486,8 @@ elements.columnsInterfaceOnlyToggle?.addEventListener("change", () => {
     persistUiPreferences();
     renderColumnsChart();
 });
-elements.columnsEmptyBinsWhiteToggle?.addEventListener("change", () => {
-    state.columnsEmptyBinsWhite = Boolean(elements.columnsEmptyBinsWhiteToggle.checked);
-    syncColumnsSettingsUi();
-    persistUiPreferences();
-    renderColumnsChart();
-});
-elements.columnsGapShadingToggle?.addEventListener("change", () => {
-    state.columnsGapShading = Boolean(elements.columnsGapShadingToggle.checked);
+elements.columnsIndividualScalesToggle?.addEventListener("change", () => {
+    state.columnsIndividualScales = Boolean(elements.columnsIndividualScalesToggle.checked);
     syncColumnsSettingsUi();
     persistUiPreferences();
     renderColumnsChart();

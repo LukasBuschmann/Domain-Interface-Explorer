@@ -883,6 +883,12 @@
                     >
                       <button
                         type="button"
+                        class="embedding-clustering-mode-button"
+                        data-columns-source="all"
+                        aria-pressed="false"
+                      >All</button>
+                      <button
+                        type="button"
                         class="embedding-clustering-mode-button active"
                         data-columns-source="clusters"
                         aria-pressed="true"
@@ -895,17 +901,71 @@
                       >Domains</button>
                     </div>
                   </div>
+                  <div id="columns-categories" class="columns-plip-types">
+                    <span class="columns-plip-types-title">Values</span>
+                    <div class="columns-plip-type-grid">
+                      <label class="columns-settings-check"><input type="checkbox" data-columns-category="contacts" checked><span>Contacts</span></label>
+                      <label class="columns-settings-check"><input type="checkbox" data-columns-category="conservation"><span>Conservation</span></label>
+                      <label class="columns-settings-check"><input type="checkbox" data-columns-category="gaps"><span>Gap %</span></label>
+                    </div>
+                  </div>
+                  <div id="columns-plip-types" class="columns-plip-types">
+                    <span class="columns-plip-types-title">PLIP types</span>
+                    <div class="columns-plip-actions">
+                      <label class="columns-settings-check">
+                        <input type="checkbox" data-columns-plip-all checked>
+                        <span>All</span>
+                      </label>
+                      <label class="columns-settings-check">
+                        <input type="checkbox" data-columns-plip-merged>
+                        <span>Merge</span>
+                      </label>
+                    </div>
+                    <div class="columns-plip-type-grid">
+                      <label class="columns-settings-check"><input type="checkbox" data-columns-plip-type="1" checked><span>Hydrophobic</span></label>
+                      <label class="columns-settings-check"><input type="checkbox" data-columns-plip-type="2" checked><span>Hydrogen bond</span></label>
+                      <label class="columns-settings-check"><input type="checkbox" data-columns-plip-type="4" checked><span>Salt bridge</span></label>
+                      <label class="columns-settings-check"><input type="checkbox" data-columns-plip-type="8" checked><span>Pi stacking</span></label>
+                      <label class="columns-settings-check"><input type="checkbox" data-columns-plip-type="16" checked><span>Pi-cation</span></label>
+                    </div>
+                  </div>
+                  <div class="columns-setting-group">
+                    <span>Row order</span>
+                    <div id="columns-row-order" class="embedding-settings-mode" role="tablist" aria-label="Column row order">
+                      <button type="button" class="embedding-clustering-mode-button active" data-columns-row-order="group" aria-pressed="true">Group first</button>
+                      <button type="button" class="embedding-clustering-mode-button" data-columns-row-order="category" aria-pressed="false">Category first</button>
+                    </div>
+                  </div>
+                  <div class="columns-setting-group">
+                    <span>View</span>
+                    <div
+                      id="columns-display-mode"
+                      class="embedding-settings-mode"
+                      role="tablist"
+                      aria-label="Column display style"
+                    >
+                      <button
+                        type="button"
+                        class="embedding-clustering-mode-button active"
+                        data-columns-display="lines"
+                        aria-pressed="true"
+                      >Barcode</button>
+                      <button
+                        type="button"
+                        class="embedding-clustering-mode-button"
+                        data-columns-display="histograms"
+                        aria-pressed="false"
+                      >Histograms</button>
+                    </div>
+                  </div>
+                  <span class="columns-options-title">Options</span>
                   <label class="columns-settings-check">
                     <input id="columns-interface-only-toggle" type="checkbox">
                     <span>Interface only</span>
                   </label>
                   <label class="columns-settings-check">
-                    <input id="columns-empty-bins-white-toggle" type="checkbox">
-                    <span>Zero interactions white</span>
-                  </label>
-                  <label class="columns-settings-check">
-                    <input id="columns-gap-shading-toggle" type="checkbox">
-                    <span>Gap %</span>
+                    <input id="columns-individual-scales-toggle" type="checkbox">
+                    <span>Individual scales</span>
                   </label>
                 </section>
               </div>

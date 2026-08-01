@@ -4313,6 +4313,8 @@ def compute_columns_chart_payload(
             "clusterSizes": {},
             "relativeByCluster": {},
             "gapByCluster": {},
+            "conservationByCluster": {},
+            "plipMaskCountsByCluster": {},
             "maxStackValue": 0.0,
         }
     normalized_alignment_length = int(alignment_length or 0)
@@ -4347,6 +4349,13 @@ def compute_columns_chart_payload(
             cluster_label: np.zeros(normalized_alignment_length, dtype=np.int32)
             for cluster_label in cluster_keys
         }
+        residue_counts_by_cluster = {
+            cluster_label: np.zeros((normalized_alignment_length, 26), dtype=np.uint32)
+            for cluster_label in cluster_keys
+        }
+        plip_mask_counts_by_cluster: dict[str, dict[str, dict[str, int]]] = {
+            cluster_label: {} for cluster_label in cluster_keys
+        }
 
         for partner_domain, row_key, cluster_label in normalized_points:
             rows = interface_payload.get(partner_domain)
@@ -4361,6 +4370,7 @@ def compute_columns_chart_payload(
             if not isinstance(raw_sequence, str):
                 raw_sequence = row_payload.get("aligned_sequence")
             aligned_sequence = raw_sequence if isinstance(raw_sequence, str) else ""
+            residue_counts = residue_counts_by_cluster.get(cluster_label)
             if gap_counts is not None:
                 encoded = np.frombuffer(
                     aligned_sequence.encode("ascii", "ignore")[:normalized_alignment_length],
@@ -4374,6 +4384,15 @@ def compute_columns_chart_payload(
                     )
                 if encoded_length < normalized_alignment_length:
                     gap_counts[encoded_length:] += 1
+                if residue_counts is not None and encoded_length > 0:
+                    letter_offsets = encoded[:encoded_length].astype(np.int16) - ord("A")
+                    valid_positions = np.flatnonzero((letter_offsets >= 0) & (letter_offsets < 26))
+                    if valid_positions.size:
+                        np.add.at(
+                            residue_counts,
+                            (valid_positions, letter_offsets[valid_positions]),
+                            1,
+                        )
             for raw_column in row_payload.get("interface_msa_columns_a", []) or []:
                 try:
                     column_index = int(raw_column)
@@ -4381,9 +4400,46 @@ def compute_columns_chart_payload(
                     continue
                 if 0 <= column_index < normalized_alignment_length:
                     counts[column_index] += 1
+            residue_to_column: dict[int, int] = {}
+            for residue_key, column_key in (
+                ("interface_residues_a", "interface_msa_columns_a"),
+                ("surface_residue_ids_a", "surface_msa_columns_a"),
+            ):
+                residues = row_payload.get(residue_key, []) or []
+                columns = row_payload.get(column_key, []) or []
+                for raw_residue, raw_column in zip(residues, columns):
+                    try:
+                        residue_to_column[int(raw_residue)] = int(raw_column)
+                    except (TypeError, ValueError):
+                        continue
+            row_masks: dict[int, int] = {}
+            for interaction in row_payload.get("plip_interactions", []) or []:
+                if not isinstance(interaction, (list, tuple)) or len(interaction) < 3:
+                    continue
+                try:
+                    main_residue = int(interaction[0])
+                    mask = int(interaction[2])
+                except (TypeError, ValueError):
+                    continue
+                column_index = residue_to_column.get(main_residue)
+                if (
+                    column_index is None
+                    or column_index < 0
+                    or column_index >= normalized_alignment_length
+                    or mask <= 0
+                ):
+                    continue
+                row_masks[column_index] = row_masks.get(column_index, 0) | mask
+            cluster_plip_counts = plip_mask_counts_by_cluster.get(cluster_label)
+            if cluster_plip_counts is not None:
+                for column_index, mask in row_masks.items():
+                    column_counts = cluster_plip_counts.setdefault(str(column_index), {})
+                    mask_key = str(mask)
+                    column_counts[mask_key] = column_counts.get(mask_key, 0) + 1
 
         relative_by_cluster: dict[str, list[float]] = {}
         gap_by_cluster: dict[str, list[float]] = {}
+        conservation_by_cluster: dict[str, list[float]] = {}
         stack_totals = [0.0] * normalized_alignment_length
         for cluster_label in cluster_keys:
             cluster_size = max(1, int(cluster_sizes.get(cluster_label, 0)))
@@ -4397,6 +4453,18 @@ def compute_columns_chart_payload(
             gap_relative = (gap_counts.astype(np.float64) / cluster_size).tolist()
             relative_by_cluster[cluster_label] = relative
             gap_by_cluster[cluster_label] = gap_relative
+            residue_counts = residue_counts_by_cluster.get(cluster_label)
+            if residue_counts is None:
+                conservation_by_cluster[cluster_label] = [0.0] * normalized_alignment_length
+            else:
+                residue_totals = residue_counts.sum(axis=1, dtype=np.uint64)
+                residue_maxima = residue_counts.max(axis=1)
+                conservation_by_cluster[cluster_label] = np.divide(
+                    residue_maxima,
+                    residue_totals,
+                    out=np.zeros(normalized_alignment_length, dtype=np.float64),
+                    where=residue_totals > 0,
+                ).tolist()
             for column_index, value in enumerate(relative):
                 stack_totals[column_index] += value
         max_stack_value = max(stack_totals) if stack_totals else 0.0
@@ -4408,6 +4476,8 @@ def compute_columns_chart_payload(
         "clusterSizes": cluster_sizes,
         "relativeByCluster": relative_by_cluster,
         "gapByCluster": gap_by_cluster,
+        "conservationByCluster": conservation_by_cluster,
+        "plipMaskCountsByCluster": plip_mask_counts_by_cluster,
         "maxStackValue": max_stack_value,
     }
 
